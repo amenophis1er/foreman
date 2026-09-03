@@ -114,10 +114,13 @@ function addCard(p) {
   div.className = 'card'; div.dataset.id = p.id;
   const title = p.title || ('Claude wants to use ' + p.toolName);
   div.innerHTML = '<div class="tool-name"></div><pre></pre>' +
-    '<div class="actions"><button class="allow">Allow</button><button class="deny">Deny</button></div>';
+    '<div class="actions"><button class="allow">Allow</button>' +
+    '<button class="allow always">Always (this run)</button>' +
+    '<button class="deny">Deny</button></div>';
   div.querySelector('.tool-name').textContent = title;
   div.querySelector('pre').textContent = JSON.stringify(p.input, null, 2);
   div.querySelector('.allow').onclick = () => respond(p.id, 'allow');
+  div.querySelector('.always').onclick = () => respond(p.id, 'allow_always');
   div.querySelector('.deny').onclick = () => respond(p.id, 'deny');
   cards.append(div);
 }

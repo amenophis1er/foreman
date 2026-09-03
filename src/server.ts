@@ -33,7 +33,14 @@ type RunState = {
 
 let run: RunState | null = null;
 const sseClients = new Set<http.ServerResponse>();
-const pendingPermissions = new Map<string, (r: PermissionResult) => void>();
+type PendingPermission = {
+  resolve: (r: PermissionResult) => void;
+  toolName: string;
+  suggestions?: unknown[];
+};
+const pendingPermissions = new Map<string, PendingPermission>();
+// Tools the user chose "Always allow" for during the current run.
+let runAutoAllow = new Set<string>();
 
 function broadcast(event: string, data: unknown) {
   const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -47,7 +54,10 @@ async function startRun(folder: string, mission: string) {
       cwd: folder,
       permissionMode: 'default',
       canUseTool: async (toolName, input, opts) => {
-        if (AUTO_ALLOW.has(toolName)) {
+        // "Always allow" only short-circuits ordinary prompts — a rule-forced
+        // ask or a flagged reason (e.g. path outside the folder) still asks.
+        const routine = !opts.matchedAskRule && !opts.decisionReason;
+        if ((AUTO_ALLOW.has(toolName) || (runAutoAllow.has(toolName) && routine))) {
           broadcast('auto_allowed', { toolName });
           return { behavior: 'allow' as const };
         }
@@ -61,7 +71,7 @@ async function startRun(folder: string, mission: string) {
           decisionReason: opts.decisionReason,
         });
         return new Promise<PermissionResult>((resolve) => {
-          pendingPermissions.set(id, resolve);
+          pendingPermissions.set(id, { resolve, toolName, suggestions: opts.suggestions });
           opts.signal.addEventListener('abort', () => {
             if (pendingPermissions.delete(id)) {
               broadcast('permission_resolved', { id, behavior: 'aborted' });
@@ -73,6 +83,7 @@ async function startRun(folder: string, mission: string) {
     },
   });
 
+  runAutoAllow = new Set();
   run = { q, folder, mission, status: 'running' };
   broadcast('run_started', { folder, mission });
 
@@ -136,14 +147,20 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, { ok: true });
     } else if (req.method === 'POST' && url.pathname === '/permission') {
       const { id, behavior, message } = await readBody(req);
-      const resolve = pendingPermissions.get(id);
-      if (!resolve) return json(res, 404, { error: 'no pending permission with that id' });
+      const pending = pendingPermissions.get(id);
+      if (!pending) return json(res, 404, { error: 'no pending permission with that id' });
       pendingPermissions.delete(id);
-      resolve(
-        behavior === 'allow'
-          ? { behavior: 'allow' }
-          : { behavior: 'deny', message: message || 'Denied by user.' },
-      );
+      if (behavior === 'allow_always') {
+        runAutoAllow.add(pending.toolName);
+        pending.resolve({
+          behavior: 'allow',
+          updatedPermissions: pending.suggestions as any,
+        });
+      } else if (behavior === 'allow') {
+        pending.resolve({ behavior: 'allow' });
+      } else {
+        pending.resolve({ behavior: 'deny', message: message || 'Denied by user.' });
+      }
       broadcast('permission_resolved', { id, behavior });
       json(res, 200, { ok: true });
     } else if (req.method === 'POST' && url.pathname === '/interrupt') {
