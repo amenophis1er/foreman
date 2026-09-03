@@ -142,6 +142,17 @@ export function ProjectView({ p, onBack, refreshFleet }: {
   const run = useRunView(selectedRunId, viewingLive);
   const selectedRun = history.find((r) => r.id === selectedRunId);
   const [agentFilter, setAgentFilter] = useState<string | null>(null);
+  const [resuming, setResuming] = useState(false);
+  const [headerErr, setHeaderErr] = useState('');
+
+  const doResume = async () => {
+    if (!selectedRunId) return;
+    setHeaderErr('');
+    setResuming(true);
+    const r = await api.resume(selectedRunId).finally(() => setResuming(false));
+    if (!r.ok) setHeaderErr((await r.json()).error);
+    else refreshFleet();
+  };
 
   const showComposer = !activeRunId && selectedRunId === null;
 
@@ -160,6 +171,9 @@ export function ProjectView({ p, onBack, refreshFleet }: {
           </div>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)' }}>
+          {headerErr && (
+            <span style={{ color: 'var(--status-critical)', fontSize: 'var(--fs-sm)' }}>✕ {headerErr}</span>
+          )}
           {selectedRunId && <StatusBadge status={run.runStatus} />}
           {selectedRunId && <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} />}
           {viewingLive && run.runStatus === 'running' && (
@@ -168,9 +182,10 @@ export function ProjectView({ p, onBack, refreshFleet }: {
           {!activeRunId && selectedRunId
             && (selectedRun?.status === 'interrupted' || selectedRun?.status === 'error')
             && selectedRun?.directorSessionId && (
-            <Button variant="good" title="Restore the director's session and continue this mission"
-              onClick={() => { void api.resume(selectedRunId!).then(refreshFleet); }}>
-              ⟳ Resume
+            <Button variant="good" disabled={resuming}
+              title="Restore the director's session and continue this mission"
+              onClick={() => void doResume()}>
+              {resuming ? '⟳ Resuming…' : '⟳ Resume'}
             </Button>
           )}
           {!activeRunId && selectedRunId && (

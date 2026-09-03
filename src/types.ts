@@ -56,6 +56,8 @@ export interface RunMeta {
   workerModel?: ModelChoice;
   /** Number of times this run was resumed after an interruption. */
   resumes?: number;
+  /** Tools the human granted "always allow" for this run (survives resume). */
+  allowedTools?: string[];
   folder: string;
   mission: string;
   budgetUsd: number;

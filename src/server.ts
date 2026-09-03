@@ -9,12 +9,14 @@
  * the file's location).
  *
  * Endpoints:
- *   GET    /                     React app (ui/dist, legacy public/ fallback)
+ *   GET    /                     React app (ui/dist; build hint when missing)
  *   GET    /events               SSE stream (enveloped ForemanEvents)
  *   GET    /projects             Projects + active-run summaries + pending counts
  *   POST   /projects             Link a folder {folder, name?}
  *   DELETE /projects/{id}        Unlink (history kept; active run blocks it)
- *   POST   /run                  Start a mission {projectId, mission, budgetUsd}
+ *   POST   /run                  Start a mission {projectId, mission, budgetUsd,
+ *                                directorModel?, workerModel?}
+ *   POST   /runs/{id}/resume     Resume an interrupted/failed run
  *   POST   /permission           Resolve an approval {id, behavior, message?}
  *   POST   /answer               Answer a director question {id, text}
  *   POST   /interrupt            Interrupt a run {runId}
@@ -42,12 +44,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, '..', 'ui', 'dist');
 
 const store = new RunStore(process.env.FOREMAN_HOME || undefined);
-/** Active runs, keyed by projectId (at most one per project). */
-const activeByProject = new Map<string, MissionRun>();
+/** Active runs by projectId (at most one per project); `null` marks a
+ *  reservation taken synchronously before the run object exists. */
+const activeByProject = new Map<string, MissionRun | null>();
 const sseClients = new Set<http.ServerResponse>();
 
 function activeRuns(): MissionRun[] {
-  return [...activeByProject.values()];
+  // Filter out reservation placeholders (see reserveProject).
+  return [...activeByProject.values()].filter((r): r is MissionRun => Boolean(r));
 }
 
 /** Broadcasts an enveloped frame to live clients and persists the bare event. */
@@ -59,6 +63,36 @@ function makeEmitter(runId: string, projectId: string) {
     for (const res of sseClients) res.write(frame);
     void store.append(runId, evt);
   };
+}
+
+/**
+ * Reserves a project for a new/resumed mission. Synchronous check-and-set:
+ * routes call this AFTER their last await and BEFORE any further await, which
+ * makes "one active mission per project" race-free on the single JS thread.
+ */
+function reserveProject(projectId: string): boolean {
+  if (activeByProject.has(projectId)) return false;
+  activeByProject.set(projectId, null); // reservation placeholder
+  return true;
+}
+
+/** Runs a mission to completion. The project must already be reserved. */
+async function driveRun(projectId: string, meta: RunMeta, resumeSessionId?: string): Promise<void> {
+  const run = new MissionRun(meta, makeEmitter(meta.id, projectId), (m) => void store.writeMeta(m));
+  activeByProject.set(projectId, run);
+  try {
+    await run.start(resumeSessionId);
+  } catch (err) {
+    // start() catches mission errors itself; anything reaching here is a
+    // Foreman bug or storage failure. Never let it become an unhandled
+    // rejection that takes the whole server (and other missions) down.
+    console.error(`run ${meta.id} failed outside the mission loop:`, err);
+    meta.status = 'error';
+    meta.endedAt = Date.now();
+    await store.writeMeta(meta).catch(() => {});
+  } finally {
+    if (activeByProject.get(projectId) === run) activeByProject.delete(projectId);
+  }
 }
 
 async function startRun(
@@ -73,7 +107,13 @@ async function startRun(
     status: 'running', costUsd: 0,
     createdAt: Date.now(), workers: [],
   };
-  await store.createRun(meta);
+  try {
+    await store.createRun(meta);
+  } catch (err) {
+    activeByProject.delete(projectId);
+    console.error(`failed to create run for project ${projectId}:`, err);
+    return;
+  }
   await driveRun(projectId, meta);
 }
 
@@ -83,19 +123,10 @@ async function resumeRun(projectId: string, meta: RunMeta): Promise<void> {
   meta.status = 'running';
   meta.endedAt = undefined;
   meta.resumes = (meta.resumes ?? 0) + 1;
-  await store.writeMeta(meta);
+  await store.writeMeta(meta).catch((err) => {
+    console.error(`failed to persist resume of ${meta.id}:`, err);
+  });
   await driveRun(projectId, meta, sessionId);
-}
-
-async function driveRun(projectId: string, meta: RunMeta, resumeSessionId?: string): Promise<void> {
-  const run = new MissionRun(meta, makeEmitter(meta.id, projectId), (m) => void store.writeMeta(m));
-  activeByProject.set(projectId, run);
-  try {
-    await run.start(resumeSessionId);
-  } finally {
-    // Only clear if this run is still the project's active one.
-    if (activeByProject.get(projectId) === run) activeByProject.delete(projectId);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -205,10 +236,11 @@ const server = http.createServer(async (req, res) => {
       }
       const project = await store.getProject(projectId);
       if (!project) return json(res, 404, { error: 'unknown project' });
-      if (activeByProject.has(projectId)) {
+      await mkdir(project.folder, { recursive: true });
+      // Reservation is the last step before dispatch — no awaits in between.
+      if (!reserveProject(projectId)) {
         return json(res, 409, { error: 'this project already has an active mission' });
       }
-      await mkdir(project.folder, { recursive: true });
       const budget = Number(budgetUsd) > 0 ? Number(budgetUsd) : project.defaultBudgetUsd;
       void startRun(projectId, project.folder, mission, budget,
         modelChoice(directorModel), modelChoice(workerModel));
@@ -244,19 +276,20 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, { runs: projectId ? runs.filter((r) => r.projectId === projectId) : runs });
 
     } else if (req.method === 'POST' && runResumeMatch) {
-      const meta = await store.readMeta(runResumeMatch[1]);
+      const meta = await store.readMeta(runResumeMatch[1]).catch(() => null);
       if (!meta) return json(res, 404, { error: 'unknown run' });
       if (meta.status === 'running' || meta.status === 'done') {
         return json(res, 409, { error: `run is ${meta.status}; only interrupted or failed runs can resume` });
       }
+      if (!meta.directorSessionId) {
+        return json(res, 409, { error: 'run has no director session to resume' });
+      }
       if (!meta.projectId || !(await store.getProject(meta.projectId))) {
         return json(res, 409, { error: 'run has no linked project' });
       }
-      if (activeByProject.has(meta.projectId)) {
+      // Reservation is the last step before dispatch — no awaits in between.
+      if (!reserveProject(meta.projectId)) {
         return json(res, 409, { error: 'this project already has an active mission' });
-      }
-      if (!meta.directorSessionId) {
-        return json(res, 409, { error: 'run has no director session to resume' });
       }
       void resumeRun(meta.projectId, meta);
       json(res, 200, { ok: true });

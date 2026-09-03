@@ -82,6 +82,16 @@ export class MissionRun {
     private readonly saveMeta: MetaSink,
   ) {
     this.meta = meta;
+    // Rehydrate orchestrator state from persisted metadata so a resumed run
+    // behaves like the original process: message_worker can reach prior
+    // workers, new worker ids never collide with old ones, and "always
+    // allow" grants survive.
+    for (const w of meta.workers) {
+      this.workers.set(w.id, { ...w });
+      const n = Number(w.id.match(/^worker-(\d+)$/)?.[1] ?? 0);
+      if (n > this.workerSeq) this.workerSeq = n;
+    }
+    for (const t of meta.allowedTools ?? []) this.runAllowed.add(t);
   }
 
   // -- public control surface (called by the HTTP layer) --------------------
@@ -101,6 +111,8 @@ export class MissionRun {
     let result: PermissionResult;
     if (decision === 'allow_always') {
       this.runAllowed.add(pending.toolName);
+      this.meta.allowedTools = [...this.runAllowed];
+      this.saveMeta(this.meta);
       result = { behavior: 'allow', updatedPermissions: pending.suggestions };
     } else if (decision === 'allow') {
       result = { behavior: 'allow' };
@@ -135,12 +147,6 @@ export class MissionRun {
    * context and instructed to re-verify state against MISSION.md first.
    */
   async start(resumeSessionId?: string): Promise<void> {
-    // The mission doc directory ignores itself so missions never pollute
-    // `git status` in real repositories.
-    const foremanDir = path.join(this.meta.folder, '.foreman');
-    await mkdir(foremanDir, { recursive: true });
-    await writeFile(path.join(foremanDir, '.gitignore'), '*\n').catch(() => {});
-
     this.emit(resumeSessionId ? 'run_resumed' : 'run_started', {
       runId: this.meta.id,
       folder: this.meta.folder,
@@ -150,31 +156,40 @@ export class MissionRun {
     });
 
     const prompt = resumeSessionId
-      ? 'This mission was interrupted (process restart or crash) and is now being resumed. ' +
-        'Do not trust your memory of progress: re-read .foreman/MISSION.md, inspect the ' +
-        'working directory, and verify which milestones are actually complete. Update the ' +
-        'doc to match reality, then continue the mission to DONE WHEN. ' +
+      ? `MISSION (unchanged): ${this.meta.mission}\n\n` +
+        'This mission was interrupted (process restart or crash) and is now being resumed. ' +
+        'Do not trust your memory of progress: re-read .foreman/MISSION.md if it exists ' +
+        '(write it first if it does not), inspect the working directory, and verify which ' +
+        'milestones are actually complete. Update the doc to match reality, then continue ' +
+        'the mission to DONE WHEN. ' +
         `Budget note: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)} is already spent.`
       : `MISSION: ${this.meta.mission}\n\nBudget: $${this.meta.budgetUsd.toFixed(2)} total for this run. ` +
         `Working directory: ${this.meta.folder}. Begin by writing .foreman/MISSION.md, then execute the plan.`;
 
-    const q = query({
-      prompt,
-      options: {
-        cwd: this.meta.folder,
-        permissionMode: 'default',
-        resume: resumeSessionId,
-        model: this.meta.directorModel,
-        maxTurns: 150,
-        systemPrompt: { type: 'preset', preset: 'claude_code', append: DIRECTOR_CHARTER },
-        mcpServers: { foreman: this.makeTools() },
-        canUseTool: this.policyFor('director'),
-      },
-    });
-    this.directorQ = q;
-
     try {
-      for await (const msg of q as AsyncIterable<SDKMessage>) {
+      // The mission doc directory ignores itself so missions never pollute
+      // `git status` in real repositories. Inside the try so a bad folder
+      // surfaces as a failed run, never an unhandled rejection.
+      const foremanDir = path.join(this.meta.folder, '.foreman');
+      await mkdir(foremanDir, { recursive: true });
+      await writeFile(path.join(foremanDir, '.gitignore'), '*\n').catch(() => {});
+
+      const q = query({
+        prompt,
+        options: {
+          cwd: this.meta.folder,
+          permissionMode: 'default',
+          resume: resumeSessionId,
+          model: this.meta.directorModel,
+          maxTurns: 150,
+          systemPrompt: { type: 'preset', preset: 'claude_code', append: DIRECTOR_CHARTER },
+          mcpServers: { foreman: this.makeTools() },
+          canUseTool: this.policyFor('director'),
+        },
+      });
+      this.directorQ = q;
+
+      for await (const msg of this.directorQ as AsyncIterable<SDKMessage>) {
         const m = msg as Record<string, unknown>;
         if (typeof m.session_id === 'string') this.meta.directorSessionId = m.session_id;
         if (m.type === 'result') {
