@@ -21,7 +21,7 @@ import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { ForemanEvent, Project, RunMeta, RunSummary } from './types.js';
+import type { ForemanEvent, Project, RunMeta, RunSummary, SettingsFile } from './types.js';
 
 const RUN_ID_RE = /^[0-9]{13}-[0-9a-f]{8}$/;
 
@@ -101,6 +101,36 @@ export class RunStore {
 
   async getProject(projectId: string): Promise<Project | null> {
     return (await this.listProjects()).find((p) => p.id === projectId) ?? null;
+  }
+
+  // -- settings -------------------------------------------------------------
+
+  private get settingsFile(): string {
+    return path.join(this.root, 'settings.json');
+  }
+
+  /** Reads persisted settings: a global object plus per-project overlays. */
+  async readSettings(): Promise<SettingsFile> {
+    const raw = await readFile(this.settingsFile, 'utf8').catch(() => null);
+    if (!raw) return { global: {}, projects: {} };
+    try {
+      const parsed = JSON.parse(raw) as Partial<SettingsFile>;
+      return { global: parsed.global ?? {}, projects: parsed.projects ?? {} };
+    } catch {
+      return { global: {}, projects: {} };
+    }
+  }
+
+  /** Atomically replaces settings.json (serialized like projects.json). */
+  writeSettings(settings: SettingsFile): Promise<void> {
+    const task = this.projectsChain.then(async () => {
+      await mkdir(this.root, { recursive: true });
+      const tmp = path.join(this.root, `.settings.${crypto.randomBytes(4).toString('hex')}.tmp`);
+      await writeFile(tmp, JSON.stringify(settings, null, 2));
+      await rename(tmp, this.settingsFile);
+    });
+    this.projectsChain = task.catch(() => {});
+    return task;
   }
 
   // -- runs -----------------------------------------------------------------

@@ -41,7 +41,7 @@ export function RunRail({ current, agents = [], history = [], selectedRunId, fil
           </div>
         )}
       </section>
-      <section>
+      <section style={{ marginTop: 'var(--sp-4)' }}>
         <SectionTitle>Mission history</SectionTitle>
         {others.length === 0 && <Empty>No other runs yet.</Empty>}
         {others.map((r) => (

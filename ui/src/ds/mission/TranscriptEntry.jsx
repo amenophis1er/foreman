@@ -3,6 +3,7 @@ import { Card } from '../core/Card';
 import { Icon } from '../core/Icon';
 import { AgentDot, agentColor } from '../status/AgentDot';
 import { ToolCall } from './ToolCall';
+import { RichText } from '../core/RichText';
 
 const MCP = new Set(['spawn_worker', 'message_worker', 'ask_human']);
 
@@ -36,7 +37,9 @@ export function TranscriptEntry({ agent, title, kind = 'text', body, ts, to, tim
       </div>
       {isTool
         ? <ToolCall tool={toolName} body={body} />
-        : <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{body}</div>}
+        : kind === 'text' && typeof body === 'string'
+          ? <RichText text={body} />
+          : <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{body}</div>}
     </Card>
   );
 }
