@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api, type ProjectSummary } from '../state';
-import { BudgetMeter, Empty, StatusBadge, type Status } from '../design/ui';
+import { BudgetMeter, Button, Empty, StatusBadge, type Status } from '../design/ui';
 import { FolderPicker } from './FolderPicker';
 
 function ProjectCard({ p, onOpen, onUnlink }: {
@@ -66,6 +66,11 @@ export function FleetView({ projects, connected, onOpen, refresh }: {
   onOpen: (projectId: string) => void; refresh: () => void;
 }) {
   const [picker, setPicker] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  // Browsers only reveal a dropped folder's NAME (never its absolute path),
+  // so a drop triggers a server-side search under $HOME and the user
+  // confirms among the matches.
+  const [drop, setDrop] = useState<{ name: string; matches: string[] | null } | null>(null);
 
   const link = async (folder: string) => {
     const r = await api.linkProject(folder);
@@ -75,8 +80,30 @@ export function FleetView({ projects, connected, onOpen, refresh }: {
     }
   };
 
+  const onDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragging(false);
+    const entry = e.dataTransfer.items[0]?.webkitGetAsEntry?.();
+    if (!entry?.isDirectory) return;
+    setDrop({ name: entry.name, matches: null });
+    const r = await api.locate(entry.name);
+    setDrop({ name: entry.name, matches: r.ok ? (await r.json()).matches : [] });
+  };
+
   return (
-    <div style={{ height: '100%', overflowY: 'auto' }}>
+    <div style={{ height: '100%', overflowY: 'auto', position: 'relative' }}
+      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+      onDragLeave={(e) => { if (e.target === e.currentTarget) setDragging(false); }}
+      onDrop={onDrop}>
+      {dragging && (
+        <div style={{
+          position: 'absolute', inset: 8, zIndex: 5, pointerEvents: 'none',
+          border: '2px dashed var(--brand)', borderRadius: 'var(--r-md)',
+          background: 'rgba(232,176,75,.06)', display: 'flex',
+          alignItems: 'center', justifyContent: 'center',
+          color: 'var(--brand)', fontSize: 'var(--fs-lg)',
+        }}>Drop a folder to link it</div>
+      )}
       <header style={{
         display: 'flex', alignItems: 'center', gap: 'var(--sp-3)',
         padding: 'var(--sp-3) var(--sp-5)', borderBottom: '1px solid var(--line)',
@@ -117,6 +144,50 @@ export function FleetView({ projects, connected, onOpen, refresh }: {
       </div>
 
       {picker && <FolderPicker onPick={(f) => void link(f)} onClose={() => setPicker(false)} />}
+
+      {drop && (
+        <div onClick={(e) => e.target === e.currentTarget && setDrop(null)} style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 10,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <div style={{
+            width: 520, maxHeight: '60vh', display: 'flex', flexDirection: 'column',
+            background: 'var(--bg-panel)', border: '1px solid var(--line-strong)',
+            borderRadius: 'var(--r-md)', overflow: 'hidden',
+          }}>
+            <div style={{ padding: 'var(--sp-3)', borderBottom: '1px solid var(--line)' }}>
+              <b>📁 {drop.name}</b>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', marginTop: 2 }}>
+                Browsers hide dropped folders' full paths — pick the matching location.
+              </div>
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1 }}>
+              {drop.matches === null && (
+                <div style={{ padding: 'var(--sp-3)', color: 'var(--ink-2)', fontSize: 'var(--fs-sm)' }}>
+                  Searching your home folder…
+                </div>
+              )}
+              {drop.matches?.map((m) => (
+                <div key={m} role="button"
+                  onClick={() => { setDrop(null); void link(m); }}
+                  style={{
+                    padding: '8px 12px', cursor: 'pointer',
+                    fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)',
+                  }}>{m}</div>
+              ))}
+              {drop.matches?.length === 0 && (
+                <div style={{ padding: 'var(--sp-3)', color: 'var(--ink-2)', fontSize: 'var(--fs-sm)' }}>
+                  No folder named “{drop.name}” found under your home directory —
+                  use the folder picker instead.
+                </div>
+              )}
+            </div>
+            <div style={{ padding: 'var(--sp-3)', borderTop: '1px solid var(--line)', textAlign: 'right' }}>
+              <Button onClick={() => setDrop(null)}>Cancel</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

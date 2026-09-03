@@ -8,10 +8,28 @@ export function FolderPicker({ initial, onPick, onClose }: {
   initial?: string; onPick: (p: string) => void; onClose: () => void;
 }) {
   const [cur, setCur] = useState<Listing | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [err, setErr] = useState('');
 
   const load = async (p?: string) => {
+    setErr('');
     const r = await api.browse(p);
     if (r.ok) setCur(await r.json());
+  };
+
+  const createFolder = async () => {
+    if (!cur || !newName.trim()) return;
+    setErr('');
+    const r = await api.mkdir(cur.path, newName.trim());
+    if (!r.ok) {
+      setErr((await r.json()).error);
+      return;
+    }
+    const { path } = await r.json();
+    setCreating(false);
+    setNewName('');
+    await load(path); // navigate into the new folder, ready to select
   };
   useEffect(() => { void load(initial || undefined); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -45,10 +63,32 @@ export function FolderPicker({ initial, onPick, onClose }: {
             </div>
           )}
         </div>
+        {creating && (
+          <div style={{
+            display: 'flex', gap: 'var(--sp-2)', padding: 'var(--sp-2) var(--sp-3)',
+            borderTop: '1px solid var(--line)', alignItems: 'center',
+          }}>
+            <input autoFocus value={newName} placeholder="New folder name"
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void createFolder(); }}
+              style={{
+                flex: 1, background: 'var(--bg-card)', border: '1px solid var(--line-strong)',
+                borderRadius: 'var(--r-sm)', padding: '6px 9px', color: 'var(--ink-0)',
+              }} />
+            <Button variant="good" onClick={() => void createFolder()}>Create</Button>
+          </div>
+        )}
+        {err && (
+          <div style={{ padding: '4px var(--sp-3)', color: 'var(--status-critical)', fontSize: 'var(--fs-xs)' }}>
+            ✕ {err}
+          </div>
+        )}
         <div style={{
           display: 'flex', gap: 'var(--sp-2)', padding: 'var(--sp-3)',
-          borderTop: '1px solid var(--line)', justifyContent: 'flex-end',
+          borderTop: '1px solid var(--line)', alignItems: 'center',
         }}>
+          <Button onClick={() => setCreating(!creating)} title="Create a subfolder here">＋ New folder</Button>
+          <span style={{ flex: 1 }} />
           <Button onClick={onClose}>Cancel</Button>
           <Button variant="primary" onClick={() => { if (cur) onPick(cur.path); onClose(); }}>
             Select this folder

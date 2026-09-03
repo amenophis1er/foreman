@@ -24,6 +24,8 @@
  *   GET    /runs/{id}/events     Full event log for replay
  *   GET    /missiondoc?run=      A run's .foreman/MISSION.md
  *   GET    /browse?path=         Directory listing for the folder picker
+ *   POST   /mkdir                Create a subfolder {parent, name}
+ *   GET    /locate?name=         Find folders by name under $HOME (drag-drop)
  */
 import http from 'node:http';
 import os from 'node:os';
@@ -37,6 +39,38 @@ import type { ForemanEvent, ModelChoice, RunMeta } from './types.js';
 /** Parses a model choice from a request body; unknown values become inherit. */
 function modelChoice(v: unknown): ModelChoice {
   return v === 'opus' || v === 'sonnet' || v === 'haiku' ? v : undefined;
+}
+
+/** Directory names never descended into by the drag-drop folder locator. */
+const LOCATE_SKIP = new Set([
+  'node_modules', 'Library', 'Applications', '.Trash', 'Music', 'Movies',
+  'Pictures', 'dist', 'build', 'target', 'vendor', '.git',
+]);
+
+/**
+ * Breadth-first search under $HOME for directories whose basename matches
+ * `name` (case-insensitive). Bounded by depth, visit count, and wall clock so
+ * a request can never wander the whole disk.
+ */
+async function locateFolders(name: string): Promise<string[]> {
+  const wanted = name.toLowerCase();
+  const results: string[] = [];
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: os.homedir(), depth: 0 }];
+  const deadline = Date.now() + 2000;
+  let visited = 0;
+
+  while (queue.length && results.length < 15 && visited < 20000 && Date.now() < deadline) {
+    const { dir, depth } = queue.shift()!;
+    visited++;
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith('.') || LOCATE_SKIP.has(e.name)) continue;
+      const full = path.join(dir, e.name);
+      if (e.name.toLowerCase() === wanted) results.push(full);
+      if (depth < 4) queue.push({ dir: full, depth: depth + 1 });
+    }
+  }
+  return results;
 }
 
 const PORT = Number(process.env.PORT ?? 4177);
@@ -320,6 +354,25 @@ const server = http.createServer(async (req, res) => {
         .sort((a, b) => a.localeCompare(b));
       const parent = path.dirname(dir);
       json(res, 200, { path: dir, parent: parent === dir ? null : parent, dirs });
+
+    } else if (req.method === 'POST' && url.pathname === '/mkdir') {
+      const { parent, name } = await readBody(req);
+      if (typeof parent !== 'string' || !path.isAbsolute(parent)) {
+        return json(res, 400, { error: 'parent must be an absolute path' });
+      }
+      if (typeof name !== 'string' || !name.trim() || /[/\\]/.test(name) || name.trim().startsWith('.')) {
+        return json(res, 400, { error: 'invalid folder name' });
+      }
+      const parentSt = await stat(parent).catch(() => null);
+      if (!parentSt?.isDirectory()) return json(res, 400, { error: `not a directory: ${parent}` });
+      const created = path.join(parent, name.trim());
+      await mkdir(created, { recursive: true });
+      json(res, 200, { path: created });
+
+    } else if (req.method === 'GET' && url.pathname === '/locate') {
+      const name = (url.searchParams.get('name') ?? '').trim();
+      if (!name) return json(res, 400, { error: 'name is required' });
+      json(res, 200, { matches: await locateFolders(name) });
 
     } else {
       json(res, 404, { error: 'not found' });

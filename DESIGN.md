@@ -337,3 +337,10 @@ but the choice of tool matters:
   built-in mission phase?
 - Containerized workers (Docker): worth it for isolation/"full unleash" runs,
   or is policy + budgets enough for personal use?
+- Unattended operation: a "Trust this run" pre-grant toggle, plus human
+  notification channels (Telegram/Slack/webhook behind a Notifier interface)
+  with an availability policy (quiet hours, severity threshold) and an
+  escalation ladder — question unanswered for N minutes → notify; still
+  unanswered → director takes the conservative path and records it in
+  Decisions, or parks the milestone. Cards never expire today; missions
+  stall politely until answered.
