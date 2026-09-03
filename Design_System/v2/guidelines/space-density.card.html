@@ -1,0 +1,18 @@
+<!-- @dsCard group="Spacing" viewport="700x170" name="Density in use" subtitle="A real right-rail card at true spacing: 12px padding, 8px internal gaps" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>body{padding:16px;display:flex;gap:20px;align-items:flex-start}.card{background:var(--bg-card);border:1px solid var(--line);border-left:var(--accent-w) solid var(--brand);border-radius:var(--r-sm);padding:var(--sp-3);width:316px}pre{background:var(--bg-inset);padding:var(--sp-2);border-radius:var(--r-sm);font-family:var(--font-mono);font-size:var(--fs-xs);margin:var(--sp-2) 0;overflow:hidden}.btn{padding:6px 12px;border-radius:var(--r-sm);font-size:var(--fs-md)}.note{font-size:var(--fs-xs);color:var(--ink-2);max-width:300px;line-height:1.6}</style>
+</head><body>
+<div class="card">
+<div style="font-weight:600;color:var(--brand);font-size:var(--fs-sm)">worker-1 wants to use Bash</div>
+<div style="color:var(--status-serious);font-size:var(--fs-xs);margin-top:2px">writes outside the project folder</div>
+<pre>{
+  "command": "npm run build --prefix ../shared"
+}</pre>
+<div style="display:flex;gap:var(--sp-2)">
+<span class="btn" style="border:1px solid var(--status-good)">Allow</span>
+<span class="btn" style="border:1px solid var(--status-good)">Always (run)</span>
+<span class="btn" style="border:1px solid var(--status-critical)">Deny</span>
+</div>
+</div>
+<div class="note">Card padding <b style="color:var(--ink-1)">12px</b> · gap between stacked cards <b style="color:var(--ink-1)">8px</b> · button row gap <b style="color:var(--ink-1)">8px</b> · payload well padding <b style="color:var(--ink-1)">8px</b>, capped at 150px tall with its own scroll. Rail width 340px, rail padding 12px, so the card lands at 316px.</div>
+</body></html>

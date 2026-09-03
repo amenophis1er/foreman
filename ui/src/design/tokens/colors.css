@@ -1,0 +1,79 @@
+/* Foreman color system. Dark is the default look; `[data-theme="light"]` on <html> flips every
+   surface/ink token while identity and status hues stay recognisably the same. */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces — four stacked planes, app darkest-but-one, inset darkest */
+  --bg-app: #121417;
+  --bg-panel: #1a1d22;
+  --bg-card: #22262d;
+  --bg-inset: #14161a;
+  --bg-hover: #1e2228;
+  --line: #2d323b;
+  --line-strong: #3a4048;
+
+  /* Ink — text never wears identity or status color */
+  --ink-0: #e8e6df;
+  --ink-1: #a7afb9;
+  --ink-2: #6d7683;
+
+  /* Identity — fixed per role, never cycled or reassigned */
+  --brand: #e8b04b;
+  --brand-ink: #14161a;
+  --agent-director: var(--brand);
+  --agent-worker: #9c86e8;
+  /* Worker ramp — six fixed violet-family hues, assigned by worker index (worker-1 → 1). */
+  --agent-worker-1: #9c86e8;
+  --agent-worker-2: #7f9ff0;
+  --agent-worker-3: #c48be0;
+  --agent-worker-4: #b3a6f2;
+  --agent-worker-5: #7a72d8;
+  --agent-worker-6: #d19ac8;
+
+  /* Status — CVD-validated on dark surface; always paired with icon + label */
+  --status-good: #3fb950;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #e5484d;
+
+  /* Derived washes — the only transparencies in the system */
+  --brand-wash: rgba(232, 176, 75, 0.06);
+  --brand-wash-strong: rgba(232, 176, 75, 0.12);
+  --scrim: rgba(0, 0, 0, 0.55);
+
+  /* Diff rendering (tool payloads) */
+  --diff-add-bg: rgba(63, 185, 80, 0.12);
+  --diff-del-bg: rgba(229, 72, 77, 0.12);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg-app: #ecebe6;
+  --bg-panel: #f6f5f1;
+  --bg-card: #ffffff;
+  --bg-inset: #e4e2db;
+  --bg-hover: #f0efea;
+  --line: #d9d6cd;
+  --line-strong: #c2beb2;
+  --ink-0: #1c1e22;
+  --ink-1: #555c67;
+  --ink-2: #7b828d;
+  --brand: #c98f1f;
+  --brand-ink: #ffffff;
+  --agent-worker: #6f57d6;
+  --agent-worker-1: #6f57d6;
+  --agent-worker-2: #4a6fdc;
+  --agent-worker-3: #a35bc9;
+  --agent-worker-4: #8a78e0;
+  --agent-worker-5: #5449b8;
+  --agent-worker-6: #b3609e;
+  --status-good: #1f8f3a;
+  --status-warning: #b8790a;
+  --status-serious: #c4592c;
+  --status-critical: #c8323a;
+  --brand-wash: rgba(201, 143, 31, 0.08);
+  --brand-wash-strong: rgba(201, 143, 31, 0.16);
+  --scrim: rgba(20, 22, 26, 0.45);
+  --diff-add-bg: rgba(31, 143, 58, 0.12);
+  --diff-del-bg: rgba(200, 50, 58, 0.12);
+}

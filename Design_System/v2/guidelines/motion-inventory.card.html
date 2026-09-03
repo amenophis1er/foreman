@@ -1,0 +1,12 @@
+<!-- @dsCard group="Motion" viewport="700x150" name="Motion inventory" subtitle="Three things move: the needs-you pulse, the budget fill, and the plan progress" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<style>body{padding:16px;display:flex;flex-direction:column;gap:14px}.n{font-family:var(--font-mono);font-size:var(--fs-xs);color:var(--ink-2)}.track{height:var(--meter-h);background:var(--bg-inset);border-radius:2px;overflow:hidden;width:220px}.fill{height:100%;background:var(--brand);animation:grow 3s var(--ease) infinite}@keyframes grow{0%{width:6%}60%{width:74%}100%{width:6%}}.p{display:flex;gap:6px;align-items:center;color:var(--status-warning);font-size:var(--fs-sm);font-weight:600;margin-top:4px}.p svg{width:14px;height:14px}</style>
+</head><body>
+<div><div class="n">.pulse — opacity 1 ↔ 0.55, 1600ms ease-in-out, infinite</div>
+<div class="p pulse"><i data-lucide="bell"></i>Needs you — 2 approvals, 1 question</div></div>
+<div><div class="n">BudgetMeter / PlanBoard — width transition, 300ms</div>
+<div class="track" style="margin-top:6px"><div class="fill"></div></div></div>
+<div style="font-size:var(--fs-xs);color:var(--ink-2)">Nothing else animates. No modal transitions, no slide-ins, no skeleton shimmer, no spinners — progress is a changed label (<b style="color:var(--ink-1)">Resuming…</b>) or a muted line (<b style="color:var(--ink-1)">Searching your home folder…</b>). Hover and press are 120ms color steps.</div>
+<script>lucide.createIcons({attrs:{'stroke-width':2}});</script>
+</body></html>

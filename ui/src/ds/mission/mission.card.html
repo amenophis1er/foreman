@@ -1,0 +1,53 @@
+<!-- @dsCard group="Components" viewport="700x560" name="Mission — rail, timeline, tool calls, cards" subtitle="RunRail hierarchy, RunTimeline, ToolCall chips with diff, approval, question, plan" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>body{padding:16px}.grid{display:grid;grid-template-columns:230px 1fr 300px;gap:16px;align-items:start}.rail{background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--r-sm);padding:12px;display:flex;flex-direction:column;gap:16px}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+const { RunRail, RunTimeline, ToolCall, TranscriptEntry, CrewStrip, ApprovalCard, QuestionCard, PlanBoard, SectionTitle, SteerBar } = window.ForemanDesignSystem_5f77fb;
+const DOC = `# Mission\n\n- [x] Ask the human for the filename (ask_human) and wait for the answer.\n- [x] Spawn a worker to create the file with content "test".\n- [ ] Verify the file exists and contains "test".`;
+const t0 = Date.parse('2026-09-03T07:53:12');
+const agents=[{id:'director',status:'running'},{id:'worker-1',status:'done',task:'Create hello.txt'},{id:'worker-2',status:'running'}];
+const entries=[
+ {id:1,agent:'director',title:'init',kind:'system',ts:t0},
+ {id:2,agent:'director',kind:'text',ts:t0+2000},
+ {id:3,agent:'director',title:'Write',kind:'tool',ts:t0+6000},
+ {id:4,agent:'director',title:'ask_human',kind:'tool',ts:t0+11000},
+ {id:5,agent:'director',title:'spawn_worker',kind:'tool',ts:t0+33000},
+ {id:6,agent:'worker-1',kind:'text',ts:t0+36000},{id:7,agent:'worker-1',title:'Write',kind:'tool',ts:t0+41000},{id:8,agent:'worker-1',kind:'text',ts:t0+44000},
+ {id:9,agent:'worker-2',title:'Bash',kind:'tool',ts:t0+45000},{id:10,agent:'worker-2',title:'result',kind:'error',ts:t0+52000},
+ {id:11,agent:'director',title:'Read',kind:'tool',ts:t0+47000},
+];
+const history=[{id:'r2',mission:'Have a worker create alpha.txt containing the word test',createdAt:t0-86400000,costUsd:0.68,status:'done'},{id:'r3',mission:'Refactor the store reducer into pure functions',createdAt:t0-2*86400000,costUsd:2.9,status:'interrupted'}];
+function Demo(){const [f,setF]=React.useState(null);const tog=(id)=>setF(x=>x===id?null:id);return (
+<div className="grid">
+  <div className="rail">
+    <RunRail current={{id:'live',mission:'Ask me which filename to create, then have a worker create it',costUsd:1.24,status:'running',live:true,createdAt:t0}} agents={agents} history={history} selectedRunId="live" filter={f} onFilter={tog} sessionId="c16e338e-4b2a"/>
+  </div>
+  <div style={{display:'flex',flexDirection:'column',gap:10}}>
+    <div className="rail" style={{gap:8}}><SectionTitle style={{margin:0}}>Timeline</SectionTitle><RunTimeline agents={agents} entries={entries} live selected={f} onSelect={tog}/></div>
+    <CrewStrip agents={agents} filter={f} onFilter={tog}/>
+    <TranscriptEntry agent="director" title="spawn_worker" kind="tool" body={'{"id":"worker-1","task":"Create hello.txt containing the word test in the working directory."}'} ts={t0+33000}/>
+    <TranscriptEntry agent="worker-1" title="Write" kind="tool" body={'{"file_path":"/Users/you/Projects/personal-foreman/scratchpad/fleet-alpha/hello.txt","content":"test\\n"}'} ts={t0+41000}/>
+    <div style={{background:'var(--bg-card)',border:'1px solid var(--line)',borderRadius:'var(--r-sm)',padding:'8px 12px'}}>
+      <ToolCall tool="Edit" defaultOpen input={{file_path:'src/store.ts',old_string:'let count = 0;\nexport function inc() { count++; }',new_string:'export function inc(state) {\n  return { ...state, count: state.count + 1 };\n}'}}/>
+    </div>
+    <TranscriptEntry agent="worker-2" title="result" kind="error" body="Error: ENOENT: no such file or directory, open 'scratchpad/out.json'" ts={t0+52000}/>
+    <TranscriptEntry agent="you" kind="steer" to="worker-2" timing="next" body="Don't write outside fleet-alpha. Put out.json in ./scratchpad and create the folder if it's missing." ts={t0+58000}/>
+    <SteerBar agents={agents} onSend={(t,m)=>console.log('steer',t,m)}/>
+    <SteerBar disabled disabledReason="Run finished — start a new mission to give instructions."/>
+  </div>
+  <div className="rail">
+    <section><SectionTitle>Approvals</SectionTitle>
+    <ApprovalCard agent="worker-1" title="Wants to use Bash" decisionReason="writes outside the project folder" input={{command:'npm run build --prefix ../shared'}}/></section>
+    <section><SectionTitle>Questions</SectionTitle>
+    <QuestionCard question={'Which filename should I create in the working directory (fleet-alpha)? Reply with the exact filename, e.g. "hello.txt".'}/></section>
+    <PlanBoard doc={DOC}/>
+  </div>
+</div>);}
+ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script></body></html>

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<!-- @template name="Fleet page" description="The fleet home: logo header with theme toggle and a responsive grid of project cards — running, idle with last-run summary, never run — plus the link tile." -->
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="min-height:100vh;background:#121417;color:#e8e6df;font:13px/1.45 'Source Sans 3',ui-sans-serif,system-ui,sans-serif">
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.AppHeader" mode="fleet" subtitle="mission control" theme="dark" hint-size="100%,48px"></x-import>
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;padding:24px;max-width:1200px;margin:0 auto">
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.ProjectCard" name="Alpha" folder="/Users/you/Projects/personal-foreman/scratchpad/fleet-alpha" mission="Ask me which filename to create, then have a worker create it containing the word test, then verify it independently." cost-usd="1.24" budget-usd="5" pending-questions="1" hint-size="100%,180px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.ProjectCard" name="Beta" folder="/Users/you/Projects/personal-foreman/scratchpad/fleet-beta" mission="Refactor the store reducer into pure functions and add tests for each branch." cost-usd="3.80" budget-usd="5" hint-size="100%,180px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.ProjectCard" name="Gamma" folder="/Users/you/Projects/website" last-run="{{ lastRun }}" hint-size="100%,180px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.ProjectCard" name="Delta" folder="/Users/you/Projects/delta" hint-size="100%,180px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.LinkProjectCard" hint-size="100%,180px"></x-import>
+</div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:560}}">
+class Component extends DCLogic {
+  renderVals() {
+    return { lastRun: { mission: 'Audit error handling across the API layer', status: 'done', createdAt: Date.parse('2026-09-02T21:04:00'), costUsd: 1.9 } };
+  }
+}
+</script>
+</body>
+</html>

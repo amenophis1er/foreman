@@ -1,0 +1,35 @@
+/* Semantic aliases. The base tokens above are what Foreman's code uses and are
+   the names to prefer; these aliases exist so a design agent can reach for
+   ordinary vocabulary and land on the right value. */
+:root {
+  /* Surfaces */
+  --surface-app: var(--bg-app);
+  --surface-panel: var(--bg-panel);
+  --surface-card: var(--bg-card);
+  --surface-inset: var(--bg-inset);
+  --surface-overlay: var(--bg-panel);
+  --border-subtle: var(--line);
+  --border-strong: var(--line-strong);
+
+  /* Text */
+  --text-body: var(--ink-0);
+  --text-secondary: var(--ink-1);
+  --text-muted: var(--ink-2);
+  --text-on-brand: var(--brand-ink);
+  --text-accent: var(--brand);
+  --text-danger: var(--status-critical);
+
+  /* Intent */
+  --intent-primary: var(--brand);
+  --intent-affirm: var(--status-good);
+  --intent-deny: var(--status-critical);
+  --intent-caution: var(--status-warning);
+  --intent-degraded: var(--status-serious);
+
+  /* Run states → color (always accompanied by an icon + label) */
+  --state-idle: var(--ink-2);
+  --state-running: var(--status-good);
+  --state-done: var(--status-good);
+  --state-interrupted: var(--status-serious);
+  --state-error: var(--status-critical);
+}

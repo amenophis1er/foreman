@@ -1,0 +1,19 @@
+<!-- @dsCard group="Brand" viewport="700x150" name="Never color alone" subtitle="Every status pairs an icon with a word — the system's hardest rule" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<style>body{padding:16px;display:flex;flex-direction:column;gap:12px}.row{display:flex;gap:10px;align-items:center}.pill{display:inline-flex;align-items:center;gap:5px;font-size:var(--fs-sm);color:var(--ink-1);padding:2px 8px 2px 6px;border-radius:var(--r-pill);background:var(--bg-inset);border:1px solid var(--line)}.pill svg{width:12px;height:12px}.bad{width:14px;height:14px;border-radius:var(--r-pill)}.l{font-size:var(--fs-xs);color:var(--ink-2);width:70px}</style>
+</head><body>
+<div class="row"><span class="l">Do</span>
+<span class="pill"><i data-lucide="circle" style="color:var(--ink-2)"></i>idle</span>
+<span class="pill"><i data-lucide="activity" style="color:var(--status-good)"></i>running</span>
+<span class="pill"><i data-lucide="check" style="color:var(--status-good)"></i>done</span>
+<span class="pill"><i data-lucide="x" style="color:var(--status-critical)"></i>error</span>
+<span class="pill"><i data-lucide="pause" style="color:var(--status-serious)"></i>interrupted</span>
+</div>
+<div class="row"><span class="l">Don't</span>
+<span class="bad" style="background:var(--ink-2)"></span><span class="bad" style="background:var(--status-good)"></span><span class="bad" style="background:var(--status-critical)"></span><span class="bad" style="background:var(--status-serious)"></span>
+<span style="font-size:var(--fs-xs);color:var(--ink-2);margin-left:8px">A colored dot with no word is not a status.</span>
+</div>
+<div style="font-size:var(--fs-xs);color:var(--ink-2)">Same rule for budget: the bar escalates in color, but <b style="color:var(--ink-1)">$4.80 / $5</b> is always printed beside it, with an alert icon once past 70%.</div>
+<script>lucide.createIcons({attrs:{'stroke-width':2.25}});</script>
+</body></html>

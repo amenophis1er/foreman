@@ -1,76 +1,56 @@
 import { useState } from 'react';
 import { api, type ProjectSummary } from '../state';
-import { BudgetMeter, Button, Empty, StatusBadge, type Status } from '../design/ui';
-import { FolderPicker } from './FolderPicker';
+import { AppHeader } from '../ds/shell/AppHeader';
+import { Empty } from '../ds/core/Empty';
+import { Banner } from '../ds/status/Banner';
+import { ProjectCard } from '../ds/fleet/ProjectCard';
+import { LinkProjectCard } from '../ds/fleet/LinkProjectCard';
+import { FolderPicker } from '../ds/overlay/FolderPicker';
+import { DropConfirmModal, DropOverlay } from '../ds/overlay/DropConfirmModal';
+import { ConfirmDialog } from '../ds/overlay/ConfirmDialog';
 
-function ProjectCard({ p, onOpen, onUnlink }: {
-  p: ProjectSummary; onOpen: () => void; onUnlink: () => void;
-}) {
-  const run = p.activeRun;
-  const needsYou = p.pendingPermissions + p.pendingQuestions;
-  const status: Status = run ? 'running' : 'idle';
+type Listing = { path: string; parent: string | null; dirs: string[] };
 
-  return (
-    <div role="button" onClick={onOpen} style={{
-      background: 'var(--bg-card)', borderRadius: 'var(--r-md)', cursor: 'pointer',
-      border: needsYou ? '1px solid var(--status-warning)' : '1px solid var(--line)',
-      padding: 'var(--sp-4)', display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)',
-      minHeight: 130,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
-        <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 600 }}>{p.name}</span>
-        <span style={{ marginLeft: 'auto' }}><StatusBadge status={status} /></span>
-      </div>
-      <div style={{
-        fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)',
-        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-      }}>{p.folder}</div>
+/** Server-driven state for the controlled FolderPicker. */
+function usePicker(onPick: (path: string) => void) {
+  const [open, setOpen] = useState(false);
+  const [cur, setCur] = useState<Listing | null>(null);
+  const [err, setErr] = useState('');
 
-      {needsYou > 0 && (
-        <div className="pulse" style={{
-          display: 'flex', alignItems: 'center', gap: 'var(--sp-1)',
-          color: 'var(--status-warning)', fontSize: 'var(--fs-sm)', fontWeight: 600,
-        }}>
-          🔔 needs you — {p.pendingPermissions > 0 && `${p.pendingPermissions} approval${p.pendingPermissions > 1 ? 's' : ''}`}
-          {p.pendingPermissions > 0 && p.pendingQuestions > 0 && ', '}
-          {p.pendingQuestions > 0 && `${p.pendingQuestions} question${p.pendingQuestions > 1 ? 's' : ''}`}
-        </div>
-      )}
+  const navigate = async (p?: string) => {
+    setErr('');
+    const r = await api.browse(p);
+    if (r.ok) setCur(await r.json());
+  };
+  const create = async (name: string) => {
+    if (!cur) return;
+    setErr('');
+    const r = await api.mkdir(cur.path, name);
+    if (!r.ok) setErr((await r.json()).error);
+    else await navigate((await r.json().catch(() => null))?.path ?? cur.path);
+  };
 
-      {run ? (
-        <>
-          <div style={{
-            fontSize: 'var(--fs-sm)', color: 'var(--ink-1)',
-            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-          }}>{run.mission}</div>
-          <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} />
-        </>
-      ) : (
-        <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-2)', marginTop: 'auto' }}>
-          No active mission — open to compose one.
-        </div>
-      )}
-
-      <button onClick={(e) => { e.stopPropagation(); onUnlink(); }}
-        title="Unlink project (run history is kept)"
-        style={{
-          alignSelf: 'flex-end', background: 'none', border: 'none', cursor: 'pointer',
-          color: 'var(--ink-2)', fontSize: 'var(--fs-xs)', padding: 0,
-        }}>unlink</button>
-    </div>
-  );
+  return {
+    open,
+    show: () => { setOpen(true); void navigate(); },
+    close: () => { setOpen(false); setCur(null); },
+    props: cur && {
+      path: cur.path, parent: cur.parent, dirs: cur.dirs, error: err,
+      onNavigate: (p: string) => void navigate(p),
+      onCreate: (name: string) => void create(name),
+      onPick: (p: string) => { setOpen(false); setCur(null); onPick(p); },
+    },
+  };
 }
 
-export function FleetView({ projects, connected, onOpen, refresh }: {
+export function FleetView({ projects, connected, onOpen, refresh, theme, onToggleTheme }: {
   projects: ProjectSummary[]; connected: boolean;
   onOpen: (projectId: string) => void; refresh: () => void;
+  theme: 'dark' | 'light'; onToggleTheme: () => void;
 }) {
-  const [picker, setPicker] = useState(false);
   const [dragging, setDragging] = useState(false);
-  // Browsers only reveal a dropped folder's NAME (never its absolute path),
-  // so a drop triggers a server-side search under $HOME and the user
-  // confirms among the matches.
   const [drop, setDrop] = useState<{ name: string; matches: string[] | null } | null>(null);
+  const [unlinking, setUnlinking] = useState<ProjectSummary | null>(null);
 
   const link = async (folder: string) => {
     const r = await api.linkProject(folder);
@@ -79,6 +59,7 @@ export function FleetView({ projects, connected, onOpen, refresh }: {
       onOpen((await r.json()).project.id);
     }
   };
+  const picker = usePicker((p) => void link(p));
 
   const onDrop = async (e: React.DragEvent) => {
     e.preventDefault();
@@ -94,48 +75,32 @@ export function FleetView({ projects, connected, onOpen, refresh }: {
     <div style={{ height: '100%', overflowY: 'auto', position: 'relative' }}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
       onDragLeave={(e) => { if (e.target === e.currentTarget) setDragging(false); }}
-      onDrop={onDrop}>
-      {dragging && (
-        <div style={{
-          position: 'absolute', inset: 8, zIndex: 5, pointerEvents: 'none',
-          border: '2px dashed var(--brand)', borderRadius: 'var(--r-md)',
-          background: 'rgba(232,176,75,.06)', display: 'flex',
-          alignItems: 'center', justifyContent: 'center',
-          color: 'var(--brand)', fontSize: 'var(--fs-lg)',
-        }}>Drop a folder to link it</div>
-      )}
-      <header style={{
-        display: 'flex', alignItems: 'center', gap: 'var(--sp-3)',
-        padding: 'var(--sp-3) var(--sp-5)', borderBottom: '1px solid var(--line)',
-        background: 'var(--bg-panel)',
-      }}>
-        <h1 style={{ margin: 0, fontSize: 18, color: 'var(--brand)' }}>Foreman</h1>
-        <span style={{ color: 'var(--ink-2)', fontSize: 'var(--fs-sm)' }}>mission control</span>
-        {!connected && (
-          <span style={{ marginLeft: 'auto', color: 'var(--status-serious)', fontSize: 'var(--fs-sm)' }}>
-            ⏻ disconnected
-          </span>
-        )}
-      </header>
+      onDrop={(e) => void onDrop(e)}>
+      {dragging && <DropOverlay />}
+
+      <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme}>
+        {!connected && <Banner tone="disconnected" inline>disconnected</Banner>}
+      </AppHeader>
 
       <div style={{
         display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-        gap: 'var(--sp-4)', padding: 'var(--sp-5)', maxWidth: 1200, margin: '0 auto',
+        gap: 'var(--sp-4)', padding: 'var(--sp-5)', maxWidth: 'var(--fleet-max)', margin: '0 auto',
       }}>
         {projects.map((p) => (
-          <ProjectCard key={p.id} p={p}
+          <ProjectCard key={p.id} name={p.name} folder={p.folder}
+            run={p.activeRun ? {
+              mission: p.activeRun.mission,
+              costUsd: p.activeRun.costUsd,
+              budgetUsd: p.activeRun.budgetUsd,
+            } : undefined}
+            lastRun={!p.activeRun && p.lastRun && p.lastRun.status !== 'idle' && p.lastRun.status !== 'running'
+              ? { ...p.lastRun, status: p.lastRun.status } : undefined}
+            pendingPermissions={p.pendingPermissions}
+            pendingQuestions={p.pendingQuestions}
             onOpen={() => onOpen(p.id)}
-            onUnlink={() => { void api.unlinkProject(p.id).then(refresh); }} />
+            onUnlink={() => setUnlinking(p)} />
         ))}
-        <div role="button" onClick={() => setPicker(true)} style={{
-          border: '1px dashed var(--line-strong)', borderRadius: 'var(--r-md)',
-          minHeight: 130, display: 'flex', flexDirection: 'column', alignItems: 'center',
-          justifyContent: 'center', gap: 'var(--sp-2)', cursor: 'pointer',
-          color: 'var(--ink-1)',
-        }}>
-          <span style={{ fontSize: 22 }}>＋</span>
-          <span style={{ fontSize: 'var(--fs-sm)' }}>Link a project</span>
-        </div>
+        <LinkProjectCard onClick={picker.show} />
         {projects.length === 0 && (
           <div style={{ gridColumn: '1 / -1' }}>
             <Empty>No projects linked yet — link a folder to give the director a job site.</Empty>
@@ -143,50 +108,27 @@ export function FleetView({ projects, connected, onOpen, refresh }: {
         )}
       </div>
 
-      {picker && <FolderPicker onPick={(f) => void link(f)} onClose={() => setPicker(false)} />}
+      {picker.open && picker.props && (
+        <FolderPicker {...picker.props} onClose={picker.close} />
+      )}
 
       {drop && (
-        <div onClick={(e) => e.target === e.currentTarget && setDrop(null)} style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 10,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-          <div style={{
-            width: 520, maxHeight: '60vh', display: 'flex', flexDirection: 'column',
-            background: 'var(--bg-panel)', border: '1px solid var(--line-strong)',
-            borderRadius: 'var(--r-md)', overflow: 'hidden',
-          }}>
-            <div style={{ padding: 'var(--sp-3)', borderBottom: '1px solid var(--line)' }}>
-              <b>📁 {drop.name}</b>
-              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', marginTop: 2 }}>
-                Browsers hide dropped folders' full paths — pick the matching location.
-              </div>
-            </div>
-            <div style={{ overflowY: 'auto', flex: 1 }}>
-              {drop.matches === null && (
-                <div style={{ padding: 'var(--sp-3)', color: 'var(--ink-2)', fontSize: 'var(--fs-sm)' }}>
-                  Searching your home folder…
-                </div>
-              )}
-              {drop.matches?.map((m) => (
-                <div key={m} role="button"
-                  onClick={() => { setDrop(null); void link(m); }}
-                  style={{
-                    padding: '8px 12px', cursor: 'pointer',
-                    fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)',
-                  }}>{m}</div>
-              ))}
-              {drop.matches?.length === 0 && (
-                <div style={{ padding: 'var(--sp-3)', color: 'var(--ink-2)', fontSize: 'var(--fs-sm)' }}>
-                  No folder named “{drop.name}” found under your home directory —
-                  use the folder picker instead.
-                </div>
-              )}
-            </div>
-            <div style={{ padding: 'var(--sp-3)', borderTop: '1px solid var(--line)', textAlign: 'right' }}>
-              <Button onClick={() => setDrop(null)}>Cancel</Button>
-            </div>
-          </div>
-        </div>
+        <DropConfirmModal name={drop.name} matches={drop.matches}
+          onPick={(p) => { setDrop(null); void link(p); }}
+          onClose={() => setDrop(null)} />
+      )}
+
+      {unlinking && (
+        <ConfirmDialog
+          title={`Unlink ${unlinking.name}?`}
+          body={'Foreman stops tracking this folder. Run history and its .foreman/ files stay on disk; you can link it again later.'}
+          confirmLabel="Unlink" tone="danger" icon="unlink"
+          onConfirm={() => {
+            const id = unlinking.id;
+            setUnlinking(null);
+            void api.unlinkProject(id).then(refresh);
+          }}
+          onCancel={() => setUnlinking(null)} />
       )}
     </div>
   );
