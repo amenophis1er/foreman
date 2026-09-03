@@ -115,7 +115,12 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         agents: [{ id: 'director', status: 'running' }],
       };
     case 'run_resumed': {
-      const others = s.agents.filter((a) => a.id !== 'director');
+      // Workers left "running" by the crash are dead processes; mark them so
+      // the tree never shows a phantom spinner (the orchestrator may reuse
+      // their ids for genuinely new sessions after rehydration).
+      const others = s.agents
+        .filter((a) => a.id !== 'director')
+        .map((a) => a.status === 'running' ? { ...a, status: 'interrupted' as Status } : a);
       return {
         ...s,
         runStatus: 'running',
@@ -263,8 +268,8 @@ export function useFleet() {
     void refresh();
     const poll = setInterval(refresh, 3000);
     const unsubSse = onSse((event) => {
-      if (['run_started', 'run_finished', 'permission_request', 'permission_resolved',
-        'question', 'question_answered'].includes(event)) void refresh();
+      if (['run_started', 'run_resumed', 'run_finished', 'permission_request',
+        'permission_resolved', 'question', 'question_answered'].includes(event)) void refresh();
     });
     const unsubConn = onConnection((up) => {
       setConnected(up);
