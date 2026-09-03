@@ -8,6 +8,18 @@
 
 export type RunStatus = 'running' | 'done' | 'error' | 'interrupted';
 
+/** A linked project — a folder Foreman runs missions in. */
+export interface Project {
+  id: string;
+  /** Display name; defaults to the folder's basename. */
+  name: string;
+  /** Absolute path of the working directory. */
+  folder: string;
+  createdAt: number;
+  /** Default budget suggested in the composer. */
+  defaultBudgetUsd: number;
+}
+
 export type WorkerStatus = 'running' | 'done' | 'error';
 
 /** Persisted, replayable event envelope. */
@@ -33,6 +45,8 @@ export interface WorkerMeta {
 /** Persisted run metadata (meta.json). Small, rewritten atomically on change. */
 export interface RunMeta {
   id: string;
+  /** Owning project; absent on runs recorded before projects existed. */
+  projectId?: string;
   folder: string;
   mission: string;
   budgetUsd: number;

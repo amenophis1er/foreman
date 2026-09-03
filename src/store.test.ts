@@ -90,3 +90,30 @@ test('run ids are validated before touching the filesystem', async () => {
   const { store } = await tmpStore();
   await assert.rejects(() => store.readEvents('../../etc/passwd' as string));
 });
+
+test('projects: add is idempotent per folder, remove keeps others', async () => {
+  const { store, root } = await tmpStore();
+  const a = await store.addProject('/tmp/proj-a');
+  const b = await store.addProject('/tmp/proj-b', 'Custom Name');
+  const aAgain = await store.addProject('/tmp/proj-a');
+
+  assert.equal(a.id, aAgain.id);
+  assert.equal(a.name, 'proj-a');
+  assert.equal(b.name, 'Custom Name');
+  assert.equal((await store.listProjects()).length, 2);
+  assert.deepEqual(await store.getProject(a.id), a);
+
+  assert.equal(await store.removeProject(a.id), true);
+  assert.equal(await store.removeProject(a.id), false);
+  assert.deepEqual((await store.listProjects()).map((p) => p.id), [b.id]);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('projects: concurrent adds do not lose writes', async () => {
+  const { store, root } = await tmpStore();
+  await Promise.all(
+    Array.from({ length: 8 }, (_, i) => store.addProject(`/tmp/conc-${i}`)),
+  );
+  assert.equal((await store.listProjects()).length, 8);
+  await rm(root, { recursive: true, force: true });
+});

@@ -1,11 +1,18 @@
 // Foreman client state.
 //
-// One code path applies events everywhere: the SSE stream (live), the latest
-// run's persisted log (hydration on page load), and any historical run the
-// user opens (read-only replay). This guarantees a replayed run renders
-// exactly like it did live.
+// Two hooks:
+//  - useFleet(): the project list with active-run summaries and pending
+//    counts — polled, and refreshed eagerly on relevant SSE events.
+//  - useRunView(runId, live): one run's full view state. Replays the
+//    persisted event log, then (when `live`) applies matching SSE events.
+//    The same applyWire() path renders replay and live identically.
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { onConnection, onSse, type Envelope } from './sse';
 import type { Status } from './design/ui';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 export type Entry = {
   id: number;
@@ -25,14 +32,21 @@ export type Question = { id: string; question: string };
 export type AgentInfo = { id: string; status: Status; task?: string };
 
 export type RunSummary = {
-  id: string; folder: string; mission: string; budgetUsd: number;
-  status: Status; costUsd: number; createdAt: number; endedAt?: number;
+  id: string; projectId?: string; folder: string; mission: string;
+  budgetUsd: number; status: Status; costUsd: number;
+  createdAt: number; endedAt?: number;
 };
 
-export type State = {
-  connected: boolean;
+export type ProjectSummary = {
+  id: string; name: string; folder: string; createdAt: number;
+  defaultBudgetUsd: number;
+  activeRun: RunSummary | null;
+  pendingPermissions: number;
+  pendingQuestions: number;
+};
+
+export type RunView = {
   runStatus: Status;
-  folder: string;
   mission: string;
   costUsd: number;
   budgetUsd: number;
@@ -44,20 +58,16 @@ export type State = {
   missionDoc: string | null;
 };
 
-const initial: State = {
-  connected: false, runStatus: 'idle', folder: '', mission: '',
-  costUsd: 0, budgetUsd: 5, agents: [], entries: [],
-  approvals: [], questions: [], missionDoc: null,
+const emptyRun: RunView = {
+  runStatus: 'idle', mission: '', costUsd: 0, budgetUsd: 5,
+  agents: [], entries: [], approvals: [], questions: [], missionDoc: null,
 };
 
+// ---------------------------------------------------------------------------
+// Wire-event reduction (shared by replay and live)
+// ---------------------------------------------------------------------------
+
 type WireEvent = { ts?: number; event: string; data: any };
-
-type Action =
-  | { t: 'connected'; v: boolean }
-  | { t: 'reset' }
-  | { t: 'wire'; e: WireEvent }
-  | { t: 'missiondoc'; doc: string | null };
-
 let seq = 0;
 
 function entriesFromSdkMessage(agent: string, msg: any, ts: number): Entry[] {
@@ -90,15 +100,14 @@ function entriesFromSdkMessage(agent: string, msg: any, ts: number): Entry[] {
   return out;
 }
 
-/** Applies one wire event (live or replayed) to the state. */
-function applyWire(s: State, e: WireEvent): State {
+function applyWire(s: RunView, e: WireEvent): RunView {
   const ts = e.ts ?? Date.now();
   const d = e.data;
   switch (e.event) {
     case 'run_started':
       return {
-        ...initial, connected: s.connected, missionDoc: s.missionDoc,
-        runStatus: 'running', folder: d.folder, mission: d.mission, budgetUsd: d.budgetUsd,
+        ...emptyRun, missionDoc: s.missionDoc,
+        runStatus: 'running', mission: d.mission, budgetUsd: d.budgetUsd,
         agents: [{ id: 'director', status: 'running' }],
       };
     case 'run_finished':
@@ -112,12 +121,10 @@ function applyWire(s: State, e: WireEvent): State {
       };
     case 'run_error':
       return { ...s, entries: [...s.entries, { id: ++seq, ts, agent: 'system', kind: 'error', title: 'error', body: d.error }] };
-    case 'folder_created':
-      return { ...s, entries: [...s.entries, { id: ++seq, ts, agent: 'system', kind: 'system', title: 'folder created', body: d.folder }] };
     case 'cost':
       return { ...s, costUsd: d.costUsd, budgetUsd: d.budgetUsd };
     case 'message': {
-      const extra: Partial<State> =
+      const extra: Partial<RunView> =
         d.agent === 'director' && d.msg?.session_id ? { directorSessionId: d.msg.session_id } : {};
       const es = entriesFromSdkMessage(d.agent, d.msg, ts);
       return es.length || extra.directorSessionId
@@ -153,135 +160,164 @@ function applyWire(s: State, e: WireEvent): State {
   }
 }
 
-function reducer(s: State, a: Action): State {
+type RunAction =
+  | { t: 'reset' }
+  | { t: 'wire'; e: WireEvent }
+  | { t: 'missiondoc'; doc: string | null };
+
+function runReducer(s: RunView, a: RunAction): RunView {
   switch (a.t) {
-    case 'connected': return { ...s, connected: a.v };
-    case 'reset': return { ...initial, connected: s.connected };
+    case 'reset': return emptyRun;
     case 'wire': return applyWire(s, a.e);
     case 'missiondoc': return { ...s, missionDoc: a.doc };
   }
 }
 
-export type ViewMode =
-  | { kind: 'live' }
-  | { kind: 'history'; runId: string };
+// ---------------------------------------------------------------------------
+// Hooks
+// ---------------------------------------------------------------------------
 
-export function useForeman() {
-  const [state, dispatch] = useReducer(reducer, initial);
-  const [runs, setRuns] = useState<RunSummary[]>([]);
-  const [mode, setMode] = useState<ViewMode>({ kind: 'live' });
-  const modeRef = useRef<ViewMode>(mode);
-  modeRef.current = mode;
-  const docTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Live events arriving while hydration replays the persisted log are
-  // buffered, then flushed, so nothing is lost or double-applied out of order.
-  const buffer = useRef<WireEvent[] | null>([]);
-
-  const refreshRuns = useCallback(async () => {
-    const r = await fetch('/runs').catch(() => null);
-    if (r?.ok) setRuns((await r.json()).runs);
-  }, []);
-
-  const refreshDoc = useCallback(async (runId?: string) => {
-    const q = runId ? `?run=${encodeURIComponent(runId)}` : '';
-    const r = await fetch('/missiondoc' + q).catch(() => null);
-    if (r?.ok) dispatch({ t: 'missiondoc', doc: (await r.json()).doc });
-  }, []);
-
-  const replayRun = useCallback(async (runId: string) => {
-    const r = await fetch(`/runs/${encodeURIComponent(runId)}/events`).catch(() => null);
-    if (!r?.ok) return false;
-    const { events } = await r.json() as { events: WireEvent[] };
-    dispatch({ t: 'reset' });
-    for (const e of events) dispatch({ t: 'wire', e });
-    void refreshDoc(runId);
-    return true;
-  }, [refreshDoc]);
-
-  /** Open a past run read-only. */
-  const viewRun = useCallback(async (runId: string) => {
-    setMode({ kind: 'history', runId });
-    await replayRun(runId);
-  }, [replayRun]);
-
-  /** Return to the live view (replaying the newest run's log first). */
-  const backToLive = useCallback(async () => {
-    setMode({ kind: 'live' });
-    const r = await fetch('/runs').catch(() => null);
-    const latest: RunSummary | undefined = r?.ok ? (await r.json()).runs[0] : undefined;
-    dispatch({ t: 'reset' });
-    if (latest) await replayRun(latest.id);
-  }, [replayRun]);
+/** Live view of one run. Replays its log, then follows SSE while `live`. */
+export function useRunView(runId: string | null, live: boolean): RunView {
+  const [state, dispatch] = useReducer(runReducer, emptyRun);
+  // Buffers live events that arrive while the log replay is in flight.
+  const buffer = useRef<WireEvent[] | null>(null);
 
   useEffect(() => {
-    const es = new EventSource('/events');
-    es.onopen = () => dispatch({ t: 'connected', v: true });
-    es.onerror = () => dispatch({ t: 'connected', v: false });
+    dispatch({ t: 'reset' });
+    if (!runId) return;
+    let cancelled = false;
+    buffer.current = [];
 
-    const EVENTS = [
-      'run_started', 'run_finished', 'run_error', 'folder_created', 'cost',
-      'message', 'worker_started', 'worker_finished',
-      'permission_request', 'permission_resolved', 'question', 'question_answered',
-    ];
-    for (const name of EVENTS) {
-      es.addEventListener(name, (raw) => {
-        const e: WireEvent = { event: name, data: JSON.parse((raw as MessageEvent).data) };
-        if (name === 'run_started' || name === 'run_finished') void refreshRuns();
-        if (name === 'run_started' && modeRef.current.kind === 'history') {
-          // A new mission started while browsing history — jump back to live.
-          setMode({ kind: 'live' });
-          buffer.current = null;
-        }
-        if (modeRef.current.kind === 'history') return; // read-only view
-        if (buffer.current) buffer.current.push(e);
-        else dispatch({ t: 'wire', e });
-      });
-    }
+    const unsub = live
+      ? onSse((event, env: Envelope) => {
+          if (env.runId !== runId) return;
+          const e: WireEvent = { event, data: env.data };
+          if (buffer.current) buffer.current.push(e);
+          else dispatch({ t: 'wire', e });
+        })
+      : null;
 
-    // Hydrate: replay the newest persisted run, then flush buffered live events.
     void (async () => {
       try {
-        const r = await fetch('/runs').catch(() => null);
-        const all: RunSummary[] = r?.ok ? ((await r.json()).runs ?? []) : [];
-        setRuns(all);
-        if (all[0]) await replayRun(all[0].id);
+        const r = await fetch(`/runs/${encodeURIComponent(runId)}/events`).catch(() => null);
+        if (cancelled || !r?.ok) return;
+        const { events } = await r.json() as { events: WireEvent[] };
+        if (cancelled) return;
+        for (const e of events) dispatch({ t: 'wire', e });
       } finally {
-        const pending = buffer.current ?? [];
-        buffer.current = null;
-        for (const e of pending) dispatch({ t: 'wire', e });
+        if (!cancelled) {
+          for (const e of buffer.current ?? []) dispatch({ t: 'wire', e });
+          buffer.current = null;
+        }
       }
     })();
 
-    docTimer.current = setInterval(() => {
-      if (modeRef.current.kind === 'live') void refreshDoc();
-    }, 5000);
+    const refreshDoc = async () => {
+      const r = await fetch(`/missiondoc?run=${encodeURIComponent(runId)}`).catch(() => null);
+      if (r?.ok && !cancelled) dispatch({ t: 'missiondoc', doc: (await r.json()).doc });
+    };
+    void refreshDoc();
+    const docTimer = live ? setInterval(refreshDoc, 5000) : null;
 
     return () => {
-      es.close();
-      if (docTimer.current) clearInterval(docTimer.current);
+      cancelled = true;
+      unsub?.();
+      if (docTimer) clearInterval(docTimer);
     };
-  }, [refreshRuns, refreshDoc, replayRun]);
+  }, [runId, live]);
 
-  return { state, runs, mode, viewRun, backToLive };
+  return state;
 }
 
+/** The project list with active runs and pending counts. */
+export function useFleet() {
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [connected, setConnected] = useState(false);
+
+  const refresh = useCallback(async () => {
+    const r = await fetch('/projects').catch(() => null);
+    if (r?.ok) setProjects((await r.json()).projects);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const poll = setInterval(refresh, 3000);
+    const unsubSse = onSse((event) => {
+      if (['run_started', 'run_finished', 'permission_request', 'permission_resolved',
+        'question', 'question_answered'].includes(event)) void refresh();
+    });
+    const unsubConn = onConnection((up) => {
+      setConnected(up);
+      if (up) void refresh();
+    });
+    return () => {
+      clearInterval(poll);
+      unsubSse();
+      unsubConn();
+    };
+  }, [refresh]);
+
+  return { projects, connected, refresh };
+}
+
+/** Persisted run history for one project, newest first. */
+export function useRunHistory(projectId: string) {
+  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const refresh = useCallback(async () => {
+    const r = await fetch(`/runs?projectId=${encodeURIComponent(projectId)}`).catch(() => null);
+    if (r?.ok) setRuns((await r.json()).runs);
+  }, [projectId]);
+  useEffect(() => {
+    void refresh();
+    const unsub = onSse((event, env) => {
+      if (env.projectId === projectId && (event === 'run_started' || event === 'run_finished')) {
+        void refresh();
+      }
+    });
+    return unsub;
+  }, [projectId, refresh]);
+  return runs;
+}
+
+/** Hash router: '#/' → fleet, '#/p/<projectId>' → project view. */
+export function useRoute(): { projectId: string | null; go: (projectId: string | null) => void } {
+  const parse = () => {
+    const m = window.location.hash.match(/^#\/p\/([^/]+)/);
+    return m ? decodeURIComponent(m[1]) : null;
+  };
+  const [projectId, setProjectId] = useState<string | null>(parse);
+  useEffect(() => {
+    const onHash = () => setProjectId(parse());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  const go = useCallback((id: string | null) => {
+    window.location.hash = id ? `#/p/${encodeURIComponent(id)}` : '#/';
+  }, []);
+  return { projectId, go };
+}
+
+// ---------------------------------------------------------------------------
+// API client
+// ---------------------------------------------------------------------------
+
+const post = (url: string, body: unknown) =>
+  fetch(url, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
 export const api = {
-  run: (folder: string, mission: string, budgetUsd: number) =>
-    fetch('/run', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ folder, mission, budgetUsd }),
-    }),
+  linkProject: (folder: string, name?: string) => post('/projects', { folder, name }),
+  unlinkProject: (projectId: string) =>
+    fetch(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
+  run: (projectId: string, mission: string, budgetUsd: number) =>
+    post('/run', { projectId, mission, budgetUsd }),
   permission: (id: string, behavior: 'allow' | 'allow_always' | 'deny', message?: string) =>
-    fetch('/permission', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, behavior, message }),
-    }),
-  answer: (id: string, text: string) =>
-    fetch('/answer', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, text }),
-    }),
-  interrupt: () => fetch('/interrupt', { method: 'POST' }),
+    post('/permission', { id, behavior, message }),
+  answer: (id: string, text: string) => post('/answer', { id, text }),
+  interrupt: (runId: string) => post('/interrupt', { runId }),
   browse: (path?: string) =>
     fetch('/browse' + (path ? `?path=${encodeURIComponent(path)}` : '')),
 };

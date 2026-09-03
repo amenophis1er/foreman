@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { api, type State } from '../state';
+import { api, type RunView } from '../state';
 import { Button, Card, Empty, SectionTitle } from '../design/ui';
 
-function Approvals({ s }: { s: State }) {
+function Approvals({ s }: { s: RunView }) {
   return (
     <section>
       <SectionTitle>Approvals</SectionTitle>
@@ -32,7 +32,7 @@ function Approvals({ s }: { s: State }) {
   );
 }
 
-function Questions({ s }: { s: State }) {
+function Questions({ s }: { s: RunView }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   return (
     <section>
@@ -65,7 +65,7 @@ function parsePlan(doc: string): { text: string; done: boolean }[] {
     .map((m) => ({ done: m[1] !== ' ', text: m[2].trim() }));
 }
 
-function PlanBoard({ s }: { s: State }) {
+function PlanBoard({ s }: { s: RunView }) {
   const [raw, setRaw] = useState(false);
   const doc = s.missionDoc;
   const items = doc ? parsePlan(doc) : [];
@@ -110,7 +110,7 @@ function PlanBoard({ s }: { s: State }) {
   );
 }
 
-export function RightPanel({ s }: { s: State }) {
+export function RightPanel({ s }: { s: RunView }) {
   return (
     <div style={{
       padding: 'var(--sp-3)', overflowY: 'auto', display: 'flex',

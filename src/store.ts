@@ -21,7 +21,7 @@ import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { ForemanEvent, RunMeta, RunSummary } from './types.js';
+import type { ForemanEvent, Project, RunMeta, RunSummary } from './types.js';
 
 const RUN_ID_RE = /^[0-9]{13}-[0-9a-f]{8}$/;
 
@@ -31,13 +31,79 @@ export function newRunId(now = Date.now()): string {
 }
 
 export class RunStore {
+  private readonly root: string;
   private readonly runsDir: string;
   /** Serializes appends per run so event order matches emit order. */
   private appendChains = new Map<string, Promise<void>>();
+  /** Serializes projects.json rewrites. */
+  private projectsChain: Promise<unknown> = Promise.resolve();
 
   constructor(root: string = path.join(os.homedir(), '.foreman')) {
+    this.root = root;
     this.runsDir = path.join(root, 'runs');
   }
+
+  // -- projects -------------------------------------------------------------
+
+  private get projectsFile(): string {
+    return path.join(this.root, 'projects.json');
+  }
+
+  async listProjects(): Promise<Project[]> {
+    const raw = await readFile(this.projectsFile, 'utf8').catch(() => null);
+    if (!raw) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as Project[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Atomically rewrites projects.json through `mutate`; returns its result. */
+  private mutateProjects<T>(mutate: (projects: Project[]) => { projects: Project[]; result: T }): Promise<T> {
+    const task = this.projectsChain.then(async () => {
+      const { projects, result } = mutate(await this.listProjects());
+      await mkdir(this.root, { recursive: true });
+      const tmp = path.join(this.root, `.projects.${crypto.randomBytes(4).toString('hex')}.tmp`);
+      await writeFile(tmp, JSON.stringify(projects, null, 2));
+      await rename(tmp, this.projectsFile);
+      return result;
+    });
+    this.projectsChain = task.catch(() => {});
+    return task;
+  }
+
+  /** Links a folder as a project. Re-linking an already-linked folder returns
+   *  the existing project instead of duplicating it. */
+  addProject(folder: string, name?: string): Promise<Project> {
+    return this.mutateProjects((projects) => {
+      const existing = projects.find((p) => p.folder === folder);
+      if (existing) return { projects, result: existing };
+      const project: Project = {
+        id: `p-${crypto.randomBytes(6).toString('hex')}`,
+        name: name?.trim() || path.basename(folder),
+        folder,
+        createdAt: Date.now(),
+        defaultBudgetUsd: 5,
+      };
+      return { projects: [...projects, project], result: project };
+    });
+  }
+
+  /** Unlinks a project (run history is kept). Returns whether it existed. */
+  removeProject(projectId: string): Promise<boolean> {
+    return this.mutateProjects((projects) => {
+      const rest = projects.filter((p) => p.id !== projectId);
+      return { projects: rest, result: rest.length !== projects.length };
+    });
+  }
+
+  async getProject(projectId: string): Promise<Project | null> {
+    return (await this.listProjects()).find((p) => p.id === projectId) ?? null;
+  }
+
+  // -- runs -----------------------------------------------------------------
 
   private runDir(runId: string): string {
     if (!RUN_ID_RE.test(runId)) throw new Error(`invalid run id: ${runId}`);

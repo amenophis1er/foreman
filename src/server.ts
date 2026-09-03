@@ -1,19 +1,27 @@
 /**
- * Foreman HTTP server — thin wiring between the browser UI, the mission
- * orchestrator, and the run store. No business logic lives here.
+ * Foreman HTTP server — thin wiring between the browser UI, mission
+ * orchestrators, and the run store. No business logic lives here.
+ *
+ * Concurrency model: many projects may each have at most ONE active mission;
+ * missions across projects run concurrently. Every live SSE frame is wrapped
+ * in an envelope `{runId, projectId, data}` so the UI can route it; persisted
+ * event logs keep the bare `{ts, event, data}` shape (the run is implicit in
+ * the file's location).
  *
  * Endpoints:
- *   GET  /                 React app (ui/dist, legacy public/ fallback)
- *   GET  /events           SSE stream of live ForemanEvents
- *   GET  /status           Live run + pending approvals/questions
- *   GET  /runs             Persisted run summaries, newest first
- *   GET  /runs/{id}/events Full event log for replay
- *   GET  /missiondoc       Current run's .foreman/MISSION.md
- *   GET  /browse?path=     Directory listing for the folder picker
- *   POST /run              Start a mission {folder, mission, budgetUsd}
- *   POST /permission       Resolve an approval {id, behavior, message?}
- *   POST /answer           Answer a director question {id, text}
- *   POST /interrupt        Interrupt the active run
+ *   GET    /                     React app (ui/dist, legacy public/ fallback)
+ *   GET    /events               SSE stream (enveloped ForemanEvents)
+ *   GET    /projects             Projects + active-run summaries + pending counts
+ *   POST   /projects             Link a folder {folder, name?}
+ *   DELETE /projects/{id}        Unlink (history kept; active run blocks it)
+ *   POST   /run                  Start a mission {projectId, mission, budgetUsd}
+ *   POST   /permission           Resolve an approval {id, behavior, message?}
+ *   POST   /answer               Answer a director question {id, text}
+ *   POST   /interrupt            Interrupt a run {runId}
+ *   GET    /runs?projectId=      Persisted run summaries, newest first
+ *   GET    /runs/{id}/events     Full event log for replay
+ *   GET    /missiondoc?run=      A run's .foreman/MISSION.md
+ *   GET    /browse?path=         Directory listing for the folder picker
  */
 import http from 'node:http';
 import os from 'node:os';
@@ -30,30 +38,43 @@ const DIST_DIR = path.join(__dirname, '..', 'ui', 'dist');
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 const store = new RunStore(process.env.FOREMAN_HOME);
-let activeRun: MissionRun | null = null;
+/** Active runs, keyed by projectId (at most one per project). */
+const activeByProject = new Map<string, MissionRun>();
 const sseClients = new Set<http.ServerResponse>();
 
-/** Broadcasts to live SSE clients and appends to the run's event log. */
-function makeEmitter(runId: string) {
+function activeRuns(): MissionRun[] {
+  return [...activeByProject.values()];
+}
+
+/** Broadcasts an enveloped frame to live clients and persists the bare event. */
+function makeEmitter(runId: string, projectId: string) {
   return (event: string, data: unknown): void => {
     const evt: ForemanEvent = { ts: Date.now(), event, data };
-    const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    const frame =
+      `event: ${event}\ndata: ${JSON.stringify({ runId, projectId, data })}\n\n`;
     for (const res of sseClients) res.write(frame);
     void store.append(runId, evt);
   };
 }
 
-async function startRun(folder: string, mission: string, budgetUsd: number): Promise<void> {
+async function startRun(projectId: string, folder: string, mission: string, budgetUsd: number):
+  Promise<void> {
   const meta: RunMeta = {
     id: newRunId(),
+    projectId,
     folder, mission, budgetUsd,
     status: 'running', costUsd: 0,
     createdAt: Date.now(), workers: [],
   };
   await store.createRun(meta);
-  const run = new MissionRun(meta, makeEmitter(meta.id), (m) => void store.writeMeta(m));
-  activeRun = run;
-  await run.start();
+  const run = new MissionRun(meta, makeEmitter(meta.id, projectId), (m) => void store.writeMeta(m));
+  activeByProject.set(projectId, run);
+  try {
+    await run.start();
+  } finally {
+    // Only clear if this run is still the project's active one.
+    if (activeByProject.get(projectId) === run) activeByProject.delete(projectId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +127,7 @@ function json(res: http.ServerResponse, code: number, body: unknown): void {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
   const runEventsMatch = url.pathname.match(/^\/runs\/([^/]+)\/events$/);
+  const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
 
   try {
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/assets/'))) {
@@ -121,56 +143,90 @@ const server = http.createServer(async (req, res) => {
       sseClients.add(res);
       req.on('close', () => sseClients.delete(res));
 
-    } else if (req.method === 'GET' && url.pathname === '/runs') {
-      json(res, 200, { runs: await store.listRuns() });
+    } else if (req.method === 'GET' && url.pathname === '/projects') {
+      const projects = await store.listProjects();
+      json(res, 200, {
+        projects: projects.map((p) => {
+          const run = activeByProject.get(p.id);
+          return {
+            ...p,
+            activeRun: run ? { ...run.meta } : null,
+            pendingPermissions: run?.pendingPermissionIds.length ?? 0,
+            pendingQuestions: run?.pendingQuestionIds.length ?? 0,
+          };
+        }),
+      });
 
-    } else if (req.method === 'GET' && runEventsMatch) {
-      const events = await store.readEvents(runEventsMatch[1]).catch(() => null);
-      if (!events) return json(res, 404, { error: 'unknown run' });
-      json(res, 200, { events });
-
-    } else if (req.method === 'POST' && url.pathname === '/run') {
-      if (activeRun?.meta.status === 'running') {
-        return json(res, 409, { error: 'a run is already active' });
-      }
-      const { folder, mission, budgetUsd } = await readBody(req);
-      if (typeof folder !== 'string' || typeof mission !== 'string' || !folder || !mission) {
-        return json(res, 400, { error: 'folder and mission are required' });
-      }
-      if (!path.isAbsolute(folder)) {
-        return json(res, 400, { error: `folder must be an absolute path: ${folder}` });
-      }
+    } else if (req.method === 'POST' && url.pathname === '/projects') {
+      const { folder, name } = await readBody(req);
+      if (typeof folder !== 'string' || !folder) return json(res, 400, { error: 'folder is required' });
+      if (!path.isAbsolute(folder)) return json(res, 400, { error: `folder must be an absolute path: ${folder}` });
       const st = await stat(folder).catch(() => null);
       if (st && !st.isDirectory()) return json(res, 400, { error: `not a directory: ${folder}` });
       if (!st) await mkdir(folder, { recursive: true });
-      const budget = Number(budgetUsd) > 0 ? Number(budgetUsd) : 5;
-      void startRun(folder, mission, budget);
+      json(res, 200, { project: await store.addProject(folder, typeof name === 'string' ? name : undefined) });
+
+    } else if (req.method === 'DELETE' && projectMatch) {
+      if (activeByProject.has(projectMatch[1])) {
+        return json(res, 409, { error: 'project has an active mission' });
+      }
+      const removed = await store.removeProject(projectMatch[1]);
+      json(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'unknown project' });
+
+    } else if (req.method === 'POST' && url.pathname === '/run') {
+      const { projectId, mission, budgetUsd } = await readBody(req);
+      if (typeof projectId !== 'string' || typeof mission !== 'string' || !mission.trim()) {
+        return json(res, 400, { error: 'projectId and mission are required' });
+      }
+      const project = await store.getProject(projectId);
+      if (!project) return json(res, 404, { error: 'unknown project' });
+      if (activeByProject.has(projectId)) {
+        return json(res, 409, { error: 'this project already has an active mission' });
+      }
+      await mkdir(project.folder, { recursive: true });
+      const budget = Number(budgetUsd) > 0 ? Number(budgetUsd) : project.defaultBudgetUsd;
+      void startRun(projectId, project.folder, mission, budget);
       json(res, 200, { ok: true });
 
     } else if (req.method === 'POST' && url.pathname === '/permission') {
       const { id, behavior, message } = await readBody(req);
       const valid = behavior === 'allow' || behavior === 'allow_always' || behavior === 'deny';
       if (typeof id !== 'string' || !valid) return json(res, 400, { error: 'invalid request' });
-      const ok = activeRun?.resolvePermission(id, behavior, message as string | undefined);
+      // Approval ids are globally unique (tool-use ids); find the owning run.
+      const ok = activeRuns().some((r) =>
+        r.resolvePermission(id, behavior, message as string | undefined));
       if (!ok) return json(res, 404, { error: 'no pending permission with that id' });
       json(res, 200, { ok: true });
 
     } else if (req.method === 'POST' && url.pathname === '/answer') {
       const { id, text } = await readBody(req);
       if (typeof id !== 'string') return json(res, 400, { error: 'invalid request' });
-      const ok = activeRun?.answerQuestion(id, String(text ?? ''));
+      const ok = activeRuns().some((r) => r.answerQuestion(id, String(text ?? '')));
       if (!ok) return json(res, 404, { error: 'no pending question with that id' });
       json(res, 200, { ok: true });
 
     } else if (req.method === 'POST' && url.pathname === '/interrupt') {
-      if (activeRun?.meta.status !== 'running') return json(res, 409, { error: 'no active run' });
-      await activeRun.interrupt();
+      const { runId } = await readBody(req);
+      const run = activeRuns().find((r) => r.meta.id === runId);
+      if (!run) return json(res, 404, { error: 'no active run with that id' });
+      await run.interrupt();
       json(res, 200, { ok: true });
+
+    } else if (req.method === 'GET' && url.pathname === '/runs') {
+      const projectId = url.searchParams.get('projectId');
+      const runs = await store.listRuns();
+      json(res, 200, { runs: projectId ? runs.filter((r) => r.projectId === projectId) : runs });
+
+    } else if (req.method === 'GET' && runEventsMatch) {
+      const events = await store.readEvents(runEventsMatch[1]).catch(() => null);
+      if (!events) return json(res, 404, { error: 'unknown run' });
+      json(res, 200, { events });
 
     } else if (req.method === 'GET' && url.pathname === '/missiondoc') {
       const runId = url.searchParams.get('run');
-      const meta = runId ? await store.readMeta(runId) : activeRun?.meta;
-      if (!meta) return json(res, 404, { error: 'no run' });
+      if (!runId) return json(res, 400, { error: 'run parameter is required' });
+      const meta = await store.readMeta(runId);
+      if (!meta) return json(res, 404, { error: 'unknown run' });
       const doc = await readFile(path.join(meta.folder, '.foreman', 'MISSION.md'), 'utf8')
         .catch(() => null);
       json(res, 200, { doc });
@@ -187,13 +243,6 @@ const server = http.createServer(async (req, res) => {
         .sort((a, b) => a.localeCompare(b));
       const parent = path.dirname(dir);
       json(res, 200, { path: dir, parent: parent === dir ? null : parent, dirs });
-
-    } else if (req.method === 'GET' && url.pathname === '/status') {
-      json(res, 200, {
-        run: activeRun?.meta ?? null,
-        pendingPermissions: activeRun?.pendingPermissionIds ?? [],
-        pendingQuestions: activeRun?.pendingQuestionIds ?? [],
-      });
 
     } else {
       json(res, 404, { error: 'not found' });

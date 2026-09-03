@@ -1,12 +1,12 @@
 import { useEffect, useRef } from 'react';
-import type { State } from '../state';
+import type { RunView } from '../state';
 import { Card, Empty, agentColor } from '../design/ui';
 
 const KIND_COLOR: Record<string, string | undefined> = {
   error: 'var(--status-critical)',
 };
 
-export function Transcript({ s, filter }: { s: State; filter: string | null }) {
+export function Transcript({ s, filter }: { s: RunView; filter: string | null }) {
   const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
 
