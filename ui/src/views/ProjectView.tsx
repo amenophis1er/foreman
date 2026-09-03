@@ -69,6 +69,7 @@ export function ProjectView({ p, models, onBack, refreshFleet, theme, onToggleTh
   const selectedRun = history.find((r) => r.id === selectedRunId);
   const [filter, setFilter] = useState<string | null>(null);
   const [resuming, setResuming] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(true);
   const [headerErr, setHeaderErr] = useState('');
   const [composerErr, setComposerErr] = useState('');
   const [starting, setStarting] = useState(false);
@@ -162,14 +163,34 @@ export function ProjectView({ p, models, onBack, refreshFleet, theme, onToggleTh
                 padding: 'var(--sp-3) var(--sp-3) 0', display: 'flex',
                 flexDirection: 'column', gap: 'var(--sp-2)', flex: '0 0 auto',
               }}>
-                {run.entries.length > 0 && (
-                  <RunTimeline agents={run.agents} entries={run.entries}
-                    live={viewingLive && run.runStatus === 'running'}
-                    selected={filter}
-                    onSelect={(a) => setFilter(filter === a ? null : a)} />
-                )}
                 <AttentionBar approvals={run.approvals.length} questions={run.questions.length}
                   onReview={() => rightRail.current?.scrollIntoView({ behavior: 'smooth' })} />
+                {run.entries.length > 0 && (
+                  <div style={{
+                    background: 'var(--bg-panel)', border: '1px solid var(--line)',
+                    borderRadius: 'var(--r-sm)', padding: '8px 10px',
+                  }}>
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      marginBottom: showTimeline ? 8 : 0, fontSize: 'var(--fs-xs)',
+                      color: 'var(--ink-2)', textTransform: 'uppercase',
+                      letterSpacing: 'var(--ls-caps)',
+                    }}>
+                      Timeline<span style={{ flex: 1 }} />
+                      <Button variant="ghost" size="sm"
+                        icon={showTimeline ? 'chevronDown' : 'chevronRight'}
+                        onClick={() => setShowTimeline(!showTimeline)}>
+                        {showTimeline ? 'Hide' : 'Show'}
+                      </Button>
+                    </div>
+                    {showTimeline && (
+                      <RunTimeline agents={run.agents} entries={run.entries}
+                        live={viewingLive && run.runStatus === 'running'}
+                        selected={filter}
+                        onSelect={(a) => setFilter(filter === a ? null : a)} />
+                    )}
+                  </div>
+                )}
               </div>
             )}
             <Transcript run={run} filter={filter} />
