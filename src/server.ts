@@ -1,7 +1,8 @@
 // Foreman phase-1 spike: one SDK worker in a chosen folder, transcript streamed
 // to a minimal UI over SSE, canUseTool routed to approve/deny cards.
 import http from 'node:http';
-import { readFile, stat } from 'node:fs/promises';
+import os from 'node:os';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -149,6 +150,18 @@ const server = http.createServer(async (req, res) => {
       if (!run || run.status !== 'running') return json(res, 409, { error: 'no active run' });
       await run.q.interrupt();
       json(res, 200, { ok: true });
+    } else if (req.method === 'GET' && url.pathname === '/browse') {
+      const requested = url.searchParams.get('path') || os.homedir();
+      const dir = path.resolve(requested);
+      const st = await stat(dir).catch(() => null);
+      if (!st?.isDirectory()) return json(res, 400, { error: `not a directory: ${dir}` });
+      const entries = await readdir(dir, { withFileTypes: true });
+      const dirs = entries
+        .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+        .map((e) => e.name)
+        .sort((a, b) => a.localeCompare(b));
+      const parent = path.dirname(dir);
+      json(res, 200, { path: dir, parent: parent === dir ? null : parent, dirs });
     } else if (req.method === 'GET' && url.pathname === '/status') {
       json(res, 200, {
         run: run

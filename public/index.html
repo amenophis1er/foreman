@@ -31,12 +31,21 @@
   .card button.allow { background: #3f7a4b; border-color: #3f7a4b; }
   .card button.deny { background: #7a3f3f; border-color: #7a3f3f; }
   .empty { color: #6b7280; font-size: 12.5px; }
+  #picker { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 10; }
+  #picker.open { display: flex; }
+  #picker .panel { width: 480px; max-height: 70vh; display: flex; flex-direction: column; background: #1c1f24; border: 1px solid #3a4048; border-radius: 10px; overflow: hidden; }
+  #picker .path { padding: 10px 12px; font: 12px ui-monospace, monospace; color: #e8b04b; background: #181b1f; border-bottom: 1px solid #2c313a; word-break: break-all; }
+  #picker .list { overflow-y: auto; flex: 1; }
+  #picker .list button { display: block; width: 100%; text-align: left; background: none; border: none; border-radius: 0; padding: 7px 12px; color: #e6e3da; }
+  #picker .list button:hover { background: #23272e; }
+  #picker .foot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid #2c313a; justify-content: flex-end; }
 </style>
 </head>
 <body>
 <header>
   <h1>Foreman</h1>
   <input id="folder" placeholder="/absolute/path/to/folder">
+  <button id="browse" title="Browse folders">📁</button>
   <textarea id="mission" placeholder="Mission…"></textarea>
   <button class="primary" id="start">Start</button>
   <button id="interrupt">Interrupt</button>
@@ -49,6 +58,16 @@
     <div id="cards"><div class="empty">No pending approvals.</div></div>
   </div>
 </main>
+<div id="picker">
+  <div class="panel">
+    <div class="path" id="picker-path"></div>
+    <div class="list" id="picker-list"></div>
+    <div class="foot">
+      <button id="picker-cancel">Cancel</button>
+      <button class="primary" id="picker-select">Select this folder</button>
+    </div>
+  </div>
+</div>
 <script>
 const $ = (id) => document.getElementById(id);
 const transcript = $('transcript'), cards = $('cards');
@@ -112,6 +131,42 @@ async function respond(id, behavior) {
   await fetch('/permission', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id, behavior }) });
 }
+
+let pickerPath = null;
+async function loadPicker(p) {
+  const r = await fetch('/browse' + (p ? '?path=' + encodeURIComponent(p) : ''));
+  const d = await r.json();
+  if (!r.ok) { alert(d.error); return; }
+  pickerPath = d.path;
+  $('picker-path').textContent = d.path;
+  const list = $('picker-list');
+  list.innerHTML = '';
+  if (d.parent) {
+    const up = document.createElement('button');
+    up.textContent = '⬑ ..';
+    up.onclick = () => loadPicker(d.parent);
+    list.append(up);
+  }
+  for (const name of d.dirs) {
+    const b = document.createElement('button');
+    b.textContent = '📁 ' + name;
+    b.onclick = () => loadPicker(d.path + (d.path.endsWith('/') ? '' : '/') + name);
+    list.append(b);
+  }
+  if (!d.dirs.length) {
+    const e = document.createElement('div');
+    e.className = 'empty'; e.style.padding = '10px 12px';
+    e.textContent = 'No subfolders.';
+    list.append(e);
+  }
+}
+$('browse').onclick = () => { $('picker').classList.add('open'); loadPicker($('folder').value.trim() || null); };
+$('picker-cancel').onclick = () => $('picker').classList.remove('open');
+$('picker').onclick = (e) => { if (e.target === $('picker')) $('picker').classList.remove('open'); };
+$('picker-select').onclick = () => {
+  if (pickerPath) $('folder').value = pickerPath;
+  $('picker').classList.remove('open');
+};
 
 $('start').onclick = async () => {
   transcript.innerHTML = ''; $('cost').textContent = ''; $('session').textContent = '';
