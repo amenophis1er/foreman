@@ -351,4 +351,6 @@ export const api = {
   interrupt: (runId: string) => post('/interrupt', { runId }),
   browse: (path?: string) =>
     fetch('/browse' + (path ? `?path=${encodeURIComponent(path)}` : '')),
+  mkdir: (parent: string, name: string) => post('/mkdir', { parent, name }),
+  locate: (name: string) => fetch(`/locate?name=${encodeURIComponent(name)}`),
 };
