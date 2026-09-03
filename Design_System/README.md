@@ -91,6 +91,21 @@ Header always: "← Fleet" back button, project name + mono folder, then (when a
 - **Interrupted / error (+ Resume)** — `07-project-interrupted-resume.jpg`. Read-only banner "◷ Viewing a past run (read-only)" under header; error entries in transcript; header shows ✕ error badge, ⟳ Resume, New mission.
 - **History replay** — same layout as live, driven by the identical event-replay path; banner shown; approvals/questions sections render empty (cleared on run_finished).
 
+### 3.3b States added after the screenshots (no captures; behavior below)
+
+- **Picker: ＋ New folder** — footer button toggles an inline name input +
+  Create (Enter submits); creation navigates into the new folder ready to
+  select; validation errors (traversal, hidden names) show inline in
+  critical color.
+- **Fleet: drag-and-drop linking** — dragging a folder over the fleet shows
+  a full-view gold dashed drop overlay ("Drop a folder to link it").
+  Dropping opens a confirm modal: since browsers expose only the dropped
+  folder's *name*, the server searches `$HOME` and the modal lists candidate
+  absolute paths (mono), with searching / no-match states. Picking one links
+  and opens the project.
+- **Resume button states** — disabled "⟳ Resuming…" while in flight; server
+  rejections (409s) surface inline in the project header in critical color.
+
 ### 3.4 Global behaviors
 - One SSE connection; frames enveloped `{runId, projectId, data}`; fleet polls `/projects` every 3s and eagerly on relevant events.
 - Hash routing; refresh-safe (state hydrates by replaying the run's persisted event log through the same reducer as live).
@@ -109,7 +124,25 @@ Header always: "← Fleet" back button, project name + mono folder, then (when a
 9. Composer has no mission templates/snippets and no draft persistence.
 10. Mobile/narrow layouts unconsidered (3-column grid is fixed-width rails).
 
-## 5. Non-negotiables for any rehaul
+## 5. Template opportunities (design ahead of implementation)
+
+The rehaul is welcome to design these now; backend hooks are trivial to add:
+
+- **Mission templates in the composer** — reusable briefs with placeholders
+  (e.g. "Bug fix", "Add tests", "Refactor X", "Audit"), each pre-setting
+  budget + director/worker models. Suggested shape: a template picker row
+  above the textarea; templates stored per-project with global defaults;
+  "save current brief as template" affordance. Pairs with a future
+  "Trust this run" pre-grant toggle (roadmapped) that templates could carry.
+- **Project card templates/presets** — per-project defaults surfaced at link
+  time (default budget, models, trusted tools) so the composer opens
+  pre-configured.
+- **Component templates for the design system itself** — if you introduce a
+  component library layer, the primitives in §2 plus the local view
+  components (approval card, question card, plan row, run row, drop-confirm
+  modal) are the complete set to formalize; nothing else exists.
+
+## 6. Non-negotiables for any rehaul
 
 - Status is never color-alone (icon + label stay).
 - Identity colors follow the entity (director gold / workers violet may be
