@@ -48,10 +48,15 @@ Foreman lives at `~/Projects/personal/foreman`, serving `http://localhost:4177`.
    A 409 means this project already has an active mission — report that and
    still open the dashboard.
 
-6. **Open the dashboard** on the project and report:
+6. **Open the dashboard and hand off.** Auto-open the project view
+   (ignore failure — e.g. over SSH):
    ```bash
-   open "http://localhost:4177/#/p/<projectId>"
+   open "http://localhost:4177/#/p/<projectId>" 2>/dev/null || true
    ```
-   Tell the user: the mission is running under a $N budget; approvals and
-   director questions will appear in the dashboard (they wait indefinitely —
-   nothing expires); this terminal session is free for other work.
+   Then ALWAYS print the control URL verbatim in your final message — it is
+   the single place to approve tools and answer the director's questions:
+
+   > Mission running under a $N budget.
+   > **Control it here: http://localhost:4177/#/p/<projectId>**
+   > Approvals and questions wait there indefinitely (nothing expires);
+   > this terminal session is free for other work.
