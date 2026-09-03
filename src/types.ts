@@ -42,11 +42,20 @@ export interface WorkerMeta {
   task: string;
 }
 
+/** Model choice for an agent; `undefined` inherits the harness default. */
+export type ModelChoice = 'opus' | 'sonnet' | 'haiku' | undefined;
+
 /** Persisted run metadata (meta.json). Small, rewritten atomically on change. */
 export interface RunMeta {
   id: string;
   /** Owning project; absent on runs recorded before projects existed. */
   projectId?: string;
+  /** Model override for the director session. */
+  directorModel?: ModelChoice;
+  /** Model override for worker sessions (cost lever). */
+  workerModel?: ModelChoice;
+  /** Number of times this run was resumed after an interruption. */
+  resumes?: number;
   folder: string;
   mission: string;
   budgetUsd: number;

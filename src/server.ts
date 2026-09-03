@@ -30,7 +30,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MissionRun } from './orchestrator.js';
 import { RunStore, newRunId } from './store.js';
-import type { ForemanEvent, RunMeta } from './types.js';
+import type { ForemanEvent, ModelChoice, RunMeta } from './types.js';
+
+/** Parses a model choice from a request body; unknown values become inherit. */
+function modelChoice(v: unknown): ModelChoice {
+  return v === 'opus' || v === 'sonnet' || v === 'haiku' ? v : undefined;
+}
 
 const PORT = Number(process.env.PORT ?? 4177);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -57,20 +62,37 @@ function makeEmitter(runId: string, projectId: string) {
   };
 }
 
-async function startRun(projectId: string, folder: string, mission: string, budgetUsd: number):
-  Promise<void> {
+async function startRun(
+  projectId: string, folder: string, mission: string, budgetUsd: number,
+  directorModel: ModelChoice, workerModel: ModelChoice,
+): Promise<void> {
   const meta: RunMeta = {
     id: newRunId(),
     projectId,
     folder, mission, budgetUsd,
+    directorModel, workerModel,
     status: 'running', costUsd: 0,
     createdAt: Date.now(), workers: [],
   };
   await store.createRun(meta);
+  await driveRun(projectId, meta);
+}
+
+/** Resumes an interrupted run by restoring the director's session. */
+async function resumeRun(projectId: string, meta: RunMeta): Promise<void> {
+  const sessionId = meta.directorSessionId;
+  meta.status = 'running';
+  meta.endedAt = undefined;
+  meta.resumes = (meta.resumes ?? 0) + 1;
+  await store.writeMeta(meta);
+  await driveRun(projectId, meta, sessionId);
+}
+
+async function driveRun(projectId: string, meta: RunMeta, resumeSessionId?: string): Promise<void> {
   const run = new MissionRun(meta, makeEmitter(meta.id, projectId), (m) => void store.writeMeta(m));
   activeByProject.set(projectId, run);
   try {
-    await run.start();
+    await run.start(resumeSessionId);
   } finally {
     // Only clear if this run is still the project's active one.
     if (activeByProject.get(projectId) === run) activeByProject.delete(projectId);
@@ -127,6 +149,7 @@ function json(res: http.ServerResponse, code: number, body: unknown): void {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
   const runEventsMatch = url.pathname.match(/^\/runs\/([^/]+)\/events$/);
+  const runResumeMatch = url.pathname.match(/^\/runs\/([^/]+)\/resume$/);
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
 
   try {
@@ -174,7 +197,7 @@ const server = http.createServer(async (req, res) => {
       json(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'unknown project' });
 
     } else if (req.method === 'POST' && url.pathname === '/run') {
-      const { projectId, mission, budgetUsd } = await readBody(req);
+      const { projectId, mission, budgetUsd, directorModel, workerModel } = await readBody(req);
       if (typeof projectId !== 'string' || typeof mission !== 'string' || !mission.trim()) {
         return json(res, 400, { error: 'projectId and mission are required' });
       }
@@ -185,7 +208,8 @@ const server = http.createServer(async (req, res) => {
       }
       await mkdir(project.folder, { recursive: true });
       const budget = Number(budgetUsd) > 0 ? Number(budgetUsd) : project.defaultBudgetUsd;
-      void startRun(projectId, project.folder, mission, budget);
+      void startRun(projectId, project.folder, mission, budget,
+        modelChoice(directorModel), modelChoice(workerModel));
       json(res, 200, { ok: true });
 
     } else if (req.method === 'POST' && url.pathname === '/permission') {
@@ -216,6 +240,24 @@ const server = http.createServer(async (req, res) => {
       const projectId = url.searchParams.get('projectId');
       const runs = await store.listRuns();
       json(res, 200, { runs: projectId ? runs.filter((r) => r.projectId === projectId) : runs });
+
+    } else if (req.method === 'POST' && runResumeMatch) {
+      const meta = await store.readMeta(runResumeMatch[1]);
+      if (!meta) return json(res, 404, { error: 'unknown run' });
+      if (meta.status === 'running' || meta.status === 'done') {
+        return json(res, 409, { error: `run is ${meta.status}; only interrupted or failed runs can resume` });
+      }
+      if (!meta.projectId || !(await store.getProject(meta.projectId))) {
+        return json(res, 409, { error: 'run has no linked project' });
+      }
+      if (activeByProject.has(meta.projectId)) {
+        return json(res, 409, { error: 'this project already has an active mission' });
+      }
+      if (!meta.directorSessionId) {
+        return json(res, 409, { error: 'run has no director session to resume' });
+      }
+      void resumeRun(meta.projectId, meta);
+      json(res, 200, { ok: true });
 
     } else if (req.method === 'GET' && runEventsMatch) {
       const events = await store.readEvents(runEventsMatch[1]).catch(() => null);

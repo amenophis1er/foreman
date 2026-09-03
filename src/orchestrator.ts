@@ -129,28 +129,42 @@ export class MissionRun {
 
   // -- lifecycle ------------------------------------------------------------
 
-  /** Runs the mission to completion. Resolves when the director ends. */
-  async start(): Promise<void> {
+  /**
+   * Runs the mission to completion. Resolves when the director ends.
+   * With `resumeSessionId`, the director session is resumed with its prior
+   * context and instructed to re-verify state against MISSION.md first.
+   */
+  async start(resumeSessionId?: string): Promise<void> {
     // The mission doc directory ignores itself so missions never pollute
     // `git status` in real repositories.
     const foremanDir = path.join(this.meta.folder, '.foreman');
     await mkdir(foremanDir, { recursive: true });
     await writeFile(path.join(foremanDir, '.gitignore'), '*\n').catch(() => {});
 
-    this.emit('run_started', {
+    this.emit(resumeSessionId ? 'run_resumed' : 'run_started', {
       runId: this.meta.id,
       folder: this.meta.folder,
       mission: this.meta.mission,
       budgetUsd: this.meta.budgetUsd,
+      costUsd: this.meta.costUsd,
     });
 
+    const prompt = resumeSessionId
+      ? 'This mission was interrupted (process restart or crash) and is now being resumed. ' +
+        'Do not trust your memory of progress: re-read .foreman/MISSION.md, inspect the ' +
+        'working directory, and verify which milestones are actually complete. Update the ' +
+        'doc to match reality, then continue the mission to DONE WHEN. ' +
+        `Budget note: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)} is already spent.`
+      : `MISSION: ${this.meta.mission}\n\nBudget: $${this.meta.budgetUsd.toFixed(2)} total for this run. ` +
+        `Working directory: ${this.meta.folder}. Begin by writing .foreman/MISSION.md, then execute the plan.`;
+
     const q = query({
-      prompt:
-        `MISSION: ${this.meta.mission}\n\nBudget: $${this.meta.budgetUsd.toFixed(2)} total for this run. ` +
-        `Working directory: ${this.meta.folder}. Begin by writing .foreman/MISSION.md, then execute the plan.`,
+      prompt,
       options: {
         cwd: this.meta.folder,
         permissionMode: 'default',
+        resume: resumeSessionId,
+        model: this.meta.directorModel,
         maxTurns: 150,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: DIRECTOR_CHARTER },
         mcpServers: { foreman: this.makeTools() },
@@ -234,6 +248,7 @@ export class MissionRun {
         cwd: this.meta.folder,
         permissionMode: 'default',
         resume: resumeSessionId,
+        model: this.meta.workerModel,
         maxTurns: 60,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: WORKER_CHARTER },
         canUseTool: this.policyFor(workerId),

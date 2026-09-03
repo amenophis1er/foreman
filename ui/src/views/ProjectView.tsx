@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   api, useRunHistory, useRunView,
-  type ProjectSummary, type RunSummary,
+  type ModelChoice, type ProjectSummary, type RunSummary,
 } from '../state';
 import { Button, BudgetMeter, Empty, SectionTitle, StatusBadge } from '../design/ui';
 import { AgentTree } from './AgentTree';
@@ -9,16 +9,44 @@ import { Transcript } from './Transcript';
 import { RightPanel } from './RightPanel';
 
 /** Full-width mission composer, shown when the project has no active run. */
+const MODEL_OPTIONS: { value: ModelChoice; label: string }[] = [
+  { value: '', label: 'default' },
+  { value: 'opus', label: 'opus' },
+  { value: 'sonnet', label: 'sonnet' },
+  { value: 'haiku', label: 'haiku' },
+];
+
+function ModelSelect({ label, value, onChange, hint }: {
+  label: string; value: ModelChoice; onChange: (m: ModelChoice) => void; hint: string;
+}) {
+  return (
+    <label title={hint}
+      style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--ink-1)', fontSize: 'var(--fs-sm)' }}>
+      {label}
+      <select value={value} onChange={(e) => onChange(e.target.value as ModelChoice)}
+        style={{
+          background: 'var(--bg-card)', border: '1px solid var(--line-strong)',
+          borderRadius: 'var(--r-sm)', padding: '6px 9px', color: 'var(--ink-0)',
+        }}>
+        {MODEL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    </label>
+  );
+}
+
 function Composer({ p, onStarted }: { p: ProjectSummary; onStarted: () => void }) {
   const [mission, setMission] = useState('');
   const [budget, setBudget] = useState(p.defaultBudgetUsd);
+  const [directorModel, setDirectorModel] = useState<ModelChoice>('');
+  const [workerModel, setWorkerModel] = useState<ModelChoice>('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
   const start = async () => {
     setErr('');
     setBusy(true);
-    const r = await api.run(p.id, mission.trim(), budget).finally(() => setBusy(false));
+    const r = await api.run(p.id, mission.trim(), budget, directorModel, workerModel)
+      .finally(() => setBusy(false));
     if (!r.ok) setErr((await r.json()).error);
     else onStarted();
   };
@@ -44,7 +72,7 @@ function Composer({ p, onStarted }: { p: ProjectSummary; onStarted: () => void }
           borderRadius: 'var(--r-md)', padding: 'var(--sp-3)', color: 'var(--ink-0)',
           lineHeight: 1.55,
         }} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--ink-1)', fontSize: 'var(--fs-sm)' }}>
           Budget $
           <input type="number" min={1} value={budget}
@@ -54,6 +82,10 @@ function Composer({ p, onStarted }: { p: ProjectSummary; onStarted: () => void }
               borderRadius: 'var(--r-sm)', padding: '6px 9px', color: 'var(--ink-0)',
             }} />
         </label>
+        <ModelSelect label="Director" value={directorModel} onChange={setDirectorModel}
+          hint="Model for the director (planning, verification). Default inherits your Claude Code default." />
+        <ModelSelect label="Workers" value={workerModel} onChange={setWorkerModel}
+          hint="Model for workers (implementation). Pick sonnet or haiku to cut cost." />
         <Button variant="primary" disabled={busy || !mission.trim()} onClick={start}>
           Start mission
         </Button>
@@ -108,6 +140,7 @@ export function ProjectView({ p, onBack, refreshFleet }: {
 
   const viewingLive = selectedRunId !== null && selectedRunId === activeRunId;
   const run = useRunView(selectedRunId, viewingLive);
+  const selectedRun = history.find((r) => r.id === selectedRunId);
   const [agentFilter, setAgentFilter] = useState<string | null>(null);
 
   const showComposer = !activeRunId && selectedRunId === null;
@@ -131,6 +164,14 @@ export function ProjectView({ p, onBack, refreshFleet }: {
           {selectedRunId && <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} />}
           {viewingLive && run.runStatus === 'running' && (
             <Button variant="danger" onClick={() => void api.interrupt(selectedRunId!)}>Interrupt</Button>
+          )}
+          {!activeRunId && selectedRunId
+            && (selectedRun?.status === 'interrupted' || selectedRun?.status === 'error')
+            && selectedRun?.directorSessionId && (
+            <Button variant="good" title="Restore the director's session and continue this mission"
+              onClick={() => { void api.resume(selectedRunId!).then(refreshFleet); }}>
+              ⟳ Resume
+            </Button>
           )}
           {!activeRunId && selectedRunId && (
             <Button variant="primary" onClick={() => setSelectedRunId(null)}>New mission</Button>

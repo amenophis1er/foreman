@@ -31,10 +31,14 @@ export type Approval = {
 export type Question = { id: string; question: string };
 export type AgentInfo = { id: string; status: Status; task?: string };
 
+export type ModelChoice = 'opus' | 'sonnet' | 'haiku' | '';
+
 export type RunSummary = {
   id: string; projectId?: string; folder: string; mission: string;
   budgetUsd: number; status: Status; costUsd: number;
   createdAt: number; endedAt?: number;
+  directorModel?: string; workerModel?: string; resumes?: number;
+  directorSessionId?: string;
 };
 
 export type ProjectSummary = {
@@ -110,6 +114,21 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         runStatus: 'running', mission: d.mission, budgetUsd: d.budgetUsd,
         agents: [{ id: 'director', status: 'running' }],
       };
+    case 'run_resumed': {
+      const others = s.agents.filter((a) => a.id !== 'director');
+      return {
+        ...s,
+        runStatus: 'running',
+        mission: d.mission ?? s.mission,
+        budgetUsd: d.budgetUsd ?? s.budgetUsd,
+        costUsd: d.costUsd ?? s.costUsd,
+        agents: [{ id: 'director', status: 'running' as Status }, ...others],
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'system',
+          title: 'mission resumed', body: 'Director session restored; re-verifying state against MISSION.md.',
+        }],
+      };
+    }
     case 'run_finished':
       return {
         ...s,
@@ -271,7 +290,7 @@ export function useRunHistory(projectId: string) {
   useEffect(() => {
     void refresh();
     const unsub = onSse((event, env) => {
-      if (env.projectId === projectId && (event === 'run_started' || event === 'run_finished')) {
+      if (env.projectId === projectId && (event === 'run_started' || event === 'run_resumed' || event === 'run_finished')) {
         void refresh();
       }
     });
@@ -312,8 +331,15 @@ export const api = {
   linkProject: (folder: string, name?: string) => post('/projects', { folder, name }),
   unlinkProject: (projectId: string) =>
     fetch(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
-  run: (projectId: string, mission: string, budgetUsd: number) =>
-    post('/run', { projectId, mission, budgetUsd }),
+  run: (projectId: string, mission: string, budgetUsd: number,
+    directorModel?: ModelChoice, workerModel?: ModelChoice) =>
+    post('/run', {
+      projectId, mission, budgetUsd,
+      directorModel: directorModel || undefined,
+      workerModel: workerModel || undefined,
+    }),
+  resume: (runId: string) =>
+    post(`/runs/${encodeURIComponent(runId)}/resume`, {}),
   permission: (id: string, behavior: 'allow' | 'allow_always' | 'deny', message?: string) =>
     post('/permission', { id, behavior, message }),
   answer: (id: string, text: string) => post('/answer', { id, text }),
