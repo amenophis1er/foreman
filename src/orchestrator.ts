@@ -18,6 +18,7 @@ import {
   query,
   tool,
   createSdkMcpServer,
+  type McpServerConfig,
   type Query,
   type PermissionResult,
   type SDKMessage,
@@ -39,7 +40,10 @@ directing worker agents. Non-negotiable rules, in priority order:
    directory with: the mission (one line), DONE WHEN (verifiable criteria), a
    plan as a checklist of verifiable milestones, a Log section, and a Decisions
    section. Update it after every milestone — it is the mission's source of
-   truth, not your context window.
+   truth, not your context window. SCALE THE DOC TO THE MISSION: a trivial
+   task deserves a three-line doc (mission, one DONE WHEN, one milestone);
+   never pad small missions with ceremony. The doc's existence is mandatory;
+   its length is not.
 2. DELEGATE IMPLEMENTATION. Use mcp__foreman__spawn_worker to have a worker do
    the building/editing. Give each worker one well-scoped, self-contained task
    with full context (paths, constraints, expected result). Use
@@ -183,7 +187,7 @@ export class MissionRun {
           model: this.meta.directorModel,
           maxTurns: 150,
           systemPrompt: { type: 'preset', preset: 'claude_code', append: DIRECTOR_CHARTER },
-          mcpServers: { foreman: this.makeTools() },
+          mcpServers: { foreman: this.makeTools(), ...this.browserServers() },
           canUseTool: this.policyFor('director'),
         },
       });
@@ -214,6 +218,21 @@ export class MissionRun {
   }
 
   // -- internals ------------------------------------------------------------
+
+  /**
+   * A headless Playwright browser (its own profile — never the user's
+   * Chrome), granted when the mission enabled browser tools.
+   */
+  private browserServers(): Record<string, McpServerConfig> {
+    if (!this.meta.browserTools) return {};
+    return {
+      playwright: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['--no-install', '@playwright/mcp', '--headless', '--isolated'],
+      },
+    };
+  }
 
   private policyFor(agent: string) {
     return makePolicy(agent, this.meta.folder, this.runAllowed, {
@@ -266,6 +285,7 @@ export class MissionRun {
         model: this.meta.workerModel,
         maxTurns: 60,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: WORKER_CHARTER },
+        mcpServers: this.browserServers(),
         canUseTool: this.policyFor(workerId),
       },
     });

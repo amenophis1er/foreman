@@ -8,11 +8,15 @@
  *  2. A fixed allowlist of read-only/reversible tools is auto-allowed.
  *  3. Writes/edits inside the mission's `.foreman/` directory are auto-allowed
  *     (the mission doc is Foreman bookkeeping, not user code).
- *  4. Tools the human granted "always allow" for this run are auto-allowed —
+ *  4. Playwright browser tools (headless, isolated profile) are auto-allowed
+ *     EXCEPT navigation to non-local URLs, which prompts — the browser can
+ *     freely exercise the app under test but going out to the internet is a
+ *     human decision.
+ *  5. Tools the human granted "always allow" for this run are auto-allowed —
  *     but only for routine asks. A rule-forced ask or one carrying a
  *     decisionReason (e.g. a path outside the working directory) always
  *     prompts, so blanket grants never bypass guardrails.
- *  5. Everything else prompts.
+ *  6. Everything else prompts.
  */
 import path from 'node:path';
 import type { CanUseTool, PermissionResult, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
@@ -21,6 +25,30 @@ export const AUTO_ALLOW_TOOLS: ReadonlySet<string> = new Set([
   'Read', 'Glob', 'Grep', 'TodoWrite', 'Task',
   'WebFetch', 'WebSearch', 'NotebookRead', 'ListMcpResources',
 ]);
+
+/** Hostnames the headless browser may navigate to without asking. */
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '0.0.0.0']);
+
+/**
+ * Decides whether a Playwright tool call is silently allowed. Everything is
+ * (clicks, typing, screenshots act on the already-open page) except
+ * navigation to a non-local URL.
+ */
+export function browserToolDecision(
+  toolName: string, input: Record<string, unknown>,
+): 'allow' | 'ask' | null {
+  if (!toolName.startsWith('mcp__playwright__')) return null;
+  if (toolName === 'mcp__playwright__browser_navigate') {
+    const url = typeof input.url === 'string' ? input.url : '';
+    try {
+      const host = new URL(url).hostname;
+      return LOCAL_HOSTS.has(host) ? 'allow' : 'ask';
+    } catch {
+      return 'ask'; // unparseable target: a human should look at it
+    }
+  }
+  return 'allow';
+}
 
 /** A pending approval routed to the UI; resolved by the human's decision. */
 export interface PendingPermission {
@@ -68,11 +96,13 @@ export function makePolicy(
       filePath !== null &&
       path.resolve(filePath).startsWith(foremanDir);
 
+    const browser = browserToolDecision(toolName, input);
     if (
+      browser === 'allow' ||
       toolName.startsWith('mcp__foreman__') ||
       AUTO_ALLOW_TOOLS.has(toolName) ||
       isMissionDocWrite ||
-      (runAllowed.has(toolName) && routine)
+      (browser !== 'ask' && runAllowed.has(toolName) && routine)
     ) {
       hooks.onAutoAllow(agent, toolName);
       return { behavior: 'allow' };

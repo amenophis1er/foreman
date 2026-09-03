@@ -337,11 +337,12 @@ export const api = {
   unlinkProject: (projectId: string) =>
     fetch(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
   run: (projectId: string, mission: string, budgetUsd: number,
-    directorModel?: ModelChoice, workerModel?: ModelChoice) =>
+    directorModel?: ModelChoice, workerModel?: ModelChoice, browserTools?: boolean) =>
     post('/run', {
       projectId, mission, budgetUsd,
       directorModel: directorModel || undefined,
       workerModel: workerModel || undefined,
+      browserTools: browserTools || undefined,
     }),
   resume: (runId: string) =>
     post(`/runs/${encodeURIComponent(runId)}/resume`, {}),
