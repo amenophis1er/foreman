@@ -39,13 +39,14 @@ function Composer({ p, onStarted }: { p: ProjectSummary; onStarted: () => void }
   const [budget, setBudget] = useState(p.defaultBudgetUsd);
   const [directorModel, setDirectorModel] = useState<ModelChoice>('');
   const [workerModel, setWorkerModel] = useState<ModelChoice>('');
+  const [browserTools, setBrowserTools] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
   const start = async () => {
     setErr('');
     setBusy(true);
-    const r = await api.run(p.id, mission.trim(), budget, directorModel, workerModel)
+    const r = await api.run(p.id, mission.trim(), budget, directorModel, workerModel, browserTools)
       .finally(() => setBusy(false));
     if (!r.ok) setErr((await r.json()).error);
     else onStarted();
@@ -86,6 +87,11 @@ function Composer({ p, onStarted }: { p: ProjectSummary; onStarted: () => void }
           hint="Model for the director (planning, verification). Default inherits your Claude Code default." />
         <ModelSelect label="Workers" value={workerModel} onChange={setWorkerModel}
           hint="Model for workers (implementation). Pick sonnet or haiku to cut cost." />
+        <label title="Give agents a headless browser (Playwright): navigate, click, screenshot — so they can visually verify their work. Navigation to non-local URLs still asks you."
+          style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--ink-1)', fontSize: 'var(--fs-sm)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={browserTools} onChange={(e) => setBrowserTools(e.target.checked)} />
+          Browser
+        </label>
         <Button variant="primary" disabled={busy || !mission.trim()} onClick={start}>
           Start mission
         </Button>

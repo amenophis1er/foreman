@@ -58,6 +58,8 @@ export interface RunMeta {
   resumes?: number;
   /** Tools the human granted "always allow" for this run (survives resume). */
   allowedTools?: string[];
+  /** Give agents a headless Playwright browser (navigate, click, screenshot). */
+  browserTools?: boolean;
   folder: string;
   mission: string;
   budgetUsd: number;

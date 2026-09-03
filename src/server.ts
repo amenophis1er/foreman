@@ -15,7 +15,7 @@
  *   POST   /projects             Link a folder {folder, name?}
  *   DELETE /projects/{id}        Unlink (history kept; active run blocks it)
  *   POST   /run                  Start a mission {projectId, mission, budgetUsd,
- *                                directorModel?, workerModel?}
+ *                                directorModel?, workerModel?, browserTools?}
  *   POST   /runs/{id}/resume     Resume an interrupted/failed run
  *   POST   /permission           Resolve an approval {id, behavior, message?}
  *   POST   /answer               Answer a director question {id, text}
@@ -131,13 +131,14 @@ async function driveRun(projectId: string, meta: RunMeta, resumeSessionId?: stri
 
 async function startRun(
   projectId: string, folder: string, mission: string, budgetUsd: number,
-  directorModel: ModelChoice, workerModel: ModelChoice,
+  directorModel: ModelChoice, workerModel: ModelChoice, browserTools: boolean,
 ): Promise<void> {
   const meta: RunMeta = {
     id: newRunId(),
     projectId,
     folder, mission, budgetUsd,
     directorModel, workerModel,
+    browserTools: browserTools || undefined,
     status: 'running', costUsd: 0,
     createdAt: Date.now(), workers: [],
   };
@@ -264,7 +265,7 @@ const server = http.createServer(async (req, res) => {
       json(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'unknown project' });
 
     } else if (req.method === 'POST' && url.pathname === '/run') {
-      const { projectId, mission, budgetUsd, directorModel, workerModel } = await readBody(req);
+      const { projectId, mission, budgetUsd, directorModel, workerModel, browserTools } = await readBody(req);
       if (typeof projectId !== 'string' || typeof mission !== 'string' || !mission.trim()) {
         return json(res, 400, { error: 'projectId and mission are required' });
       }
@@ -277,7 +278,7 @@ const server = http.createServer(async (req, res) => {
       }
       const budget = Number(budgetUsd) > 0 ? Number(budgetUsd) : project.defaultBudgetUsd;
       void startRun(projectId, project.folder, mission, budget,
-        modelChoice(directorModel), modelChoice(workerModel));
+        modelChoice(directorModel), modelChoice(workerModel), browserTools === true);
       json(res, 200, { ok: true });
 
     } else if (req.method === 'POST' && url.pathname === '/permission') {
