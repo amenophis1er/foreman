@@ -21,6 +21,7 @@
   .entry { margin-bottom: 10px; padding: 8px 10px; border-radius: 8px; background: #1c1f24; border: 1px solid #262b32; white-space: pre-wrap; word-break: break-word; }
   .entry .tag { font-size: 11px; color: #9aa3ad; margin-bottom: 3px; }
   .entry.assistant { border-left: 3px solid #e8b04b; }
+  .entry.worker { border-left: 3px solid #7a5bd6; }
   .entry.tool { border-left: 3px solid #5b8dd6; font-family: ui-monospace, monospace; font-size: 12.5px; }
   .entry.system { color: #9aa3ad; font-size: 12.5px; }
   .entry.error { border-left: 3px solid #d65b5b; }
@@ -47,6 +48,7 @@
   <input id="folder" placeholder="/absolute/path/to/folder">
   <button id="browse" title="Browse folders">📁</button>
   <textarea id="mission" placeholder="Mission…"></textarea>
+  <input id="budget" type="number" min="1" step="1" value="5" title="Budget cap (USD)" style="width:70px">$
   <button class="primary" id="start">Start</button>
   <button id="interrupt">Interrupt</button>
   <div id="meta"><span id="status">idle</span><span id="cost"></span><span id="session"></span></div>
@@ -56,6 +58,10 @@
   <div id="sidebar">
     <h2>Approvals</h2>
     <div id="cards"><div class="empty">No pending approvals.</div></div>
+    <h2 style="margin-top:16px">Questions</h2>
+    <div id="questions"><div class="empty">No questions from the director.</div></div>
+    <h2 style="margin-top:16px">Mission doc</h2>
+    <pre id="missiondoc" style="font-size:11px;white-space:pre-wrap;color:#b8bec6;background:#14161a;border-radius:8px;padding:8px;max-height:300px;overflow-y:auto">—</pre>
   </div>
 </main>
 <div id="picker">
@@ -82,15 +88,20 @@ function addEntry(cls, tag, text) {
   transcript.scrollTop = transcript.scrollHeight;
 }
 
-function renderMessage(msg) {
+function renderMessage(agent, msg) {
+  const who = agent || '?';
+  const cls = who === 'director' ? 'assistant' : 'worker';
   if (msg.type === 'system' && msg.subtype === 'init') {
-    $('session').textContent = 'session ' + (msg.session_id || '').slice(0, 8);
-    addEntry('system', 'init', 'model: ' + (msg.model || '?') + ' · cwd: ' + (msg.cwd || ''));
+    if (who === 'director') $('session').textContent = 'director ' + (msg.session_id || '').slice(0, 8);
+    addEntry('system', who + ' · init', 'model: ' + (msg.model || '?'));
   } else if (msg.type === 'assistant') {
     const blocks = msg.message?.content || msg.content || [];
     for (const b of blocks) {
-      if (b.type === 'text' && b.text?.trim()) addEntry('assistant', 'claude', b.text);
-      else if (b.type === 'tool_use') addEntry('tool', 'tool: ' + b.name, JSON.stringify(b.input).slice(0, 400));
+      if (b.type === 'text' && b.text?.trim()) addEntry(cls, who, b.text);
+      else if (b.type === 'tool_use') {
+        const name = b.name.replace('mcp__foreman__', '⚙ ');
+        addEntry('tool', who + ' · ' + name, JSON.stringify(b.input).slice(0, 400));
+      }
     }
   } else if (msg.type === 'user') {
     const blocks = msg.message?.content;
@@ -98,12 +109,11 @@ function renderMessage(msg) {
       if (b.type === 'tool_result') {
         const c = typeof b.content === 'string' ? b.content
           : (b.content || []).map(x => x.text || '').join('');
-        addEntry('tool', 'result', String(c).slice(0, 600));
+        addEntry('tool', who + ' · result', String(c).slice(0, 600));
       }
     }
   } else if (msg.type === 'result') {
-    if (typeof msg.total_cost_usd === 'number') $('cost').textContent = '$' + msg.total_cost_usd.toFixed(4);
-    addEntry(msg.is_error ? 'error' : 'system', 'result: ' + (msg.subtype || ''),
+    addEntry(msg.is_error ? 'error' : 'system', who + ' · result: ' + (msg.subtype || ''),
       (msg.result || '').slice(0, 2000));
   }
 }
@@ -112,7 +122,7 @@ function addCard(p) {
   if (cards.querySelector('.empty')) cards.innerHTML = '';
   const div = document.createElement('div');
   div.className = 'card'; div.dataset.id = p.id;
-  const title = p.title || ('Claude wants to use ' + p.toolName);
+  const title = (p.agent ? '[' + p.agent + '] ' : '') + (p.title || ('Wants to use ' + p.toolName));
   div.innerHTML = '<div class="tool-name"></div><pre></pre>' +
     '<div class="actions"><button class="allow">Allow</button>' +
     '<button class="allow always">Always (this run)</button>' +
@@ -174,22 +184,76 @@ $('picker-select').onclick = () => {
 $('start').onclick = async () => {
   transcript.innerHTML = ''; $('cost').textContent = ''; $('session').textContent = '';
   const r = await fetch('/run', { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ folder: $('folder').value.trim(), mission: $('mission').value.trim() }) });
+    body: JSON.stringify({ folder: $('folder').value.trim(), mission: $('mission').value.trim(),
+      budgetUsd: Number($('budget').value) }) });
   if (!r.ok) addEntry('error', 'error', (await r.json()).error);
 };
+
+function addQuestion(p) {
+  const box = $('questions');
+  if (box.querySelector('.empty')) box.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'card'; div.dataset.id = p.id;
+  div.innerHTML = '<div class="tool-name">Director asks:</div><div class="q"></div>' +
+    '<textarea style="width:100%;margin-top:6px;height:52px"></textarea>' +
+    '<div class="actions"><button class="allow send">Answer</button></div>';
+  div.querySelector('.q').textContent = p.question;
+  div.querySelector('.send').onclick = async () => {
+    await fetch('/answer', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: p.id, text: div.querySelector('textarea').value }) });
+  };
+  box.append(div);
+}
+function removeQuestion(id) {
+  const box = $('questions');
+  box.querySelector('.card[data-id="' + CSS.escape(id) + '"]')?.remove();
+  if (!box.children.length) box.innerHTML = '<div class="empty">No questions from the director.</div>';
+}
+
+let docTimer = null;
+async function refreshMissionDoc() {
+  const r = await fetch('/missiondoc');
+  if (r.ok) {
+    const d = await r.json();
+    if (d.doc) $('missiondoc').textContent = d.doc;
+  }
+}
 $('interrupt').onclick = () => fetch('/interrupt', { method: 'POST' });
 
 const es = new EventSource('/events');
-es.addEventListener('run_started', (e) => { $('status').textContent = 'running'; });
+es.addEventListener('run_started', (e) => {
+  const d = JSON.parse(e.data);
+  $('status').textContent = 'running';
+  $('cost').textContent = '$0.00 / $' + d.budgetUsd.toFixed(0);
+  $('missiondoc').textContent = '—';
+  clearInterval(docTimer);
+  docTimer = setInterval(refreshMissionDoc, 5000);
+});
+es.addEventListener('cost', (e) => {
+  const d = JSON.parse(e.data);
+  $('cost').textContent = '$' + d.costUsd.toFixed(2) + ' / $' + d.budgetUsd.toFixed(0);
+});
 es.addEventListener('run_finished', (e) => {
   const d = JSON.parse(e.data);
   $('status').textContent = d.status || 'done';
-  if (typeof d.costUsd === 'number') $('cost').textContent = '$' + d.costUsd.toFixed(4);
+  if (typeof d.costUsd === 'number') $('cost').textContent = '$' + d.costUsd.toFixed(2);
+  clearInterval(docTimer);
+  refreshMissionDoc();
 });
 es.addEventListener('run_error', (e) => addEntry('error', 'error', JSON.parse(e.data).error));
-es.addEventListener('message', (e) => renderMessage(JSON.parse(e.data)));
+es.addEventListener('message', (e) => { const d = JSON.parse(e.data); renderMessage(d.agent, d.msg); });
+es.addEventListener('worker_started', (e) => {
+  const d = JSON.parse(e.data);
+  addEntry('system', d.id + (d.resumed ? ' resumed' : ' spawned'), d.task);
+});
+es.addEventListener('worker_finished', (e) => {
+  const d = JSON.parse(e.data);
+  addEntry('system', d.id + ' ' + d.status, '');
+});
 es.addEventListener('permission_request', (e) => addCard(JSON.parse(e.data)));
 es.addEventListener('permission_resolved', (e) => removeCard(JSON.parse(e.data).id));
+es.addEventListener('question', (e) => addQuestion(JSON.parse(e.data)));
+es.addEventListener('question_answered', (e) => removeQuestion(JSON.parse(e.data).id));
 </script>
 </body>
 </html>
