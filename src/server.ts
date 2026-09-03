@@ -21,6 +21,27 @@ import {
 const PORT = Number(process.env.PORT ?? 4177);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const DIST_DIR = path.join(__dirname, '..', 'ui', 'dist');
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
+  '.svg': 'image/svg+xml', '.json': 'application/json', '.map': 'application/json',
+  '.png': 'image/png', '.woff2': 'font/woff2',
+};
+
+/** Serve the built React app from ui/dist; fall back to the legacy public/ page. */
+async function serveStatic(pathname: string, res: http.ServerResponse): Promise<boolean> {
+  const rel = pathname === '/' ? 'index.html' : pathname.slice(1);
+  const distFile = path.join(DIST_DIR, rel);
+  if (!distFile.startsWith(DIST_DIR)) return false;
+  const body = await readFile(distFile).catch(() =>
+    pathname === '/' ? readFile(path.join(PUBLIC_DIR, 'index.html')).catch(() => null) : null,
+  );
+  if (!body) return false;
+  res.writeHead(200, { 'content-type': MIME[path.extname(rel)] ?? 'application/octet-stream' });
+  res.end(body);
+  return true;
+}
 
 // Read-only, reversible tools are auto-allowed; everything else goes to a card.
 const AUTO_ALLOW = new Set([
@@ -357,10 +378,8 @@ function json(res: http.ServerResponse, code: number, body: unknown) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
   try {
-    if (req.method === 'GET' && url.pathname === '/') {
-      const html = await readFile(path.join(PUBLIC_DIR, 'index.html'));
-      res.writeHead(200, { 'content-type': 'text/html' });
-      res.end(html);
+    if (req.method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/assets/'))) {
+      if (!(await serveStatic(url.pathname, res))) json(res, 404, { error: 'not found' });
     } else if (req.method === 'GET' && url.pathname === '/events') {
       res.writeHead(200, {
         'content-type': 'text/event-stream',

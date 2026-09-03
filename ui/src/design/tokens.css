@@ -1,0 +1,63 @@
+/* Foreman design system — dark mission-control theme (single committed look).
+   Everything references these tokens; no raw hex in components. */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg-app: #121417;
+  --bg-panel: #1a1d22;
+  --bg-card: #22262d;
+  --bg-inset: #14161a;
+  --line: #2d323b;
+  --line-strong: #3a4048;
+
+  /* Ink (text never wears series/status colors — tokens only) */
+  --ink-0: #e8e6df;
+  --ink-1: #a7afb9;
+  --ink-2: #6d7683;
+
+  /* Brand + agent identity (fixed assignment, never cycled) */
+  --brand: #e8b04b;        /* director / primary actions */
+  --brand-ink: #14161a;    /* text on brand */
+  --agent-worker: #9c86e8; /* workers */
+
+  /* Status palette (validated for dark surface; always icon + label, never color alone) */
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+
+  /* Type */
+  --font-ui: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --lh: 1.45;
+
+  /* Space & shape */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --r-sm: 6px;
+  --r-md: 10px;
+
+  --focus: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--brand);
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg-app);
+  color: var(--ink-0);
+  font: var(--fs-md)/var(--lh) var(--font-ui);
+}
+button, input, textarea, select { font: inherit; color: inherit; }
+:is(button, input, textarea):focus-visible { outline: none; box-shadow: var(--focus); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 5px; }
+::-webkit-scrollbar-track { background: transparent; }

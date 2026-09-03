@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "tsx src/server.ts"
+    "start": "tsx src/server.ts",
+    "ui:dev": "npm --prefix ui run dev",
+    "ui:build": "npm --prefix ui run build"
   },
   "keywords": [],
   "author": "",
