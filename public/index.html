@@ -241,6 +241,7 @@ es.addEventListener('run_finished', (e) => {
   refreshMissionDoc();
 });
 es.addEventListener('run_error', (e) => addEntry('error', 'error', JSON.parse(e.data).error));
+es.addEventListener('folder_created', (e) => addEntry('system', 'folder created', JSON.parse(e.data).folder));
 es.addEventListener('message', (e) => { const d = JSON.parse(e.data); renderMessage(d.agent, d.msg); });
 es.addEventListener('worker_started', (e) => {
   const d = JSON.parse(e.data);

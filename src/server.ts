@@ -4,7 +4,7 @@
 // call, so results land in the director's context as ordinary tool results.
 import http from 'node:http';
 import os from 'node:os';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -374,8 +374,13 @@ const server = http.createServer(async (req, res) => {
       if (run?.status === 'running') return json(res, 409, { error: 'a run is already active' });
       const { folder, mission, budgetUsd } = await readBody(req);
       if (!folder || !mission) return json(res, 400, { error: 'folder and mission are required' });
+      if (!path.isAbsolute(folder)) return json(res, 400, { error: `folder must be an absolute path: ${folder}` });
       const st = await stat(folder).catch(() => null);
-      if (!st?.isDirectory()) return json(res, 400, { error: `not a directory: ${folder}` });
+      if (st && !st.isDirectory()) return json(res, 400, { error: `not a directory: ${folder}` });
+      if (!st) {
+        await mkdir(folder, { recursive: true });
+        broadcast('folder_created', { folder });
+      }
       void startRun(folder, mission, Number(budgetUsd) > 0 ? Number(budgetUsd) : 5);
       json(res, 200, { ok: true });
     } else if (req.method === 'POST' && url.pathname === '/permission') {
