@@ -40,9 +40,8 @@ function modelChoice(v: unknown): ModelChoice {
 const PORT = Number(process.env.PORT ?? 4177);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, '..', 'ui', 'dist');
-const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
-const store = new RunStore(process.env.FOREMAN_HOME);
+const store = new RunStore(process.env.FOREMAN_HOME || undefined);
 /** Active runs, keyed by projectId (at most one per project). */
 const activeByProject = new Map<string, MissionRun>();
 const sseClients = new Set<http.ServerResponse>();
@@ -115,10 +114,13 @@ async function serveStatic(pathname: string, res: http.ServerResponse): Promise<
   if (!distFile.startsWith(DIST_DIR + path.sep) && distFile !== path.join(DIST_DIR, 'index.html')) {
     return false;
   }
-  const body = await readFile(distFile).catch(() =>
-    pathname === '/' ? readFile(path.join(PUBLIC_DIR, 'index.html')).catch(() => null) : null,
-  );
-  if (!body) return false;
+  const body = await readFile(distFile).catch(() => null);
+  if (!body) {
+    if (pathname !== '/') return false;
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<h1>Foreman</h1><p>UI bundle missing — run <code>npm run ui:build</code> and reload.</p>');
+    return true;
+  }
   res.writeHead(200, { 'content-type': MIME[path.extname(rel)] ?? 'application/octet-stream' });
   res.end(body);
   return true;

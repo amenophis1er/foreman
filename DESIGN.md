@@ -290,6 +290,20 @@ but the choice of tool matters:
 
 ## 10. Phased build (when we start)
 
+> **Status (2026-09-03).** Phases 1–3 are built and verified, plus several
+> items beyond the original plan:
+> phase 1 spike (one worker, SSE transcript, approve/deny) ✅ ·
+> phase 2 director (MISSION.md, spawn/message workers, ask_human, budgets,
+> independent verification) ✅ · phase 3 dashboard (React + design system,
+> agent tree, transcript, plan board) ✅ · persistence (append-only event
+> logs, atomic meta, orphan sweep, history replay) ✅ · **fleet** (multi-
+> project home, zoomable project views, composer, concurrent missions —
+> one per project) ✅ · per-mission model selection (director/workers) ✅ ·
+> resume of interrupted runs via director session restore ✅.
+> Parallel workers already occur naturally (the director issues parallel
+> spawn_worker tool calls); phase 4 below remains for the *management*
+> around them (wake loop, steering, conflict policy).
+
 1. **Spike:** orchestrator spawns ONE SDK worker in a chosen folder, streams its
    transcript to a minimal UI, `canUseTool` → an approve/deny card. Prove the
    substrate end to end.
