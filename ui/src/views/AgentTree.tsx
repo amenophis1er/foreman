@@ -1,8 +1,43 @@
-import type { State } from '../state';
+import type { RunSummary, State, ViewMode } from '../state';
 import { SectionTitle, StatusBadge, Empty, agentColor } from '../design/ui';
 
-export function AgentTree({ s, selected, onSelect }: {
+function RunHistory({ runs, mode, onView }: {
+  runs: RunSummary[]; mode: ViewMode; onView: (id: string) => void;
+}) {
+  return (
+    <div style={{ marginTop: 'var(--sp-4)' }}>
+      <SectionTitle>Runs</SectionTitle>
+      {runs.length === 0 && <Empty>No runs recorded.</Empty>}
+      {runs.map((r) => {
+        const viewing = mode.kind === 'history' && mode.runId === r.id;
+        return (
+          <div key={r.id} role="button" onClick={() => onView(r.id)}
+            title={r.mission}
+            style={{
+              padding: '6px 10px', borderRadius: 'var(--r-sm)', cursor: 'pointer',
+              background: viewing ? 'var(--bg-card)' : 'transparent',
+              border: viewing ? '1px solid var(--line-strong)' : '1px solid transparent',
+              marginBottom: 2,
+            }}>
+            <div style={{
+              fontSize: 'var(--fs-sm)', overflow: 'hidden', whiteSpace: 'nowrap',
+              textOverflow: 'ellipsis', color: 'var(--ink-0)',
+            }}>{r.mission}</div>
+            <div style={{ display: 'flex', gap: 'var(--sp-2)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+              <span>{new Date(r.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+              <span>${r.costUsd.toFixed(2)}</span>
+              <StatusBadge status={r.status} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function AgentTree({ s, selected, onSelect, runs, mode, onViewRun }: {
   s: State; selected: string | null; onSelect: (a: string | null) => void;
+  runs: RunSummary[]; mode: ViewMode; onViewRun: (id: string) => void;
 }) {
   const director = s.agents.find((a) => a.id === 'director');
   const workers = s.agents
@@ -41,6 +76,7 @@ export function AgentTree({ s, selected, onSelect }: {
           director session {s.directorSessionId.slice(0, 8)}
         </div>
       )}
+      <RunHistory runs={runs} mode={mode} onView={onViewRun} />
     </div>
   );
 }

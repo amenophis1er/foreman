@@ -4,7 +4,7 @@
   "description": "Foreman — autonomous mission runner on the Claude Agent SDK (phase-1 spike)",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --import tsx --test src/store.test.ts",
     "start": "tsx src/server.ts",
     "ui:dev": "npm --prefix ui run dev",
     "ui:build": "npm --prefix ui run build"

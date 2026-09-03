@@ -1,5 +1,10 @@
-// Foreman client state: one SSE connection reduced into a store.
-import { useEffect, useReducer, useRef } from 'react';
+// Foreman client state.
+//
+// One code path applies events everywhere: the SSE stream (live), the latest
+// run's persisted log (hydration on page load), and any historical run the
+// user opens (read-only replay). This guarantees a replayed run renders
+// exactly like it did live.
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { Status } from './design/ui';
 
 export type Entry = {
@@ -17,8 +22,12 @@ export type Approval = {
 };
 
 export type Question = { id: string; question: string };
-
 export type AgentInfo = { id: string; status: Status; task?: string };
+
+export type RunSummary = {
+  id: string; folder: string; mission: string; budgetUsd: number;
+  status: Status; costUsd: number; createdAt: number; endedAt?: number;
+};
 
 export type State = {
   connected: boolean;
@@ -41,70 +50,29 @@ const initial: State = {
   approvals: [], questions: [], missionDoc: null,
 };
 
+type WireEvent = { ts?: number; event: string; data: any };
+
 type Action =
   | { t: 'connected'; v: boolean }
-  | { t: 'run_started'; folder: string; mission: string; budgetUsd: number }
-  | { t: 'run_finished'; status: string; costUsd?: number }
-  | { t: 'cost'; costUsd: number; budgetUsd: number }
-  | { t: 'entry'; e: Omit<Entry, 'id' | 'ts'> }
-  | { t: 'worker'; id: string; status: Status; task?: string }
-  | { t: 'director_session'; id: string }
-  | { t: 'approval_add'; a: Approval }
-  | { t: 'approval_remove'; id: string }
-  | { t: 'question_add'; q: Question }
-  | { t: 'question_remove'; id: string }
+  | { t: 'reset' }
+  | { t: 'wire'; e: WireEvent }
   | { t: 'missiondoc'; doc: string | null };
 
 let seq = 0;
 
-function reducer(s: State, a: Action): State {
-  switch (a.t) {
-    case 'connected': return { ...s, connected: a.v };
-    case 'run_started':
-      return {
-        ...initial, connected: s.connected,
-        runStatus: 'running', folder: a.folder, mission: a.mission, budgetUsd: a.budgetUsd,
-        agents: [{ id: 'director', status: 'running' }],
-      };
-    case 'run_finished':
-      return {
-        ...s,
-        runStatus: (a.status as Status) || 'done',
-        costUsd: a.costUsd ?? s.costUsd,
-        agents: s.agents.map((ag) =>
-          ag.id === 'director' ? { ...ag, status: (a.status as Status) || 'done' } : ag),
-      };
-    case 'cost': return { ...s, costUsd: a.costUsd, budgetUsd: a.budgetUsd };
-    case 'entry':
-      return { ...s, entries: [...s.entries.slice(-999), { ...a.e, id: ++seq, ts: Date.now() }] };
-    case 'worker': {
-      const rest = s.agents.filter((x) => x.id !== a.id);
-      const prev = s.agents.find((x) => x.id === a.id);
-      return { ...s, agents: [...rest, { id: a.id, status: a.status, task: a.task ?? prev?.task }] };
-    }
-    case 'director_session': return { ...s, directorSessionId: a.id };
-    case 'approval_add': return { ...s, approvals: [...s.approvals, a.a] };
-    case 'approval_remove': return { ...s, approvals: s.approvals.filter((x) => x.id !== a.id) };
-    case 'question_add': return { ...s, questions: [...s.questions, a.q] };
-    case 'question_remove': return { ...s, questions: s.questions.filter((x) => x.id !== a.id) };
-    case 'missiondoc': return { ...s, missionDoc: a.doc };
-  }
-}
+function entriesFromSdkMessage(agent: string, msg: any, ts: number): Entry[] {
+  const out: Entry[] = [];
+  const push = (kind: Entry['kind'], title: string, body: string) =>
+    out.push({ id: ++seq, ts, agent, kind, title, body });
 
-function entriesFromSdkMessage(agent: string, msg: any): Omit<Entry, 'id' | 'ts'>[] {
-  const out: Omit<Entry, 'id' | 'ts'>[] = [];
   if (msg.type === 'system' && msg.subtype === 'init') {
-    out.push({ agent, kind: 'system', title: 'init', body: `model: ${msg.model ?? '?'}` });
+    push('system', 'init', `model: ${msg.model ?? '?'}`);
   } else if (msg.type === 'assistant') {
     for (const b of msg.message?.content ?? []) {
-      if (b.type === 'text' && b.text?.trim()) {
-        out.push({ agent, kind: 'text', title: agent, body: b.text });
-      } else if (b.type === 'tool_use') {
-        out.push({
-          agent, kind: 'tool',
-          title: String(b.name).replace('mcp__foreman__', '⚙ '),
-          body: JSON.stringify(b.input).slice(0, 500),
-        });
+      if (b.type === 'text' && b.text?.trim()) push('text', agent, b.text);
+      else if (b.type === 'tool_use') {
+        push('tool', String(b.name).replace('mcp__foreman__', '⚙ '),
+          JSON.stringify(b.input).slice(0, 500));
       }
     }
   } else if (msg.type === 'user' && Array.isArray(msg.message?.content)) {
@@ -112,73 +80,189 @@ function entriesFromSdkMessage(agent: string, msg: any): Omit<Entry, 'id' | 'ts'
       if (b.type === 'tool_result') {
         const c = typeof b.content === 'string' ? b.content
           : (b.content ?? []).map((x: any) => x.text ?? '').join('');
-        out.push({ agent, kind: 'result', title: 'result', body: String(c).slice(0, 700) });
+        push('result', 'result', String(c).slice(0, 700));
       }
     }
   } else if (msg.type === 'result') {
-    out.push({
-      agent, kind: msg.is_error ? 'error' : 'system',
-      title: `result · ${msg.subtype ?? ''}`,
-      body: String(msg.result ?? '').slice(0, 2500),
-    });
+    push(msg.is_error ? 'error' : 'system', `result · ${msg.subtype ?? ''}`,
+      String(msg.result ?? '').slice(0, 2500));
   }
   return out;
 }
 
+/** Applies one wire event (live or replayed) to the state. */
+function applyWire(s: State, e: WireEvent): State {
+  const ts = e.ts ?? Date.now();
+  const d = e.data;
+  switch (e.event) {
+    case 'run_started':
+      return {
+        ...initial, connected: s.connected, missionDoc: s.missionDoc,
+        runStatus: 'running', folder: d.folder, mission: d.mission, budgetUsd: d.budgetUsd,
+        agents: [{ id: 'director', status: 'running' }],
+      };
+    case 'run_finished':
+      return {
+        ...s,
+        runStatus: (d.status as Status) || 'done',
+        costUsd: d.costUsd ?? s.costUsd,
+        approvals: [], questions: [],
+        agents: s.agents.map((ag) =>
+          ag.id === 'director' ? { ...ag, status: (d.status as Status) || 'done' } : ag),
+      };
+    case 'run_error':
+      return { ...s, entries: [...s.entries, { id: ++seq, ts, agent: 'system', kind: 'error', title: 'error', body: d.error }] };
+    case 'folder_created':
+      return { ...s, entries: [...s.entries, { id: ++seq, ts, agent: 'system', kind: 'system', title: 'folder created', body: d.folder }] };
+    case 'cost':
+      return { ...s, costUsd: d.costUsd, budgetUsd: d.budgetUsd };
+    case 'message': {
+      const extra: Partial<State> =
+        d.agent === 'director' && d.msg?.session_id ? { directorSessionId: d.msg.session_id } : {};
+      const es = entriesFromSdkMessage(d.agent, d.msg, ts);
+      return es.length || extra.directorSessionId
+        ? { ...s, ...extra, entries: [...s.entries.slice(-1499), ...es] } : s;
+    }
+    case 'worker_started': {
+      const rest = s.agents.filter((x) => x.id !== d.id);
+      const prev = s.agents.find((x) => x.id === d.id);
+      return {
+        ...s,
+        agents: [...rest, { id: d.id, status: 'running', task: d.task ?? prev?.task }],
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: d.id, kind: 'system',
+          title: d.resumed ? 'resumed' : 'spawned', body: d.task ?? '',
+        }],
+      };
+    }
+    case 'worker_finished':
+      return {
+        ...s,
+        agents: s.agents.map((x) => x.id === d.id ? { ...x, status: d.status as Status } : x),
+      };
+    case 'permission_request':
+      return { ...s, approvals: [...s.approvals, d] };
+    case 'permission_resolved':
+      return { ...s, approvals: s.approvals.filter((x) => x.id !== d.id) };
+    case 'question':
+      return { ...s, questions: [...s.questions, d] };
+    case 'question_answered':
+      return { ...s, questions: s.questions.filter((x) => x.id !== d.id) };
+    default:
+      return s;
+  }
+}
+
+function reducer(s: State, a: Action): State {
+  switch (a.t) {
+    case 'connected': return { ...s, connected: a.v };
+    case 'reset': return { ...initial, connected: s.connected };
+    case 'wire': return applyWire(s, a.e);
+    case 'missiondoc': return { ...s, missionDoc: a.doc };
+  }
+}
+
+export type ViewMode =
+  | { kind: 'live' }
+  | { kind: 'history'; runId: string };
+
 export function useForeman() {
   const [state, dispatch] = useReducer(reducer, initial);
+  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [mode, setMode] = useState<ViewMode>({ kind: 'live' });
+  const modeRef = useRef<ViewMode>(mode);
+  modeRef.current = mode;
   const docTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Live events arriving while hydration replays the persisted log are
+  // buffered, then flushed, so nothing is lost or double-applied out of order.
+  const buffer = useRef<WireEvent[] | null>([]);
+
+  const refreshRuns = useCallback(async () => {
+    const r = await fetch('/runs').catch(() => null);
+    if (r?.ok) setRuns((await r.json()).runs);
+  }, []);
+
+  const refreshDoc = useCallback(async (runId?: string) => {
+    const q = runId ? `?run=${encodeURIComponent(runId)}` : '';
+    const r = await fetch('/missiondoc' + q).catch(() => null);
+    if (r?.ok) dispatch({ t: 'missiondoc', doc: (await r.json()).doc });
+  }, []);
+
+  const replayRun = useCallback(async (runId: string) => {
+    const r = await fetch(`/runs/${encodeURIComponent(runId)}/events`).catch(() => null);
+    if (!r?.ok) return false;
+    const { events } = await r.json() as { events: WireEvent[] };
+    dispatch({ t: 'reset' });
+    for (const e of events) dispatch({ t: 'wire', e });
+    void refreshDoc(runId);
+    return true;
+  }, [refreshDoc]);
+
+  /** Open a past run read-only. */
+  const viewRun = useCallback(async (runId: string) => {
+    setMode({ kind: 'history', runId });
+    await replayRun(runId);
+  }, [replayRun]);
+
+  /** Return to the live view (replaying the newest run's log first). */
+  const backToLive = useCallback(async () => {
+    setMode({ kind: 'live' });
+    const r = await fetch('/runs').catch(() => null);
+    const latest: RunSummary | undefined = r?.ok ? (await r.json()).runs[0] : undefined;
+    dispatch({ t: 'reset' });
+    if (latest) await replayRun(latest.id);
+  }, [replayRun]);
 
   useEffect(() => {
-    const refreshDoc = async () => {
-      const r = await fetch('/missiondoc').catch(() => null);
-      if (r?.ok) {
-        const d = await r.json();
-        dispatch({ t: 'missiondoc', doc: d.doc });
-      }
-    };
-
     const es = new EventSource('/events');
     es.onopen = () => dispatch({ t: 'connected', v: true });
     es.onerror = () => dispatch({ t: 'connected', v: false });
 
-    const on = (ev: string, fn: (d: any) => void) =>
-      es.addEventListener(ev, (e) => fn(JSON.parse((e as MessageEvent).data)));
+    const EVENTS = [
+      'run_started', 'run_finished', 'run_error', 'folder_created', 'cost',
+      'message', 'worker_started', 'worker_finished',
+      'permission_request', 'permission_resolved', 'question', 'question_answered',
+    ];
+    for (const name of EVENTS) {
+      es.addEventListener(name, (raw) => {
+        const e: WireEvent = { event: name, data: JSON.parse((raw as MessageEvent).data) };
+        if (name === 'run_started' || name === 'run_finished') void refreshRuns();
+        if (name === 'run_started' && modeRef.current.kind === 'history') {
+          // A new mission started while browsing history — jump back to live.
+          setMode({ kind: 'live' });
+          buffer.current = null;
+        }
+        if (modeRef.current.kind === 'history') return; // read-only view
+        if (buffer.current) buffer.current.push(e);
+        else dispatch({ t: 'wire', e });
+      });
+    }
 
-    on('run_started', (d) => {
-      dispatch({ t: 'run_started', ...d });
-      if (docTimer.current) clearInterval(docTimer.current);
-      docTimer.current = setInterval(refreshDoc, 5000);
-    });
-    on('run_finished', (d) => {
-      dispatch({ t: 'run_finished', ...d });
-      if (docTimer.current) clearInterval(docTimer.current);
-      void refreshDoc();
-    });
-    on('run_error', (d) => dispatch({ t: 'entry', e: { agent: 'system', kind: 'error', title: 'error', body: d.error } }));
-    on('folder_created', (d) => dispatch({ t: 'entry', e: { agent: 'system', kind: 'system', title: 'folder created', body: d.folder } }));
-    on('cost', (d) => dispatch({ t: 'cost', ...d }));
-    on('message', (d) => {
-      if (d.agent === 'director' && d.msg?.session_id) dispatch({ t: 'director_session', id: d.msg.session_id });
-      for (const e of entriesFromSdkMessage(d.agent, d.msg)) dispatch({ t: 'entry', e });
-    });
-    on('worker_started', (d) => {
-      dispatch({ t: 'worker', id: d.id, status: 'running', task: d.task });
-      dispatch({ t: 'entry', e: { agent: d.id, kind: 'system', title: d.resumed ? 'resumed' : 'spawned', body: d.task ?? '' } });
-    });
-    on('worker_finished', (d) => dispatch({ t: 'worker', id: d.id, status: d.status }));
-    on('permission_request', (d) => dispatch({ t: 'approval_add', a: d }));
-    on('permission_resolved', (d) => dispatch({ t: 'approval_remove', id: d.id }));
-    on('question', (d) => dispatch({ t: 'question_add', q: d }));
-    on('question_answered', (d) => dispatch({ t: 'question_remove', id: d.id }));
+    // Hydrate: replay the newest persisted run, then flush buffered live events.
+    void (async () => {
+      try {
+        const r = await fetch('/runs').catch(() => null);
+        const all: RunSummary[] = r?.ok ? ((await r.json()).runs ?? []) : [];
+        setRuns(all);
+        if (all[0]) await replayRun(all[0].id);
+      } finally {
+        const pending = buffer.current ?? [];
+        buffer.current = null;
+        for (const e of pending) dispatch({ t: 'wire', e });
+      }
+    })();
+
+    docTimer.current = setInterval(() => {
+      if (modeRef.current.kind === 'live') void refreshDoc();
+    }, 5000);
 
     return () => {
       es.close();
       if (docTimer.current) clearInterval(docTimer.current);
     };
-  }, []);
+  }, [refreshRuns, refreshDoc, replayRun]);
 
-  return state;
+  return { state, runs, mode, viewRun, backToLive };
 }
 
 export const api = {
