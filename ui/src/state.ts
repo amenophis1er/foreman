@@ -8,7 +8,8 @@
 //    The same applyWire() path renders replay and live identically.
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { onConnection, onSse, type Envelope } from './sse';
-import type { Status } from './design/ui';
+
+export type Status = 'idle' | 'running' | 'done' | 'error' | 'interrupted';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,7 +32,8 @@ export type Approval = {
 export type Question = { id: string; question: string };
 export type AgentInfo = { id: string; status: Status; task?: string };
 
-export type ModelChoice = 'opus' | 'sonnet' | 'haiku' | '';
+/** '' inherits; otherwise an id from GET /models or a full claude-* id. */
+export type ModelChoice = string;
 
 export type RunSummary = {
   id: string; projectId?: string; folder: string; mission: string;
@@ -45,6 +47,7 @@ export type ProjectSummary = {
   id: string; name: string; folder: string; createdAt: number;
   defaultBudgetUsd: number;
   activeRun: RunSummary | null;
+  lastRun: { mission: string; status: Status; createdAt?: number; costUsd?: number } | null;
   pendingPermissions: number;
   pendingQuestions: number;
 };
@@ -85,8 +88,9 @@ function entriesFromSdkMessage(agent: string, msg: any, ts: number): Entry[] {
     for (const b of msg.message?.content ?? []) {
       if (b.type === 'text' && b.text?.trim()) push('text', agent, b.text);
       else if (b.type === 'tool_use') {
-        push('tool', String(b.name).replace('mcp__foreman__', '⚙ '),
-          JSON.stringify(b.input).slice(0, 500));
+        const name = String(b.name).replace('mcp__foreman__', '').replace('mcp__playwright__', '');
+        // Body must stay valid JSON for the ToolCall chip's diff/pretty view.
+        push('tool', name, JSON.stringify(b.input).slice(0, 4000));
       }
     }
   } else if (msg.type === 'user' && Array.isArray(msg.message?.content)) {

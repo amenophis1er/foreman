@@ -1,0 +1,16 @@
+/* Base element resets — verbatim from the shipped app. */
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg-app);
+  color: var(--ink-0);
+  font: var(--fs-md)/var(--lh) var(--font-ui);
+}
+button, input, textarea, select { font: inherit; color: inherit; }
+:is(button, input, textarea, select):focus-visible { outline: none; box-shadow: var(--focus); }
+a { color: var(--brand); text-decoration: none; }
+a:hover { text-decoration: underline; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 5px; }
+::-webkit-scrollbar-track { background: transparent; }

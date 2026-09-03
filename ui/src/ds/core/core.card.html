@@ -1,0 +1,46 @@
+<!-- @dsCard group="Components" viewport="700x300" name="Core — buttons, cards, tabs, headings" subtitle="Button variants + sizes + icons, icon buttons, tabs, card accents, section title, empty state" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>body{padding:16px;display:flex;flex-direction:column;gap:14px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}</style>
+</head><body><div id="root" style="display:contents"></div>
+<script type="text/babel">
+const { Button, IconButton, Tabs, Card, SectionTitle, Empty } = window.ForemanDesignSystem_5f77fb;
+function Demo(){const [tab,setTab]=React.useState('transcript');return (<>
+<div className="row">
+<Button>Cancel</Button>
+<Button variant="primary">Start mission</Button>
+<Button variant="good">Allow</Button>
+<Button variant="danger">Deny</Button>
+<Button variant="good" icon="resume">Resume</Button>
+<Button icon="back">Fleet</Button>
+<Button variant="ghost" icon="unlink">Unlink</Button>
+<Button variant="primary" disabled>Resuming…</Button>
+</div>
+<div className="row">
+<Button size="sm" icon="Bug">Bug fix</Button>
+<Button size="sm" icon="ListChecks">Add tests</Button>
+<Button size="sm" variant="ghost" icon="chevronDown">Hide</Button>
+<IconButton icon="sun" label="Switch theme"/>
+<IconButton icon="moon" label="Switch theme" active/>
+<IconButton icon="close" label="Close" size="sm"/>
+<Tabs value={tab} onChange={setTab} tabs={[{value:'crew',label:'Crew',icon:'crew'},{value:'transcript',label:'Transcript',icon:'transcript'},{value:'needs',label:'Needs you',icon:'needsYou',count:2,attention:true}]}/>
+<Tabs size="sm" value="transcript" tabs={[{value:'transcript',label:'Transcript'},{value:'timeline',label:'Timeline'}]}/>
+</div>
+<div className="row" style={{alignItems:'stretch'}}>
+<Card style={{flex:1}}><div style={{fontSize:'var(--fs-xs)',color:'var(--ink-2)'}}>no accent</div>tool payload surface</Card>
+<Card accent="var(--brand)" style={{flex:1}}><div style={{fontWeight:600,color:'var(--brand)',fontSize:'var(--fs-sm)'}}>director accent</div>brand gold, 3px</Card>
+<Card accent="var(--agent-worker-1)" style={{flex:1}}><div style={{fontSize:'var(--fs-xs)',color:'var(--ink-2)'}}>worker-1 · text</div>worker violet, 3px</Card>
+<Card accent="var(--status-critical)" style={{flex:1}}><div style={{fontSize:'var(--fs-xs)',color:'var(--status-critical)'}}>worker-2 · error</div>critical, 3px</Card>
+</div>
+<div className="row" style={{alignItems:'flex-start',gap:32}}>
+<div><SectionTitle>Approvals</SectionTitle><Empty>No pending approvals.</Empty></div>
+<div><SectionTitle>Plan</SectionTitle><Empty>MISSION.md not written yet.</Empty></div>
+<div><SectionTitle>Mission history</SectionTitle><Empty>No other runs yet.</Empty></div>
+</div>
+</>);}
+ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
+</script></body></html>

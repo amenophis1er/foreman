@@ -11,7 +11,8 @@
  * Endpoints:
  *   GET    /                     React app (ui/dist; build hint when missing)
  *   GET    /events               SSE stream (enveloped ForemanEvents)
- *   GET    /projects             Projects + active-run summaries + pending counts
+ *   GET    /models               Curated model list for the composer pickers
+ *   GET    /projects             Projects + active-run summaries + pending counts + lastRun
  *   POST   /projects             Link a folder {folder, name?}
  *   DELETE /projects/{id}        Unlink (history kept; active run blocks it)
  *   POST   /run                  Start a mission {projectId, mission, budgetUsd,
@@ -36,9 +37,22 @@ import { MissionRun } from './orchestrator.js';
 import { RunStore, newRunId } from './store.js';
 import type { ForemanEvent, ModelChoice, RunMeta } from './types.js';
 
-/** Parses a model choice from a request body; unknown values become inherit. */
+/**
+ * Curated model list for the composer pickers (GET /models). `id` is exactly
+ * what the SDK receives as `options.model`.
+ */
+const MODELS = [
+  { id: 'fable', label: 'Fable', model: 'claude-fable (frontier)', cost: 4, note: 'Frontier. Long-horizon planning and verification.' },
+  { id: 'opus', label: 'Opus', model: 'claude-opus (latest)', cost: 3, note: 'Deep reasoning for hard refactors.' },
+  { id: 'sonnet', label: 'Sonnet', model: 'claude-sonnet (latest)', cost: 2, note: 'Balanced. The usual worker.' },
+  { id: 'haiku', label: 'Haiku', model: 'claude-haiku (latest)', cost: 1, note: 'Fast and cheap for reads and mechanical edits.' },
+];
+
+/** Parses a model choice: a known alias or a full claude-* id; else inherit. */
 function modelChoice(v: unknown): ModelChoice {
-  return v === 'opus' || v === 'sonnet' || v === 'haiku' ? v : undefined;
+  if (typeof v !== 'string' || !v) return undefined;
+  if (MODELS.some((m) => m.id === v)) return v;
+  return /^claude-[a-z0-9.-]{1,60}$/.test(v) ? v : undefined;
 }
 
 /** Directory names never descended into by the drag-drop folder locator. */
@@ -187,7 +201,10 @@ async function serveStatic(pathname: string, res: http.ServerResponse): Promise<
     res.end('<h1>Foreman</h1><p>UI bundle missing — run <code>npm run ui:build</code> and reload.</p>');
     return true;
   }
-  res.writeHead(200, { 'content-type': MIME[path.extname(rel)] ?? 'application/octet-stream' });
+  const type = MIME[path.extname(rel)] ?? 'application/octet-stream';
+  // index.html must never be cached — it points at hashed asset names.
+  const cache = rel === 'index.html' ? 'no-cache' : 'public, max-age=31536000, immutable';
+  res.writeHead(200, { 'content-type': type, 'cache-control': cache });
   res.end(body);
   return true;
 }
@@ -234,14 +251,23 @@ const server = http.createServer(async (req, res) => {
       sseClients.add(res);
       req.on('close', () => sseClients.delete(res));
 
+    } else if (req.method === 'GET' && url.pathname === '/models') {
+      json(res, 200, { models: MODELS });
+
     } else if (req.method === 'GET' && url.pathname === '/projects') {
-      const projects = await store.listProjects();
+      const [projects, allRuns] = await Promise.all([store.listProjects(), store.listRuns()]);
       json(res, 200, {
         projects: projects.map((p) => {
           const run = activeByProject.get(p.id);
+          // Newest finished run for the idle-card summary (runs are newest-first).
+          const lastRun = allRuns.find((r) => r.projectId === p.id && r.status !== 'running') ?? null;
           return {
             ...p,
             activeRun: run ? { ...run.meta } : null,
+            lastRun: lastRun && {
+              mission: lastRun.mission, status: lastRun.status,
+              createdAt: lastRun.createdAt, costUsd: lastRun.costUsd,
+            },
             pendingPermissions: run?.pendingPermissionIds.length ?? 0,
             pendingQuestions: run?.pendingQuestionIds.length ?? 0,
           };

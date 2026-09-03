@@ -42,8 +42,11 @@ export interface WorkerMeta {
   task: string;
 }
 
-/** Model choice for an agent; `undefined` inherits the harness default. */
-export type ModelChoice = 'opus' | 'sonnet' | 'haiku' | undefined;
+/**
+ * Model for an agent: a harness alias (opus/sonnet/haiku), a full claude-*
+ * model id, or `undefined` to inherit the harness default.
+ */
+export type ModelChoice = string | undefined;
 
 /** Persisted run metadata (meta.json). Small, rewritten atomically on change. */
 export interface RunMeta {

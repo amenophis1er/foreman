@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@playwright/mcp": "^0.0.80",
+    "lucide-react": "^1.40.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
