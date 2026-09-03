@@ -52,10 +52,10 @@ function Transcript({ run, filter, header }: {
   );
 }
 
-export function ProjectView({ p, models, onBack, refreshFleet, theme, onToggleTheme }: {
+export function ProjectView({ p, models, onBack, refreshFleet, theme, onToggleTheme, onSettings }: {
   p: ProjectSummary; models: ModelInfo[] | null;
   onBack: () => void; refreshFleet: () => void;
-  theme: 'dark' | 'light'; onToggleTheme: () => void;
+  theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
 }) {
   const history = useRunHistory(p.id);
   const activeRunId = p.activeRun?.id ?? null;
@@ -114,7 +114,7 @@ export function ProjectView({ p, models, onBack, refreshFleet, theme, onToggleTh
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <AppHeader mode="project" title={p.name} folder={p.folder} onBack={onBack}
-        theme={theme} onToggleTheme={onToggleTheme}>
+        theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {headerErr && <Banner tone="error" inline>{headerErr}</Banner>}
         {selectedRunId && <StatusBadge status={run.runStatus} />}
         {selectedRunId && <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} />}
@@ -160,8 +160,9 @@ export function ProjectView({ p, models, onBack, refreshFleet, theme, onToggleTh
           <div style={{ minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             {(run.entries.length > 0 || run.approvals.length + run.questions.length > 0) && (
               <div style={{
-                padding: 'var(--sp-3) var(--sp-3) 0', display: 'flex',
-                flexDirection: 'column', gap: 'var(--sp-2)', flex: '0 0 auto',
+                padding: 'var(--sp-3)', borderBottom: '1px solid var(--line)',
+                display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)',
+                flex: '0 0 auto',
               }}>
                 <AttentionBar approvals={run.approvals.length} questions={run.questions.length}
                   onReview={() => rightRail.current?.scrollIntoView({ behavior: 'smooth' })} />

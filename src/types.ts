@@ -79,3 +79,12 @@ export type RunSummary = RunMeta;
 
 /** Result of a permission decision made by the human. */
 export type PermissionDecision = 'allow' | 'allow_always' | 'deny';
+
+/** Free-form UI settings blob (shape owned by the design system's modal). */
+export type SettingsValues = Record<string, unknown>;
+
+/** Persisted settings: global values + sparse per-project overlays. */
+export interface SettingsFile {
+  global: SettingsValues;
+  projects: Record<string, SettingsValues>;
+}

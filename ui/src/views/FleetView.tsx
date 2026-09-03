@@ -43,10 +43,10 @@ function usePicker(onPick: (path: string) => void) {
   };
 }
 
-export function FleetView({ projects, connected, onOpen, refresh, theme, onToggleTheme }: {
+export function FleetView({ projects, connected, onOpen, refresh, theme, onToggleTheme, onSettings }: {
   projects: ProjectSummary[]; connected: boolean;
   onOpen: (projectId: string) => void; refresh: () => void;
-  theme: 'dark' | 'light'; onToggleTheme: () => void;
+  theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
 }) {
   const [dragging, setDragging] = useState(false);
   const [drop, setDrop] = useState<{ name: string; matches: string[] | null } | null>(null);
@@ -78,7 +78,7 @@ export function FleetView({ projects, connected, onOpen, refresh, theme, onToggl
       onDrop={(e) => void onDrop(e)}>
       {dragging && <DropOverlay />}
 
-      <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme}>
+      <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {!connected && <Banner tone="disconnected" inline>disconnected</Banner>}
       </AppHeader>
 

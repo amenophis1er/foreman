@@ -11,6 +11,8 @@
  * Endpoints:
  *   GET    /                     React app (ui/dist; build hint when missing)
  *   GET    /events               SSE stream (enveloped ForemanEvents)
+ *   GET    /settings             Persisted UI settings (global + project overlays)
+ *   PUT    /settings             Save settings {global, projectId?, project?}
  *   GET    /models               Curated model list for the composer pickers
  *   GET    /projects             Projects + active-run summaries + pending counts + lastRun
  *   POST   /projects             Link a folder {folder, name?}
@@ -250,6 +252,26 @@ const server = http.createServer(async (req, res) => {
       res.write(': connected\n\n');
       sseClients.add(res);
       req.on('close', () => sseClients.delete(res));
+
+    } else if (req.method === 'GET' && url.pathname === '/settings') {
+      json(res, 200, await store.readSettings());
+
+    } else if (req.method === 'PUT' && url.pathname === '/settings') {
+      const { global: g, projectId, project } = await readBody(req);
+      const current = await store.readSettings();
+      const next = {
+        global: typeof g === 'object' && g !== null ? g as Record<string, unknown> : current.global,
+        projects: { ...current.projects },
+      };
+      if (typeof projectId === 'string' && projectId) {
+        if (typeof project === 'object' && project !== null && Object.keys(project).length) {
+          next.projects[projectId] = project as Record<string, unknown>;
+        } else {
+          delete next.projects[projectId];
+        }
+      }
+      await store.writeSettings(next);
+      json(res, 200, { ok: true });
 
     } else if (req.method === 'GET' && url.pathname === '/models') {
       json(res, 200, { models: MODELS });
