@@ -53,16 +53,22 @@ function Transcript({ run, filter, header }: {
   );
 }
 
-export function ProjectView({ p, models, onBack, refreshFleet, theme, onToggleTheme, onSettings }: {
+export function ProjectView({ p, models, routeRunId, onSelectRun, onBack, refreshFleet, theme, onToggleTheme, onSettings }: {
   p: ProjectSummary; models: ModelInfo[] | null;
+  routeRunId: string | null; onSelectRun: (runId: string | null) => void;
   onBack: () => void; refreshFleet: () => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
 }) {
   const history = useRunHistory(p.id);
   const activeRunId = p.activeRun?.id ?? null;
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(activeRunId);
+  // The selected run lives in the URL so a refresh restores the same view.
+  const selectedRunId = routeRunId;
+  const setSelectedRunId = onSelectRun;
   useEffect(() => {
-    if (activeRunId) setSelectedRunId(activeRunId);
+    if (activeRunId) onSelectRun(activeRunId);
+    // Snap to the active run only when it starts/changes, so history
+    // browsing during a live mission is not fought over.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRunId]);
 
   const viewingLive = selectedRunId !== null && selectedRunId === activeRunId;
