@@ -31,13 +31,14 @@ export function RunTimeline({ agents = [], entries = [], live, selected, onSelec
             <div style={{ position: 'relative', height, background: 'var(--bg-inset)', borderRadius: 4, opacity: dim ? 0.45 : 1 }}>
               <div style={{
                 position: 'absolute', left: x(a0), width: `calc(${x(a1)} - ${x(a0)})`, top: 6, bottom: 6, minWidth: 3,
-                background: agentColor(id), opacity: 0.35, borderRadius: 3,
+                background: agentColor(id), opacity: 0.15, borderRadius: 3,
               }} />
               {mine.map((e) => (
                 <span key={e.id ?? e.ts} title={`${fmt(e.ts)} · ${e.title || e.kind}`} style={{
-                  position: 'absolute', left: x(e.ts), top: e.kind === 'text' ? 4 : 8, width: e.kind === 'text' ? 3 : 2,
-                  height: e.kind === 'text' ? height - 8 : height - 16, marginLeft: -1, borderRadius: 1,
-                  background: e.kind === 'error' ? 'var(--status-critical)' : e.kind === 'tool' ? 'var(--ink-1)' : agentColor(id),
+                  position: 'absolute', left: x(e.ts), top: e.kind === 'text' ? 3 : 7, width: e.kind === 'text' ? 3 : 2,
+                  height: e.kind === 'text' ? height - 6 : height - 14, marginLeft: -1, borderRadius: 1,
+                  background: e.kind === 'error' ? 'var(--status-critical)' : e.kind === 'tool' ? 'var(--ink-0)' : agentColor(id),
+                  boxShadow: '0 0 0 1px var(--bg-inset)',
                 }} />
               ))}
               {live && st === 'running' && <span className="pulse" style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 2, background: 'var(--status-good)' }} />}
