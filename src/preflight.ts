@@ -15,9 +15,9 @@ import net from 'node:net';
 import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { access, mkdir } from 'node:fs/promises';
+import { access, mkdir, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { defaultInstance, describeInstance } from './instance.js';
+import { defaultInstance, describeInstance, effectiveConfigDir } from './instance.js';
 
 export type CheckStatus = 'ok' | 'warn' | 'error';
 
@@ -59,6 +59,20 @@ export async function dirHasCredentials(configDir: string): Promise<boolean> {
 /** Machine-wide Keychain login (macOS). Not tied to any one config dir. */
 export const hasKeychainCredentials = keychainHasCredentials;
 
+/** Who a config dir is signed in as. Reads only non-secret identity fields. */
+export interface AccountInfo { email?: string; org?: string }
+
+export async function readAccount(configDir: string): Promise<AccountInfo> {
+  try {
+    const raw = await readFile(path.join(configDir, '.claude.json'), 'utf8');
+    const acct = (JSON.parse(raw) as { oauthAccount?: Record<string, string> }).oauthAccount;
+    if (!acct) return {};
+    return { email: acct.emailAddress, org: acct.organizationName };
+  } catch {
+    return {};
+  }
+}
+
 async function exists(p: string): Promise<boolean> {
   return access(p, constants.F_OK).then(() => true, () => false);
 }
@@ -66,20 +80,22 @@ async function exists(p: string): Promise<boolean> {
 export type AuthMode = 'api-key' | 'subscription' | 'cloud' | 'none';
 
 /** Which credential the SDK will actually pick up, and where it came from. */
-export async function detectAuth(): Promise<{ mode: AuthMode; source: string }> {
+export async function detectAuth(): Promise<{ mode: AuthMode; source: string; account?: AccountInfo }> {
   if (process.env.ANTHROPIC_API_KEY) return { mode: 'api-key', source: 'ANTHROPIC_API_KEY' };
   if (process.env.ANTHROPIC_AUTH_TOKEN) return { mode: 'api-key', source: 'ANTHROPIC_AUTH_TOKEN' };
   if (process.env.CLAUDE_CODE_USE_BEDROCK) return { mode: 'cloud', source: 'Bedrock' };
   if (process.env.CLAUDE_CODE_USE_VERTEX) return { mode: 'cloud', source: 'Vertex' };
-
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
     return { mode: 'subscription', source: 'CLAUDE_CODE_OAUTH_TOKEN' };
   }
-  const credFile = (
-    await Promise.all(claudeCredentialsPaths().map(async (p) => ((await exists(p)) ? p : null)))
-  ).find((p): p is string => p !== null);
-  if (credFile) return { mode: 'subscription', source: credFile };
-  if (await keychainHasCredentials()) return { mode: 'subscription', source: 'macOS Keychain' };
+
+  // The dir the AGENT will use — CLAUDE_CODE_CONFIG_DIR inherited from the
+  // launching shell counts. Reporting any other dir would name an account that
+  // is not the one being billed.
+  const dir = effectiveConfigDir({});
+  const account = await readAccount(dir);
+  const stored = (await exists(path.join(dir, '.credentials.json'))) || (await keychainHasCredentials());
+  if (stored || account.email) return { mode: 'subscription', source: dir, account };
 
   return { mode: 'none', source: '' };
 }
@@ -93,7 +109,7 @@ const MODE_LABEL: Record<AuthMode, string> = {
 
 async function checkAuth(): Promise<Check> {
   const name = 'Credentials';
-  const { mode, source } = await detectAuth();
+  const { mode, source, account } = await detectAuth();
 
   if (mode === 'none') {
     return {
@@ -117,7 +133,8 @@ async function checkAuth(): Promise<Check> {
     };
   }
 
-  return { name, status: 'ok', detail: `${MODE_LABEL[mode]} (${source})` };
+  const who = account?.email ? `${account.email}${account.org ? ` · ${account.org}` : ''}` : source;
+  return { name, status: 'ok', detail: `${MODE_LABEL[mode]} — ${who}` };
 }
 
 function checkInstance(): Check {

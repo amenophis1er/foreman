@@ -29,11 +29,17 @@ export const BILLING_META = {
  * stay muted, because making every mode loud teaches people to ignore all of
  * them. Icon and label always — never colour alone.
  */
-export function BillingBadge({ mode, source, compact, style }) {
+export function BillingBadge({ mode, source, account, compact, style }) {
   const m = BILLING_META[mode] ?? BILLING_META.none;
+  // "subscription" alone cannot answer "whose?" — and on a machine with more
+  // than one Claude login that is the only question worth asking.
+  const who = account?.email;
+  const label = who ?? m.label;
+  const title = [m.hint, who && account.org ? `Account: ${who} (${account.org})` : who && `Account: ${who}`,
+    source && `Source: ${source}`].filter(Boolean).join('\n');
   const loud = mode === 'api-key' || mode === 'none';
   return (
-    <span title={source ? `${m.hint}\nSource: ${source}` : m.hint} style={{
+    <span title={title} style={{
       display: 'inline-flex', alignItems: 'center', gap: 5,
       fontSize: compact ? 'var(--fs-xs)' : 'var(--fs-sm)', color: 'var(--ink-1)',
       padding: compact ? '1px 6px 1px 5px' : '2px 8px 2px 6px',
@@ -42,7 +48,7 @@ export function BillingBadge({ mode, source, compact, style }) {
       whiteSpace: 'nowrap', lineHeight: '16px', ...style,
     }}>
       <Icon name={m.icon} size={12} strokeWidth={2.25} color={m.color} />
-      {compact ? m.label : `billing: ${m.label}`}
+      {compact ? label : `billing: ${label}`}
     </span>
   );
 }

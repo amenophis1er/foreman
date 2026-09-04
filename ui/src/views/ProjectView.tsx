@@ -105,7 +105,7 @@ export function ProjectView({
   p, models, routeRunId, onSelectRun, onBack, refreshFleet, auth, theme, onToggleTheme, onSettings,
 }: {
   p: ProjectSummary; models: ModelInfo[] | null;
-  auth: { mode: BillingMode; source: string };
+  auth: { mode: BillingMode; source: string; account?: { email?: string; org?: string } };
   routeRunId: string | null; onSelectRun: (runId: string | null) => void;
   onBack: () => void; refreshFleet: () => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
@@ -180,7 +180,7 @@ export function ProjectView({
       <AppHeader mode="project" title={p.name} folder={p.folder} onBack={onBack}
         theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {headerErr && <Banner tone="error" inline>{headerErr}</Banner>}
-        <BillingBadge mode={p.billingMode ?? auth.mode} compact
+        <BillingBadge mode={p.billingMode ?? auth.mode} compact account={auth.account}
           source={p.claudeInstance?.billing === 'own-login'
             ? `${p.claudeInstance.configDir} (this project's own login)`
             : auth.source} />
@@ -231,7 +231,7 @@ export function ProjectView({
                 margin: 'var(--sp-3) auto 0', maxWidth: 'var(--composer-max-w, 720px)',
                 fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
               }}>
-                <BillingBadge mode={p.billingMode ?? auth.mode} compact
+                <BillingBadge mode={p.billingMode ?? auth.mode} compact account={auth.account}
                   source={p.claudeInstance?.billing === 'own-login'
                     ? `${p.claudeInstance.configDir} (this project's own login)`
                     : auth.source} />

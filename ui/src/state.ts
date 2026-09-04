@@ -334,7 +334,8 @@ function activityLine(event: string, d: any): string | null {
 export function useFleet() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [connected, setConnected] = useState(false);
-  const [auth, setAuth] = useState<{ mode: AuthMode; source: string }>({ mode: 'none', source: '' });
+  const [auth, setAuth] = useState<{ mode: AuthMode; source: string; account?: { email?: string; org?: string } }>(
+    { mode: 'none', source: '' });
   /** Latest one-line activity per project, from the live event stream. */
   const [activity, setActivity] = useState<Record<string, string>>({});
 
@@ -343,7 +344,7 @@ export function useFleet() {
     if (!r?.ok) return;
     const data = await r.json();
     setProjects(data.projects);
-    setAuth({ mode: data.authMode ?? 'none', source: data.authSource ?? '' });
+    setAuth({ mode: data.authMode ?? 'none', source: data.authSource ?? '', account: data.authAccount ?? undefined });
   }, []);
 
   useEffect(() => {

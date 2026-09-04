@@ -10,3 +10,4 @@ Says which account pays. Appears in the fleet header, the project header, and di
 - Never show it alone as a colour or a glyph; the label is what makes it readable, exactly as with `StatusBadge`.
 - `compact` drops the `billing:` prefix for dense rows. Keep the full form in headers.
 - The server decides the mode — including per-project billing. Do not derive it in the view from a config path.
+- Pass `account` whenever the server knows it. The label then reads as the account email rather than the word `subscription`, because two subscriptions on one machine are indistinguishable otherwise. The org name goes in the tooltip.
