@@ -237,11 +237,18 @@ export class MissionRun {
 
   /**
    * Runs the mission to completion. Resolves when the director ends.
-   * With `resumeSessionId`, the director session is resumed with its prior
-   * context and instructed to re-verify state against MISSION.md first.
+   *
+   * Passing `resume` marks this as a continuation: the director is told to
+   * re-verify state against MISSION.md rather than start the mission over.
+   * `resume.sessionId` restores its prior context when available — it is
+   * absent when the director's model changed, since a session cannot switch
+   * models. Resuming WITHOUT a session is still a resume: the mission doc
+   * and the working directory carry the state across.
    */
-  async start(resumeSessionId?: string): Promise<void> {
-    this.emit(resumeSessionId ? 'run_resumed' : 'run_started', {
+  async start(resume?: { sessionId?: string }): Promise<void> {
+    const resumeSessionId = resume?.sessionId;
+    const isResume = resume !== undefined;
+    this.emit(isResume ? 'run_resumed' : 'run_started', {
       runId: this.meta.id,
       folder: this.meta.folder,
       mission: this.meta.mission,
@@ -249,12 +256,19 @@ export class MissionRun {
       costUsd: this.meta.costUsd,
     });
 
-    const prompt = resumeSessionId
+    const prompt = isResume
       ? `MISSION (unchanged): ${this.meta.mission}\n\n` +
-        'This mission was interrupted (process restart or crash) and is now being resumed. ' +
-        'Do not trust your memory of progress: re-read .foreman/MISSION.md if it exists ' +
-        '(write it first if it does not), inspect the working directory, and verify which ' +
-        'milestones are actually complete. Update the doc to match reality, then continue ' +
+        'This mission was interrupted (process restart, crash, usage limit, or an ' +
+        'operator stop) and is now being resumed. DO NOT START OVER. ' +
+        (resumeSessionId
+          ? 'Do not trust your memory of progress: '
+          : 'You are a NEW session with no memory of this mission at all — everything ' +
+            'you know must come from disk. ') +
+        're-read .foreman/MISSION.md if it exists ' +
+        '(write it first if it does not), inspect the working directory to see which ' +
+        'files already exist and what state they are in, and verify which milestones are ' +
+        'actually complete. Keep completed work; do not rewrite files that already ' +
+        'satisfy their milestone. Update the doc to match reality, then continue ' +
         'the mission to DONE WHEN. ' +
         `Budget note: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)} is already spent.`
       : `MISSION: ${this.meta.mission}\n\nBudget: $${this.meta.budgetUsd.toFixed(2)} total for this run. ` +
