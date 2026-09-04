@@ -130,7 +130,7 @@ function reserveProject(projectId: string): boolean {
 
 /** Runs a mission to completion. The project must already be reserved. */
 async function driveRun(
-  projectId: string, meta: RunMeta, resumeSessionId?: string,
+  projectId: string, meta: RunMeta, resume?: { sessionId?: string },
   changes?: { directorChanged: boolean; workerChanged: boolean },
 ): Promise<void> {
   const emit = makeEmitter(meta.id, projectId);
@@ -151,7 +151,7 @@ async function driveRun(
         directorModel: meta.directorModel, workerModel: meta.workerModel,
       });
     }
-    await run.start(resumeSessionId);
+    await run.start(resume);
   } catch (err) {
     // start() catches mission errors itself; anything reaching here is a
     // Foreman bug or storage failure. Never let it become an unhandled
@@ -237,7 +237,8 @@ async function resumeRun(projectId: string, meta: RunMeta): Promise<void> {
   await store.writeMeta(meta).catch((err) => {
     console.error(`failed to persist resume of ${meta.id}:`, err);
   });
-  await driveRun(projectId, meta, directorChanged ? undefined : sessionId, {
+  // Always a resume, even when the model change forces a fresh session.
+  await driveRun(projectId, meta, { sessionId: directorChanged ? undefined : sessionId }, {
     directorChanged, workerChanged,
   });
 }
