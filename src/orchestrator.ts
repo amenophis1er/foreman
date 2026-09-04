@@ -22,7 +22,65 @@ import {
   type Query,
   type PermissionResult,
   type SDKMessage,
+  type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+
+/**
+ * A pushable async iterable of user messages — the director's streaming
+ * prompt. Steering pushes additional messages; `close()` ends the
+ * conversation once the mission's final turn has completed.
+ */
+class MessageStream implements AsyncIterable<SDKUserMessage> {
+  private queue: SDKUserMessage[] = [];
+  private waiter: ((r: IteratorResult<SDKUserMessage>) => void) | null = null;
+  private closed = false;
+
+  push(text: string): boolean {
+    if (this.closed) return false;
+    const msg: SDKUserMessage = {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text }] },
+      parent_tool_use_id: null,
+      session_id: '',
+    };
+    if (this.waiter) {
+      const w = this.waiter;
+      this.waiter = null;
+      w({ value: msg, done: false });
+    } else {
+      this.queue.push(msg);
+    }
+    return true;
+  }
+
+  close(): void {
+    this.closed = true;
+    if (this.waiter) {
+      const w = this.waiter;
+      this.waiter = null;
+      w({ value: undefined, done: true });
+    }
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  /** Messages pushed but not yet consumed by the SDK's input pump. */
+  get pending(): number {
+    return this.queue.length;
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    return {
+      next: (): Promise<IteratorResult<SDKUserMessage>> => {
+        if (this.queue.length) return Promise.resolve({ value: this.queue.shift()!, done: false });
+        if (this.closed) return Promise.resolve({ value: undefined, done: true });
+        return new Promise((resolve) => { this.waiter = resolve; });
+      },
+    };
+  }
+}
 import { makePolicy, type PendingPermission } from './policy.js';
 import type { RunMeta, WorkerMeta } from './types.js';
 
@@ -79,6 +137,11 @@ export class MissionRun {
   private readonly runAllowed = new Set<string>();
   private readonly pendingPermissions = new Map<string, PendingPermission>();
   private readonly pendingQuestions = new Map<string, (answer: string) => void>();
+  /** The director's streaming prompt; steering pushes into it. */
+  private directorInput?: MessageStream;
+  /** Director cost is cumulative per query; track the last figure for deltas. */
+  private directorCostSeen = 0;
+  private wasInterrupted = false;
 
   constructor(
     meta: RunMeta,
@@ -136,7 +199,24 @@ export class MissionRun {
     return true;
   }
 
+  /**
+   * Unsolicited operator guidance to the director, delivered at its next
+   * turn boundary. Returns false once the mission is finishing.
+   */
+  steer(text: string): boolean {
+    if (!this.directorInput || this.directorInput.isClosed) return false;
+    this.emit('steer', { to: 'director', text, timing: 'next' });
+    return this.directorInput.push(
+      '[OPERATOR STEER — mid-mission note from the human overseer]\n' +
+      `${text}\n\n` +
+      'Acknowledge briefly, update .foreman/MISSION.md if this changes the plan ' +
+      'or DONE WHEN, and continue the mission with this guidance applied.',
+    );
+  }
+
   async interrupt(): Promise<void> {
+    this.wasInterrupted = true;
+    this.directorInput?.close(); // no further turns; let the session wind down
     for (const w of this.workers.values()) {
       if (w.q) await w.q.interrupt().catch(() => {});
     }
@@ -178,8 +258,14 @@ export class MissionRun {
       await mkdir(foremanDir, { recursive: true });
       await writeFile(path.join(foremanDir, '.gitignore'), '*\n').catch(() => {});
 
+      // Streaming prompt: the mission goes in first; steering pushes more
+      // user messages, each starting a new director turn.
+      const input = new MessageStream();
+      this.directorInput = input;
+      input.push(prompt);
+
       const q = query({
-        prompt,
+        prompt: input,
         options: {
           cwd: this.meta.folder,
           permissionMode: 'default',
@@ -193,15 +279,36 @@ export class MissionRun {
       });
       this.directorQ = q;
 
+      let lastTurnFailed = false;
       for await (const msg of this.directorQ as AsyncIterable<SDKMessage>) {
         const m = msg as Record<string, unknown>;
         if (typeof m.session_id === 'string') this.meta.directorSessionId = m.session_id;
         if (m.type === 'result') {
-          this.addCost(m.total_cost_usd as number | undefined);
-          this.meta.status = m.is_error ? 'error' : 'done';
+          // Cumulative per query() call — record only the delta per turn.
+          const total = m.total_cost_usd as number | undefined;
+          if (typeof total === 'number') {
+            this.addCost(total - this.directorCostSeen);
+            this.directorCostSeen = total;
+          }
+          lastTurnFailed = Boolean(m.is_error);
+          // A result means the CLI is idle with all delivered input
+          // processed (a steer consumed mid-turn is folded into that
+          // turn's result). Only a steer still waiting in our queue
+          // guarantees another turn; otherwise the mission is over.
+          // Closing the input stream alone does not end the CLI
+          // session, so break and dispose the query explicitly.
+          if (input.pending === 0) {
+            input.close();
+            this.emit('message', { agent: 'director', msg });
+            break;
+          }
         }
         this.emit('message', { agent: 'director', msg });
       }
+      input.close();
+      await (q as AsyncGenerator<SDKMessage>).return?.(undefined as never).catch(() => {});
+      this.meta.status = this.wasInterrupted ? 'interrupted'
+        : lastTurnFailed ? 'error' : 'done';
     } catch (err) {
       this.meta.status = 'error';
       this.emit('run_error', { error: String(err) });
