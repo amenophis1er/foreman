@@ -12,10 +12,11 @@
  *     EXCEPT navigation to non-local URLs, which prompts — the browser can
  *     freely exercise the app under test but going out to the internet is a
  *     human decision.
- *  5. Tools the human granted "always allow" for this run are auto-allowed —
- *     but only for routine asks. A rule-forced ask or one carrying a
- *     decisionReason (e.g. a path outside the working directory) always
- *     prompts, so blanket grants never bypass guardrails.
+ *  5. Tools granted by the human — "always allow" for this run, or an
+ *     'allow' in the Settings tool policy — are auto-allowed. A matched
+ *     ask-rule still forces a prompt; the SDK's heuristic decisionReason
+ *     does not, since it fires on ordinary shell work (loops, expansions,
+ *     background processes) and the real guardrails are enforced below.
  *  6. The per-run tool policy (Settings, snapshotted at run start) applies:
  *     'allow' runs silently, 'deny' blocks with guidance, 'ask' prompts.
  *     Defaults are autonomy-first (Bash/Write/Edit/WebFetch allowed).
@@ -72,8 +73,9 @@ export interface PendingPermission {
 }
 
 export interface PolicyHooks {
-  /** Announce a silent allow (for the transcript). */
-  onAutoAllow(agent: string, toolName: string): void;
+  /** Announce a silent allow (for the transcript). `reason` is the SDK's
+   *  decision reason when one was present but overridden by a grant. */
+  onAutoAllow(agent: string, toolName: string, reason?: string): void;
   /** Present an approval card; the returned promise resolves on decision. */
   onAsk(agent: string, id: string, request: {
     toolName: string;
@@ -107,7 +109,14 @@ export function makePolicy(
   const autoReadOnly = settings?.autoAllowReadOnly !== false;
 
   return async (toolName, input, opts) => {
-    const routine = !opts.matchedAskRule && !opts.decisionReason;
+    // An explicit grant (Settings policy or the human's "Always" click) is a
+    // deliberate decision about a TOOL, so a heuristic decisionReason like
+    // "contains shell syntax that cannot be statically analyzed" must not
+    // override it — that reason fires on loops, expansions and background
+    // processes, i.e. on most real work. A matched ask-rule is a configured
+    // instruction rather than a heuristic, so it still forces a prompt, as
+    // does the folder boundary checked below.
+    const routine = !opts.matchedAskRule;
     const filePath = typeof input.file_path === 'string' ? input.file_path : null;
     const isMissionDocWrite =
       (toolName === 'Write' || toolName === 'Edit') &&
@@ -119,6 +128,8 @@ export function makePolicy(
       (toolName === 'Write' || toolName === 'Edit' || toolName === 'NotebookEdit') &&
       filePath !== null &&
       !path.resolve(filePath).startsWith(folderDir);
+
+    const granted = toolPolicy[toolName] === 'allow' || runAllowed.has(toolName);
 
     if (toolPolicy[toolName] === 'deny') {
       return {
@@ -135,11 +146,11 @@ export function makePolicy(
         toolName.startsWith('mcp__foreman__') ||
         (autoReadOnly && AUTO_ALLOW_TOOLS.has(toolName)) ||
         isMissionDocWrite ||
-        (toolPolicy[toolName] === 'allow' && routine && browser !== 'ask') ||
-        (browser !== 'ask' && runAllowed.has(toolName) && routine)
+        (granted && routine && browser !== 'ask')
       )
     ) {
-      hooks.onAutoAllow(agent, toolName);
+      // Carry the reason through so the log shows what was waved past.
+      hooks.onAutoAllow(agent, toolName, opts.decisionReason);
       return { behavior: 'allow' };
     }
 

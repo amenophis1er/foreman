@@ -370,7 +370,7 @@ export class MissionRun {
 
   private policyFor(agent: string) {
     return makePolicy(agent, this.meta.folder, this.runAllowed, {
-      onAutoAllow: (a, toolName) => this.emit('auto_allowed', { agent: a, toolName }),
+      onAutoAllow: (a, toolName, reason) => this.emit('auto_allowed', { agent: a, toolName, reason }),
       onAsk: (a, id, req) => this.emit('permission_request', { id, agent: a, ...req }),
       register: (id, pending) => void this.pendingPermissions.set(id, pending),
       unregister: (id) => {
