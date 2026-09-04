@@ -3,11 +3,23 @@
   --font-ui: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  --fs-xs: 11px;   /* labels, section titles, timestamps, mono paths */
-  --fs-sm: 12px;   /* secondary text, badges, meta rows */
-  --fs-md: 13px;   /* base body */
-  --fs-lg: 15px;   /* card titles, subheads */
-  --fs-xl: 18px;   /* the one app title */
+  /*
+   * One knob for the whole type scale (Settings → Appearance → Text size).
+   * base.css multiplies the root font size by it, and every size below is in
+   * `rem`, so the scale moves together and nothing drifts out of proportion.
+   *
+   * `rem` rather than `px` also means the browser's own font-size preference
+   * is honoured at scale 1 — a reader who has set 20px everywhere else gets
+   * 20px here, which px sizes silently overrode.
+   */
+  --ui-scale: 1; /* @kind other */
+
+  /* px equivalents at scale 1 with a 16px browser default. */
+  --fs-xs: 0.75rem;     /* 12 · labels, section titles, timestamps, mono paths */
+  --fs-sm: 0.8125rem;   /* 13 · secondary text, badges, meta rows */
+  --fs-md: 0.9375rem;   /* 15 · base body */
+  --fs-lg: 1.0625rem;   /* 17 · card titles, subheads */
+  --fs-xl: 1.25rem;     /* 20 · the one app title */
 
   --lh: 1.45; /* @kind font */
   --lh-prose: 1.55; /* @kind font */

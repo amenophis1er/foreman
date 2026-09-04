@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Icon } from '../core/Icon';
 
-/** The dashed tile that opens the folder picker. Always the last cell of the fleet grid. */
+/** The dashed tile that opens the folder picker. The fleet's empty state; a
+ *  populated fleet carries the action as a header button instead. */
 export function LinkProjectCard({ onClick, style }) {
   const [hover, setHover] = useState(false);
   return (

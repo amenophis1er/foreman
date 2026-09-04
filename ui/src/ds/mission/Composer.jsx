@@ -44,7 +44,7 @@ function Kbd({ children }) {
       minWidth: 18, height: 18, padding: '0 4px', boxSizing: 'border-box',
       background: 'var(--bg-inset)', border: '1px solid var(--line-strong)',
       borderRadius: 4, color: 'var(--ink-1)',
-      fontFamily: 'var(--font-mono)', fontSize: 11, lineHeight: 1,
+      fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', lineHeight: 1,
     }}>{children}</kbd>
   );
 }

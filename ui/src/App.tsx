@@ -7,6 +7,37 @@ import type { ModelInfo } from './ds/forms/ModelSelect';
 
 type Theme = 'dark' | 'light';
 
+type TextSize = 'small' | 'default' | 'large' | 'larger';
+
+/**
+ * Multipliers behind Settings → Appearance → Text size. `default` is exactly 1
+ * so the browser's own font-size preference passes through untouched; the
+ * other steps are deliberately coarse, because a slider of near-identical
+ * sizes is a decision nobody wants to make twice.
+ */
+const TEXT_SCALE: Record<TextSize, number> = {
+  small: 0.88, default: 1, large: 1.15, larger: 1.3,
+};
+
+/**
+ * Interface text size. Held in localStorage rather than read from /settings,
+ * so it is applied on the first paint instead of jumping a moment later when
+ * the settings fetch lands.
+ */
+function useTextSize(): (t: TextSize) => void {
+  const apply = useCallback((t: TextSize) => {
+    const scale = TEXT_SCALE[t] ?? 1;
+    document.documentElement.style.setProperty('--ui-scale', String(scale));
+    try { localStorage.setItem('foreman:textSize', t); } catch { /* optional */ }
+  }, []);
+  useEffect(() => {
+    let saved: string | null = null;
+    try { saved = localStorage.getItem('foreman:textSize'); } catch { /* optional */ }
+    if (saved && saved in TEXT_SCALE) apply(saved as TextSize);
+  }, [apply]);
+  return apply;
+}
+
 function useTheme(): [Theme, () => void, (t: Theme | 'system') => void] {
   const [theme, setTheme] = useState<Theme>(() =>
     (localStorage.getItem('foreman:theme') as Theme) || 'dark');
@@ -40,6 +71,7 @@ export default function App() {
   const { projects, connected, auth, refresh, activity } = useFleet();
   const { projectId, runId, go, goRun } = useRoute();
   const [theme, toggleTheme, applyTheme] = useTheme();
+  const applyTextSize = useTextSize();
   const models = useModels();
   const [settings, setSettings] = useState<SettingsFile>({ global: {}, projects: {} });
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -65,6 +97,7 @@ export default function App() {
     setSettings(next);
     setSettingsOpen(false);
     if (v.global.theme) applyTheme(v.global.theme);
+    if (v.global.textSize) applyTextSize(v.global.textSize);
     await fetch('/settings', {
       method: 'PUT', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({

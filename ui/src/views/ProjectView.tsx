@@ -22,21 +22,62 @@ import { Composer } from '../ds/mission/Composer';
 import { SteerBar } from '../ds/mission/SteerBar';
 import type { ModelInfo } from '../ds/forms/ModelSelect';
 
-function Transcript({ run, filter, jump, header }: {
+export type TranscriptOrder = 'newest' | 'oldest';
+
+const ORDER_KEY = 'foreman.transcriptOrder';
+
+/**
+ * Reading order for the transcript, remembered across runs and reloads.
+ *
+ * Newest-first is the default because most visits to a run are after the fact,
+ * where the last thing that happened is the thing you came for. Following a
+ * live mission reads better oldest-first, which is one click away and sticks.
+ */
+function useTranscriptOrder(): [TranscriptOrder, (o: TranscriptOrder) => void] {
+  const [order, setOrder] = useState<TranscriptOrder>(() => {
+    try {
+      return localStorage.getItem(ORDER_KEY) === 'oldest' ? 'oldest' : 'newest';
+    } catch {
+      return 'newest'; // storage can throw outright in a locked-down browser
+    }
+  });
+  return [order, (o: TranscriptOrder) => {
+    setOrder(o);
+    try { localStorage.setItem(ORDER_KEY, o); } catch { /* preference is optional */ }
+  }];
+}
+
+/** Where new entries land, given the reading order. */
+function liveEdge(el: HTMLElement, order: TranscriptOrder): number {
+  return order === 'newest' ? 0 : el.scrollHeight;
+}
+
+function Transcript({ run, filter, jump, order, header }: {
   run: RunViewState; filter: string | null;
   /** Entry to scroll to and flash; `n` forces the effect on repeat clicks. */
   jump: { id: number; n: number } | null;
+  order: TranscriptOrder;
   header?: React.ReactNode;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
   const [flashId, setFlashId] = useState<number | null>(null);
-  const shown = filter ? run.entries.filter((e) => e.agent === filter) : run.entries;
+  const filtered = filter ? run.entries.filter((e) => e.agent === filter) : run.entries;
+  // Entries are stored oldest-first; newest-first is a view, not a re-model.
+  const shown = order === 'newest' ? [...filtered].reverse() : filtered;
 
   useEffect(() => {
     const el = box.current;
-    if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [shown.length]);
+    if (el && pinned.current) el.scrollTop = liveEdge(el, order);
+  }, [shown.length, order]);
+
+  // Flipping the order makes the old scroll position meaningless — go back to
+  // following the live edge rather than stranding the reader mid-history.
+  useEffect(() => {
+    pinned.current = true;
+    const el = box.current;
+    if (el) el.scrollTop = liveEdge(el, order);
+  }, [order]);
 
   useEffect(() => {
     if (!jump) return;
@@ -55,7 +96,9 @@ function Transcript({ run, filter, jump, header }: {
     <div ref={box}
       onScroll={(e) => {
         const el = e.currentTarget;
-        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+        pinned.current = order === 'newest'
+          ? el.scrollTop < 60
+          : el.scrollHeight - el.scrollTop - el.clientHeight < 60;
       }}
       style={{
         overflowY: 'auto', padding: 'var(--sp-3)', minHeight: 0, flex: 1,
@@ -133,6 +176,7 @@ export function ProjectView({
     setJump({ id: e.id, n: Date.now() });
   };
   const [resuming, setResuming] = useState(false);
+  const [order, setOrder] = useTranscriptOrder();
   const [showTimeline, setShowTimeline] = useState(true);
   const [headerErr, setHeaderErr] = useState('');
   const [composerErr, setComposerErr] = useState('');
@@ -169,6 +213,7 @@ export function ProjectView({
   const railCurrent = selectedRunId ? {
     id: selectedRunId,
     mission: run.mission || selectedRun?.mission || '',
+    title: run.title || selectedRun?.title,
     createdAt: selectedRun?.createdAt,
     costUsd: run.costUsd,
     status: run.runStatus,
@@ -228,7 +273,7 @@ export function ProjectView({
                   in the view beside it. */}
               <div style={{
                 display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', flexWrap: 'wrap',
-                margin: 'var(--sp-3) auto 0', maxWidth: 'var(--composer-max-w, 720px)',
+                margin: 'var(--sp-3) auto 0', maxWidth: 'var(--composer-max)',
                 fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
               }}>
                 <BillingBadge mode={p.billingMode ?? auth.mode} compact account={auth.account}
@@ -290,7 +335,24 @@ export function ProjectView({
                 )}
               </div>
             )}
-            <Transcript run={run} filter={filter} jump={jump} />
+            {run.entries.length > 0 && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, flex: '0 0 auto',
+                padding: '8px var(--sp-3) 0', fontSize: 'var(--fs-xs)',
+                color: 'var(--ink-2)', textTransform: 'uppercase',
+                letterSpacing: 'var(--ls-caps)',
+              }}>
+                Transcript<span style={{ flex: 1 }} />
+                <Button variant="ghost" size="sm" icon="sort"
+                  title={order === 'newest'
+                    ? 'Newest first — click to read oldest first'
+                    : 'Oldest first — click to read newest first'}
+                  onClick={() => setOrder(order === 'newest' ? 'oldest' : 'newest')}>
+                  {order === 'newest' ? 'Newest first' : 'Oldest first'}
+                </Button>
+              </div>
+            )}
+            <Transcript run={run} filter={filter} jump={jump} order={order} />
             {viewingLive && (
               <div style={{ padding: 'var(--sp-2) var(--sp-3) var(--sp-3)', flex: '0 0 auto' }}>
                 <SteerBar

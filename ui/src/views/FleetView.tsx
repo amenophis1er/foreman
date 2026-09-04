@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { api, type ProjectSummary } from '../state';
 import { AppHeader } from '../ds/shell/AppHeader';
 import { BillingBadge, type BillingMode } from '../ds/status/BillingBadge';
+import { Button } from '../ds/core/Button';
 import { Empty } from '../ds/core/Empty';
 import { Banner } from '../ds/status/Banner';
 import { ProjectCard } from '../ds/fleet/ProjectCard';
@@ -91,6 +92,15 @@ export function FleetView({
       <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {!connected && <Banner tone="disconnected" inline>disconnected</Banner>}
         <BillingBadge mode={auth.mode} source={auth.source} account={auth.account} />
+        {/* The fleet's one creative act. As a trailing grid tile it drifted
+            further from the eye with every project linked; in the header it
+            stays in the same place whether there are two projects or twenty. */}
+        {projects.length > 0 && (
+          <Button variant="primary" icon="add" onClick={picker.show}
+            title="Link a folder as a project (or drop one anywhere on this page)">
+            Link project
+          </Button>
+        )}
       </AppHeader>
 
       {/* With no projects the grid strands a lone card in the top-left of an
@@ -101,7 +111,7 @@ export function FleetView({
         alignItems: 'center', justifyContent: 'center', gap: 'var(--sp-3)',
         padding: 'var(--sp-5)', textAlign: 'center',
       } : {
-        display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(var(--card-min), 1fr))',
         gap: 'var(--sp-4)', padding: 'var(--sp-5)', maxWidth: 'var(--fleet-max)', margin: '0 auto',
       }}>
         {projects.map((p) => (
@@ -109,6 +119,7 @@ export function FleetView({
             instance={p.claudeInstance?.configDir}
             run={p.activeRun ? {
               mission: p.activeRun.mission,
+              title: p.activeRun.title,
               costUsd: p.activeRun.costUsd,
               budgetUsd: p.activeRun.budgetUsd,
             } : undefined}
@@ -120,15 +131,13 @@ export function FleetView({
             onOpen={() => onOpen(p.id)}
             onUnlink={() => setUnlinking(p)} />
         ))}
-        {projects.length === 0 ? (
+        {projects.length === 0 && (
           <>
-            <div style={{ width: 320, maxWidth: '100%' }}>
+            <div style={{ width: '20rem', maxWidth: '100%' }}>
               <LinkProjectCard onClick={picker.show} />
             </div>
             <Empty>No projects linked yet — link a folder to give the director a job site.</Empty>
           </>
-        ) : (
-          <LinkProjectCard onClick={picker.show} />
         )}
       </div>
 

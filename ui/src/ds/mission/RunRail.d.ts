@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 
-export interface RailRun { id: string; mission: string; createdAt?: number; costUsd?: number; status: string; live?: boolean; }
+export interface RailRun { id: string; mission: string; title?: string; createdAt?: number; costUsd?: number; status: string; live?: boolean; }
 export interface RailAgent { id: string; status: string; task?: string; }
 
 /**

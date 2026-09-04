@@ -17,7 +17,7 @@ export function RunRail({ current, agents = [], history = [], selectedRunId, fil
       <section>
         <SectionTitle>{current?.live ? 'This run' : 'Selected run'}</SectionTitle>
         {current ? (
-          <RunRow mission={current.mission} createdAt={current.createdAt} costUsd={current.costUsd} status={current.status} selected current />
+          <RunRow mission={current.mission} title={current.title} createdAt={current.createdAt} costUsd={current.costUsd} status={current.status} selected current />
         ) : <Empty>No run selected.</Empty>}
         {current && (
           <div style={{ marginLeft: 10, marginTop: 4, paddingLeft: 8, borderLeft: '1px solid var(--line-strong)' }}>
@@ -46,7 +46,7 @@ export function RunRail({ current, agents = [], history = [], selectedRunId, fil
         <SectionTitle>Mission history</SectionTitle>
         {others.length === 0 && <Empty>No other runs yet.</Empty>}
         {others.map((r) => (
-          <RunRow key={r.id} mission={r.mission} createdAt={r.createdAt} costUsd={r.costUsd} status={r.status} onSelect={() => onSelectRun?.(r.id)} />
+          <RunRow key={r.id} mission={r.mission} title={r.title} createdAt={r.createdAt} costUsd={r.costUsd} status={r.status} onSelect={() => onSelectRun?.(r.id)} />
         ))}
       </section>
     </>

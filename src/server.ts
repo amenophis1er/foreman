@@ -71,6 +71,30 @@ async function projectBilling(p: Project, serverMode: AuthMode): Promise<AuthMod
   return (await dirHasCredentials(effectiveConfigDir(instance))) ? 'subscription' : 'none';
 }
 
+/**
+ * Fleet order. Insertion order answers "when did I link this", which is the
+ * one question nobody asks; these cards are a control surface, so the order
+ * is urgency, then liveness, then recency:
+ *
+ *   1. projects with an agent blocked on a human (approval or question)
+ *   2. projects with a mission running
+ *   3. everything else, most recently active first
+ *
+ * Within a tier the sort is by last activity too, so a card only moves when
+ * its state actually changed — a project does not drift under the cursor.
+ */
+function fleetTier(c: { pendingPermissions: number; pendingQuestions: number; activeRun: unknown }): number {
+  if (c.pendingPermissions + c.pendingQuestions > 0) return 0;
+  return c.activeRun ? 1 : 2;
+}
+
+function fleetOrder(
+  a: { pendingPermissions: number; pendingQuestions: number; activeRun: unknown; lastActivityAt: number },
+  b: { pendingPermissions: number; pendingQuestions: number; activeRun: unknown; lastActivityAt: number },
+): number {
+  return fleetTier(a) - fleetTier(b) || b.lastActivityAt - a.lastActivityAt;
+}
+
 /** Trims an optional path field from a request body; '' means "cleared". */
 function toPath(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() ? v.trim() : undefined;
@@ -379,30 +403,35 @@ const server = http.createServer(async (req, res) => {
       const [projects, allRuns, auth] = await Promise.all([
         store.listProjects(), store.listRuns(), authPromise,
       ]);
+      const cards = await Promise.all(projects.map(async (p) => {
+        const run = activeByProject.get(p.id);
+        // Newest finished run for the idle-card summary (runs are newest-first).
+        const lastRun = allRuns.find((r) => r.projectId === p.id && r.status !== 'running') ?? null;
+        return {
+          ...p,
+          // What THIS project will actually bill, which can differ from the
+          // server's mode when the pin opts out of the inherited key.
+          billingMode: await projectBilling(p, auth.mode),
+          activeRun: run ? { ...run.meta } : null,
+          lastRun: lastRun && {
+            mission: lastRun.mission, title: lastRun.title, status: lastRun.status,
+            createdAt: lastRun.createdAt, costUsd: lastRun.costUsd,
+          },
+          // When this project last did anything, so the fleet can lead with it.
+          // A never-run project falls back to when it was linked.
+          lastActivityAt:
+            run?.meta.createdAt ?? lastRun?.endedAt ?? lastRun?.createdAt ?? p.createdAt,
+          pendingPermissions: run?.pendingPermissionIds.length ?? 0,
+          pendingQuestions: run?.pendingQuestionIds.length ?? 0,
+        };
+      }));
       json(res, 200, {
         // Billing mode travels with every fleet poll so the UI can state it
         // plainly wherever money is about to be spent.
         authMode: auth.mode,
         authSource: auth.source,
         authAccount: auth.account ?? null,
-        projects: await Promise.all(projects.map(async (p) => {
-          const run = activeByProject.get(p.id);
-          // Newest finished run for the idle-card summary (runs are newest-first).
-          const lastRun = allRuns.find((r) => r.projectId === p.id && r.status !== 'running') ?? null;
-          return {
-            ...p,
-            // What THIS project will actually bill, which can differ from the
-            // server's mode when the pin opts out of the inherited key.
-            billingMode: await projectBilling(p, auth.mode),
-            activeRun: run ? { ...run.meta } : null,
-            lastRun: lastRun && {
-              mission: lastRun.mission, status: lastRun.status,
-              createdAt: lastRun.createdAt, costUsd: lastRun.costUsd,
-            },
-            pendingPermissions: run?.pendingPermissionIds.length ?? 0,
-            pendingQuestions: run?.pendingQuestionIds.length ?? 0,
-          };
-        })),
+        projects: cards.sort(fleetOrder),
       });
 
     } else if (req.method === 'POST' && url.pathname === '/projects') {

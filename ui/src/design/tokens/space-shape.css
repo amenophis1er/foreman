@@ -10,17 +10,23 @@
   --r-md: 10px;  /* project cards, modals, composer textarea */
   --r-pill: 999px; /* status badges, agent dots */
 
-  /* Layout constants lifted from the shipped views */
-  --rail-left: 250px;
-  --rail-right: 340px;
+  /*
+   * Layout constants lifted from the shipped views. In `rem`, so they track
+   * --ui-scale with the type: a rail sized in px would hold 30% less text at
+   * the "Larger" setting and start wrapping meta rows. px equivalents at
+   * scale 1 are in the comments. Breakpoints stay px — media queries cannot
+   * read custom properties, and they describe the window, not the type.
+   */
+  --rail-left: 15.625rem;   /* 250 */
+  --rail-right: 21.25rem;   /* 340 */
   --bp-narrow: 900px;  /* below: single column + tabs */
   --bp-medium: 1180px; /* below: left rail collapses into a crew strip */
-  --fleet-max: 1200px;
-  --composer-max: 720px;
-  --card-min: 300px;
-  --card-min-h: 130px;
-  --modal-w: 480px;
-  --modal-w-wide: 520px;
+  --fleet-max: 75rem;       /* 1200 */
+  --composer-max: 45rem;    /* 720 */
+  --card-min: 18.75rem;     /* 300 */
+  --card-min-h: 8.125rem;   /* 130 */
+  --modal-w: 30rem;         /* 480 */
+  --modal-w-wide: 32.5rem;  /* 520 */
 
   --accent-w: 3px;   /* Card left accent stripe */
   --meter-h: 4px;    /* BudgetMeter track */

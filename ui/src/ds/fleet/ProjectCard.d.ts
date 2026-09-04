@@ -15,16 +15,18 @@ export interface ProjectCardProps {
    * signal that nothing special is going on.
    */
   instance?: string;
-  /** The active run, if any. Absent → idle state. */
-  run?: { mission: string; costUsd: number; budgetUsd: number };
+  /** The active run, if any. Absent → idle state. `title` is the run's
+   *  generated name; without one the brief is shown over two lines instead. */
+  run?: { mission: string; title?: string; costUsd: number; budgetUsd: number };
   /** Flat alternative to `run` for markup contexts: passing `mission` puts the card in its running state. */
   mission?: string;
+  title?: string;
   costUsd?: number;
   budgetUsd?: number;
   /** Most recent finished run, shown when idle: status · date · cost · one-line mission. */
   /** Latest live event, one line — shown as a ticker under the budget meter. */
   activity?: string;
-  lastRun?: { mission: string; status: 'done' | 'error' | 'interrupted'; createdAt?: number; costUsd?: number };
+  lastRun?: { mission: string; title?: string; status: 'done' | 'error' | 'interrupted'; createdAt?: number; costUsd?: number };
   /** Pending approvals — drives the warning border and pulsing strip. */
   pendingPermissions?: number;
   /** Pending director questions. */

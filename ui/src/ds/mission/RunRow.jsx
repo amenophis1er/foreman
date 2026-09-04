@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { StatusBadge } from '../status/StatusBadge';
 
-/** A run in the history rail: one-line mission, date, cost, status. */
-export function RunRow({ mission, createdAt, costUsd = 0, status = 'done', selected, current, onSelect, style }) {
+/** A run in the history rail: its name (or mission), date, cost, status. */
+export function RunRow({ mission, title, createdAt, costUsd = 0, status = 'done', selected, current, onSelect, style }) {
   const [hover, setHover] = useState(false);
   const cost = Number(costUsd) || 0;
   const date = createdAt
@@ -26,7 +26,7 @@ export function RunRow({ mission, createdAt, costUsd = 0, status = 'done', selec
       <div style={{
         fontSize: 'var(--fs-sm)', overflow: 'hidden', whiteSpace: 'nowrap',
         textOverflow: 'ellipsis', color: 'var(--ink-0)', fontWeight: current ? 'var(--fw-semibold)' : 'var(--fw-regular)',
-      }}>{mission}</div>
+      }}>{title || mission}</div>
       <div style={{
         display: 'flex', gap: 'var(--sp-2)', alignItems: 'center', marginTop: 2,
         fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums',

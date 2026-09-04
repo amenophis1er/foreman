@@ -81,6 +81,12 @@ export interface RunMeta {
   /** Whether read-only tools run silently (Settings; default true). */
   autoAllowReadOnly?: boolean;
   id: string;
+  /**
+   * Short generated name for the mission, from one cheap model call at start.
+   * Absent when the call failed or the run predates titling — the UI falls
+   * back to the brief, so nothing depends on this being here.
+   */
+  title?: string;
   /** Owning project; absent on runs recorded before projects existed. */
   projectId?: string;
   /** Model override for the director session. */

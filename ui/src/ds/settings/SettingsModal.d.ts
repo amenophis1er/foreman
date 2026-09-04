@@ -8,7 +8,10 @@ export interface Settings {
   budgetCap?: number; budgetWarnAt?: number; budgetHardStop?: boolean;
   autoAllowReadOnly?: boolean; alwaysSurvivesResume?: boolean;
   toolPolicy?: Record<string, 'allow' | 'ask' | 'deny'>;
-  theme?: 'system' | 'dark' | 'light'; density?: 'comfortable' | 'compact'; showTimestamps?: boolean;
+  theme?: 'system' | 'dark' | 'light';
+  /** Multiplies the whole type scale; `default` follows the browser's own font size. */
+  textSize?: 'small' | 'default' | 'large' | 'larger';
+  density?: 'comfortable' | 'compact'; showTimestamps?: boolean;
   notifyNeedsYou?: boolean; notifyDone?: boolean; notifyBudget?: boolean; sound?: boolean;
   projectsRoot?: string; missionDir?: string; showHidden?: boolean;
 }

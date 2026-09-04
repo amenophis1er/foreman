@@ -49,6 +49,8 @@ export type ClaudeInstancePin = {
 
 export type RunSummary = {
   id: string; projectId?: string; folder: string; mission: string;
+  /** Short generated name; absent until the naming call lands (or fails). */
+  title?: string;
   budgetUsd: number; status: Status; costUsd: number;
   createdAt: number; endedAt?: number;
   directorModel?: string; workerModel?: string; resumes?: number;
@@ -63,7 +65,9 @@ export type ProjectSummary = {
   billingMode?: AuthMode;
   defaultBudgetUsd: number;
   activeRun: RunSummary | null;
-  lastRun: { mission: string; status: Status; createdAt?: number; costUsd?: number } | null;
+  lastRun: { mission: string; title?: string; status: Status; createdAt?: number; costUsd?: number } | null;
+  /** When this project last did anything; the server sorts the fleet by it. */
+  lastActivityAt?: number;
   pendingPermissions: number;
   pendingQuestions: number;
 };
@@ -71,6 +75,8 @@ export type ProjectSummary = {
 export type RunView = {
   runStatus: Status;
   mission: string;
+  /** Generated mission name, once `run_titled` arrives; '' until then. */
+  title: string;
   costUsd: number;
   budgetUsd: number;
   directorSessionId?: string;
@@ -82,7 +88,7 @@ export type RunView = {
 };
 
 const emptyRun: RunView = {
-  runStatus: 'idle', mission: '', costUsd: 0, budgetUsd: 5,
+  runStatus: 'idle', mission: '', title: '', costUsd: 0, budgetUsd: 5,
   agents: [], entries: [], approvals: [], questions: [], missionDoc: null,
 };
 
@@ -165,6 +171,8 @@ function applyWire(s: RunView, e: WireEvent): RunView {
       };
     case 'run_error':
       return { ...s, entries: [...s.entries, { id: ++seq, ts, agent: 'system', kind: 'error', title: 'error', body: d.error }] };
+    case 'run_titled':
+      return { ...s, title: String(d.title ?? '') };
     case 'cost':
       return { ...s, costUsd: d.costUsd, budgetUsd: d.budgetUsd };
     case 'message': {

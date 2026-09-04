@@ -24,7 +24,7 @@ export const DEFAULT_SETTINGS = {
   budgetCap: 5, budgetWarnAt: 80, budgetHardStop: true,
   autoAllowReadOnly: true, alwaysSurvivesResume: true,
   toolPolicy: { Bash: 'allow', Write: 'allow', Edit: 'allow', WebFetch: 'allow', spawn_worker: 'allow' },
-  theme: 'system', density: 'comfortable', showTimestamps: true,
+  theme: 'system', textSize: 'default', density: 'comfortable', showTimestamps: true,
   notifyNeedsYou: true, notifyDone: true, notifyBudget: true, sound: false,
   projectsRoot: '~/Projects', missionDir: '.foreman', showHidden: false,
 };
@@ -81,6 +81,7 @@ export function SettingsModal({ global, project, projectName, scope: scopeProp, 
     </>,
     appearance: <>
       {row('theme', 'Theme', null, <Tabs size="sm" value={get('theme')} onChange={(v) => set('theme', v)} tabs={[{ value: 'system', label: 'System' }, { value: 'dark', label: 'Dark', icon: 'moon' }, { value: 'light', label: 'Light', icon: 'sun' }]} />)}
+      {row('textSize', 'Text size', 'Scales the whole interface. Anything but Default overrides your browser\u2019s own font size.', <Tabs size="sm" value={get('textSize')} onChange={(v) => set('textSize', v)} tabs={[{ value: 'small', label: 'Small' }, { value: 'default', label: 'Default' }, { value: 'large', label: 'Large' }, { value: 'larger', label: 'Larger' }]} />)}
       {row('density', 'Density', 'Compact tightens transcript rows and rail padding.', <Tabs size="sm" value={get('density')} onChange={(v) => set('density', v)} tabs={[{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]} />)}
       {row('showTimestamps', 'Timestamps in transcript', null, <Switch checked={get('showTimestamps')} onChange={(v) => set('showTimestamps', v)} />)}
     </>,
@@ -104,13 +105,13 @@ export function SettingsModal({ global, project, projectName, scope: scopeProp, 
 
   const current = SETTINGS_SECTIONS.find((s) => s.id === section) || SETTINGS_SECTIONS[0];
   return (
-    <Modal width={820} onClose={onClose} dismissible={false} style={{ maxHeight: '82vh', height: 600, ...style }}>
+    <Modal width="51.25rem" onClose={onClose} dismissible={false} style={{ maxHeight: '82vh', height: '37.5rem', ...style }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', padding: 'var(--sp-2) var(--sp-3)', borderBottom: '1px solid var(--line)' }}>
         <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 'var(--fw-semibold)' }}>Settings</span>
         <Tabs size="sm" value={scope} onChange={setScope} tabs={[{ value: 'global', label: 'Global' }, ...(projectName ? [{ value: 'project', label: projectName, icon: 'folder' }] : [])]} />
         <IconButton icon="close" label="Close" onClick={onClose} style={{ marginLeft: 'auto' }} />
       </div>
-      <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: '180px 1fr' }}>
+      <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: '11.25rem 1fr' }}>
         <nav style={{ background: 'var(--bg-inset)', borderRight: '1px solid var(--line)', padding: 'var(--sp-2)', display: 'flex', flexDirection: 'column', gap: 2 }}>
           {SETTINGS_SECTIONS.map((s) => <NavItem key={s.id} s={s} selected={s.id === section} dot={isProject && sectionHasOverride(s.id, p)} onClick={() => setSection(s.id)} />)}
         </nav>
@@ -179,5 +180,5 @@ function Row({ label, hint, children, overridden, inherits, onReset, stacked, da
 }
 
 function Tag({ children, brand }) {
-  return <span style={{ fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', padding: '1px 6px', borderRadius: 'var(--r-pill)', background: brand ? 'var(--brand-wash-strong)' : 'var(--bg-inset)', color: brand ? 'var(--brand)' : 'var(--ink-2)', border: `1px solid ${brand ? 'transparent' : 'var(--line)'}` }}>{children}</span>;
+  return <span style={{ fontSize: 'var(--fs-xs)', letterSpacing: '0.06em', textTransform: 'uppercase', padding: '1px 6px', borderRadius: 'var(--r-pill)', background: brand ? 'var(--brand-wash-strong)' : 'var(--bg-inset)', color: brand ? 'var(--brand)' : 'var(--ink-2)', border: `1px solid ${brand ? 'transparent' : 'var(--line)'}` }}>{children}</span>;
 }

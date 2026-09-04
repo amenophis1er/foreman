@@ -1,6 +1,9 @@
 /* Base element resets — verbatim from the shipped app. */
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
+/* The single multiplier behind every `rem` size. A percentage (not a px value)
+   so the reader's browser font-size preference is the thing being scaled. */
+html { font-size: calc(100% * var(--ui-scale)); }
 body {
   margin: 0;
   background: var(--bg-app);

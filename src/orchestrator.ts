@@ -84,6 +84,7 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
 }
 import { makePolicy, type PendingPermission } from './policy.js';
 import { instanceOptions, resolveInstance } from './instance.js';
+import { generateRunTitle } from './title.js';
 import type { RunMeta, WorkerMeta } from './types.js';
 
 /**
@@ -285,6 +286,11 @@ export class MissionRun {
       costUsd: this.meta.costUsd,
     });
 
+    // Name the mission in parallel with running it: the title is display-only,
+    // so nothing waits on it, and a resumed run that predates titling picks
+    // one up here.
+    if (!this.meta.title) void this.titleMission();
+
     const prompt = isResume
       ? `MISSION (unchanged): ${this.meta.mission}\n\n` +
         'This mission was interrupted (process restart, crash, usage limit, or an ' +
@@ -402,6 +408,25 @@ export class MissionRun {
   }
 
   // -- internals ------------------------------------------------------------
+
+  /**
+   * Asks the cheapest model for a short name for this mission, once.
+   *
+   * Fire-and-forget by design: it must not delay the director's first turn,
+   * and a run whose title never arrives is displayed by its brief instead.
+   * The fraction of a cent it costs is folded into the run's ledger rather
+   * than spent invisibly.
+   */
+  private async titleMission(): Promise<void> {
+    const named = await generateRunTitle(
+      this.meta.mission, resolveInstance(this.meta.claudeInstance));
+    if (!named || this.meta.title) return;
+    this.meta.title = named.title;
+    this.emit('run_titled', { title: named.title });
+    // addCost persists meta, so the title lands on disk with its own cost.
+    if (named.costUsd > 0) this.addCost(named.costUsd);
+    else this.saveMeta(this.meta);
+  }
 
   /**
    * A headless Playwright browser (its own profile — never the user's

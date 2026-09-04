@@ -1,15 +1,7 @@
 import React from 'react';
 import { IconButton } from '../core/IconButton';
 import { Icon } from '../core/Icon';
-
-/** `/Users/you/Projects/a/b/c` → `~/Projects/…/b/c`. Full path stays in the tooltip. */
-function shortPath(p) {
-  if (!p) return '';
-  let s = p.replace(/^\/(Users|home)\/[^/]+/, '~');
-  const parts = s.split('/');
-  if (parts.length > 4) s = [parts[0], parts[1], '…', ...parts.slice(-2)].join('/');
-  return s;
-}
+import { shortPath } from '../core/path';
 
 function FolderPill({ folder }) {
   const [copied, setCopied] = React.useState(false);
