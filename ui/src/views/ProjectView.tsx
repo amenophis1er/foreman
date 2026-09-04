@@ -18,6 +18,7 @@ import { ApprovalCard } from '../ds/mission/ApprovalCard';
 import { QuestionCard } from '../ds/mission/QuestionCard';
 import { PlanBoard } from '../ds/mission/PlanBoard';
 import { Composer } from '../ds/mission/Composer';
+import { SteerBar } from '../ds/mission/SteerBar';
 import type { ModelInfo } from '../ds/forms/ModelSelect';
 
 function Transcript({ run, filter, header }: {
@@ -46,7 +47,7 @@ function Transcript({ run, filter, header }: {
       {shown.length === 0 && <Empty>Transcript will appear here.</Empty>}
       {shown.map((e) => (
         <TranscriptEntry key={e.id} agent={e.agent} title={e.title}
-          kind={e.kind} body={e.body} ts={e.ts} />
+          kind={e.kind} body={e.body} ts={e.ts} to={e.to} timing={e.timing} />
       ))}
     </div>
   );
@@ -195,6 +196,17 @@ export function ProjectView({ p, models, onBack, refreshFleet, theme, onToggleTh
               </div>
             )}
             <Transcript run={run} filter={filter} />
+            {viewingLive && (
+              <div style={{ padding: 'var(--sp-2) var(--sp-3) var(--sp-3)', flex: '0 0 auto' }}>
+                <SteerBar
+                  agents={[{ id: 'director', status: run.runStatus === 'running' ? 'running' : 'done' }]}
+                  to="director" onTo={() => {}}
+                  timing="next" onTiming={() => {}}
+                  disabled={run.runStatus !== 'running'}
+                  disabledReason="Run finished — start a new mission."
+                  onSend={(text) => void api.steer(selectedRunId!, text)} />
+              </div>
+            )}
           </div>
           <div ref={rightRail} style={{
             borderLeft: '1px solid var(--line)', background: 'var(--bg-panel)',

@@ -22,6 +22,7 @@
  *   POST   /runs/{id}/resume     Resume an interrupted/failed run
  *   POST   /permission           Resolve an approval {id, behavior, message?}
  *   POST   /answer               Answer a director question {id, text}
+ *   POST   /steer                Send an operator note to a running director {runId, text}
  *   POST   /interrupt            Interrupt a run {runId}
  *   GET    /runs?projectId=      Persisted run summaries, newest first
  *   GET    /runs/{id}/events     Full event log for replay
@@ -344,6 +345,15 @@ const server = http.createServer(async (req, res) => {
       if (typeof id !== 'string') return json(res, 400, { error: 'invalid request' });
       const ok = activeRuns().some((r) => r.answerQuestion(id, String(text ?? '')));
       if (!ok) return json(res, 404, { error: 'no pending question with that id' });
+      json(res, 200, { ok: true });
+
+    } else if (req.method === 'POST' && url.pathname === '/steer') {
+      const { runId, text } = await readBody(req);
+      const trimmed = typeof text === 'string' ? text.trim() : '';
+      if (typeof runId !== 'string' || !trimmed) return json(res, 400, { error: 'invalid request' });
+      const run = activeRuns().find((r) => r.meta.id === runId);
+      if (!run) return json(res, 404, { error: 'no active run with that id' });
+      if (!run.steer(trimmed)) return json(res, 409, { error: 'run is no longer accepting steers' });
       json(res, 200, { ok: true });
 
     } else if (req.method === 'POST' && url.pathname === '/interrupt') {

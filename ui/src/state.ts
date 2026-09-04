@@ -19,9 +19,12 @@ export type Entry = {
   id: number;
   ts: number;
   agent: string;
-  kind: 'text' | 'tool' | 'result' | 'system' | 'error';
+  kind: 'text' | 'tool' | 'result' | 'system' | 'error' | 'steer';
   title: string;
   body: string;
+  /** steer entries only: recipient and delivery timing. */
+  to?: string;
+  timing?: 'next' | 'now';
 };
 
 export type Approval = {
@@ -158,6 +161,14 @@ function applyWire(s: RunView, e: WireEvent): RunView {
       return es.length || extra.directorSessionId
         ? { ...s, ...extra, entries: [...s.entries.slice(-1499), ...es] } : s;
     }
+    case 'steer':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'you', kind: 'steer',
+          title: 'steer', body: d.text, to: d.to, timing: d.timing,
+        }],
+      };
     case 'worker_started': {
       const rest = s.agents.filter((x) => x.id !== d.id);
       const prev = s.agents.find((x) => x.id === d.id);
@@ -353,6 +364,7 @@ export const api = {
   permission: (id: string, behavior: 'allow' | 'allow_always' | 'deny', message?: string) =>
     post('/permission', { id, behavior, message }),
   answer: (id: string, text: string) => post('/answer', { id, text }),
+  steer: (runId: string, text: string) => post('/steer', { runId, text }),
   interrupt: (runId: string) => post('/interrupt', { runId }),
   browse: (path?: string) =>
     fetch('/browse' + (path ? `?path=${encodeURIComponent(path)}` : '')),
