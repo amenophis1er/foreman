@@ -7,11 +7,27 @@ import { Empty } from '../ds/core/Empty';
 import { Banner } from '../ds/status/Banner';
 import { ProjectCard } from '../ds/fleet/ProjectCard';
 import { LinkProjectCard } from '../ds/fleet/LinkProjectCard';
+import { FleetSearch } from '../ds/fleet/FleetSearch';
 import { FolderPicker } from '../ds/overlay/FolderPicker';
 import { DropConfirmModal, DropOverlay } from '../ds/overlay/DropConfirmModal';
 import { ConfirmDialog } from '../ds/overlay/ConfirmDialog';
 
 type Listing = { path: string; parent: string | null; dirs: string[] };
+
+/**
+ * Does one project answer to this query?
+ *
+ * Name, path and mission all match: a fleet accumulates several checkouts of
+ * the same repo under different paths, and worktrees whose basenames are
+ * identical, so the path is often the only thing that tells two cards apart.
+ * Matching the mission means "the fitness studio one" finds it when the
+ * project is called `smake`.
+ */
+function matches(p: ProjectSummary, q: string): boolean {
+  const run = p.activeRun ?? p.lastRun;
+  return [p.name, p.folder, run?.title, run?.mission]
+    .some((f) => f?.toLowerCase().includes(q));
+}
 
 /** Server-driven state for the controlled FolderPicker. */
 function usePicker(onPick: (path: string) => void) {
@@ -54,6 +70,7 @@ export function FleetView({
   onOpen: (projectId: string) => void; refresh: () => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
 }) {
+  const [query, setQuery] = useState('');
   const [dragging, setDragging] = useState(false);
   const [drop, setDrop] = useState<{ name: string; matches: string[] | null } | null>(null);
   const [unlinking, setUnlinking] = useState<ProjectSummary | null>(null);
@@ -66,6 +83,11 @@ export function FleetView({
     }
   };
   const picker = usePicker((p) => void link(p));
+
+  // Filtering narrows, it never reorders: the server's urgency ordering
+  // survives, so a project blocked on you stays first among whatever is left.
+  const q = query.trim().toLowerCase();
+  const shown = q ? projects.filter((p) => matches(p, q)) : projects;
 
   const onDrop = async (e: React.DragEvent) => {
     e.preventDefault();
@@ -103,6 +125,13 @@ export function FleetView({
         )}
       </AppHeader>
 
+      {/* One card needs no filter; several do, and the row is the same height
+          whether or not anything is typed in it. */}
+      {projects.length > 1 && (
+        <FleetSearch value={query} onChange={setQuery}
+          count={shown.length} total={projects.length} />
+      )}
+
       {/* With no projects the grid strands a lone card in the top-left of an
           empty page. Centre the invitation instead; once there are projects the
           grid is the right shape again. */}
@@ -114,7 +143,7 @@ export function FleetView({
         display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(var(--card-min), 1fr))',
         gap: 'var(--sp-4)', padding: 'var(--sp-5)', maxWidth: 'var(--fleet-max)', margin: '0 auto',
       }}>
-        {projects.map((p) => (
+        {shown.map((p) => (
           <ProjectCard key={p.id} name={p.name} folder={p.folder}
             instance={p.claudeInstance?.configDir}
             run={p.activeRun ? {
@@ -138,6 +167,14 @@ export function FleetView({
             </div>
             <Empty>No projects linked yet — link a folder to give the director a job site.</Empty>
           </>
+        )}
+        {projects.length > 0 && shown.length === 0 && (
+          // Spans the grid so the message sits under the field that caused it
+          // rather than alone in the first column.
+          <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
+            <Empty>Nothing matches “{query.trim()}”.</Empty>
+            <Button variant="ghost" size="sm" onClick={() => setQuery('')}>Clear filter</Button>
+          </div>
         )}
       </div>
 

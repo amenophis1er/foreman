@@ -115,6 +115,40 @@ export interface RunMeta {
 /** Listing entry returned by GET /runs (meta without heavy fields). */
 export type RunSummary = RunMeta;
 
+/**
+ * A project's planning conversation — the talk that happens before a mission.
+ *
+ * Only the session id and the running tally are kept here; the conversation
+ * itself is the append-only event log beside this file, exactly like a run's.
+ * There is no process behind it: each turn resumes the stored session and
+ * exits, so an idle conversation costs nothing but disk.
+ */
+export interface ChatMeta {
+  projectId: string;
+  /** Claude Code session to resume; absent until the first turn completes. */
+  sessionId?: string;
+  /** Everything this conversation has cost, for the whole of its life. */
+  costUsd: number;
+  createdAt: number;
+  updatedAt: number;
+  /** The most recent mission the planner proposed, if it has not been used. */
+  proposal?: MissionProposal;
+}
+
+/** A mission the planner drafted, waiting for the human to start or discard. */
+export interface MissionProposal {
+  id: string;
+  /** The brief, ready to go into the composer. */
+  mission: string;
+  /** Verifiable completion criteria, shown as a checklist. */
+  doneWhen: string[];
+  /** What the planner thinks it should cost. The human always sees it. */
+  budgetUsd: number;
+  /** Why this budget and this shape — one short paragraph. */
+  rationale?: string;
+  createdAt: number;
+}
+
 /** Result of a permission decision made by the human. */
 export type PermissionDecision = 'allow' | 'allow_always' | 'deny';
 

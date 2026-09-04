@@ -31,6 +31,9 @@
  *   GET    /browse?path=         Directory listing for the folder picker
  *   POST   /mkdir                Create a subfolder {parent, name}
  *   GET    /locate?name=         Find folders by name under $HOME (drag-drop)
+ *   GET    /chat?projectId=      A project's planning conversation (log + meta)
+ *   POST   /chat                 Send a message to the planner {projectId, text}
+ *   DELETE /chat?projectId=      Forget the conversation and its session
  */
 import http from 'node:http';
 import os from 'node:os';
@@ -38,6 +41,7 @@ import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MissionRun } from './orchestrator.js';
+import { runPlanningTurn } from './planner.js';
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
@@ -46,7 +50,7 @@ import {
   dirHasCredentials, detectAuth, hasKeychainCredentials, readAccount, type AuthMode,
 } from './preflight.js';
 import type {
-  ClaudeInstanceRef, ForemanEvent, ModelChoice, Project, RunMeta, ToolPolicy,
+  ChatMeta, ClaudeInstanceRef, ForemanEvent, ModelChoice, Project, RunMeta, ToolPolicy,
 } from './types.js';
 
 /**
@@ -170,6 +174,93 @@ function makeEmitter(runId: string, projectId: string) {
 }
 
 /**
+ * Chat frames carry `chat: true` and no run id, so a UI following the same
+ * stream can tell a planning conversation from a mission without guessing.
+ */
+function makeChatEmitter(projectId: string) {
+  return (event: string, data: unknown): void => {
+    const evt: ForemanEvent = { ts: Date.now(), event, data };
+    const frame =
+      `event: ${event}\ndata: ${JSON.stringify({ runId: null, projectId, chat: true, data })}\n\n`;
+    for (const res of sseClients) res.write(frame);
+    void store.appendChat(projectId, evt);
+  };
+}
+
+/**
+ * Projects with a planning turn in flight. One turn at a time per project:
+ * two concurrent turns would resume the same session and race to write the
+ * session id, quietly forking the conversation.
+ */
+const chatTurns = new Set<string>();
+
+/** Reads a project's chat meta, or the empty shape for one never started. */
+async function chatMetaOf(projectId: string): Promise<ChatMeta> {
+  const now = Date.now();
+  return (await store.readChatMeta(projectId).catch(() => null))
+    ?? { projectId, costUsd: 0, createdAt: now, updatedAt: now };
+}
+
+/**
+ * Runs one planning turn: the human's message goes into the log first (so a
+ * reload mid-turn still shows what was asked), then the planner's reply
+ * streams out through the same envelope machinery as a mission.
+ */
+async function driveChatTurn(project: Project, text: string): Promise<void> {
+  const emit = makeChatEmitter(project.id);
+  const meta = await chatMetaOf(project.id);
+  emit('chat_message', { text });
+  emit('chat_turn', { state: 'thinking' });
+  try {
+    const settings = await effectiveSettings(project.id);
+    const result = await runPlanningTurn({
+      sessionId: meta.sessionId,
+      folder: project.folder,
+      text,
+      model: settings.plannerModel,
+      instance: resolveInstance(project.claudeInstance),
+      emit,
+    });
+    const next: ChatMeta = {
+      ...meta,
+      sessionId: result.sessionId ?? meta.sessionId,
+      costUsd: meta.costUsd + result.costUsd,
+      updatedAt: Date.now(),
+      // A fresh proposal replaces an older unused one: the conversation moved
+      // on, and offering the human two drafts of the same mission is worse
+      // than offering the current one.
+      proposal: result.proposal ?? meta.proposal,
+    };
+    await store.writeChatMeta(next);
+    emit('chat_cost', { costUsd: next.costUsd, turnUsd: result.costUsd });
+    if (result.error) emit('chat_error', { error: result.error });
+  } catch (err) {
+    // runPlanningTurn does not throw; anything here is a Foreman bug or a
+    // storage failure, and must not take the server down with it.
+    console.error(`planning turn failed for project ${project.id}:`, err);
+    emit('chat_error', { error: String(err) });
+  } finally {
+    chatTurns.delete(project.id);
+    emit('chat_turn', { state: 'idle' });
+  }
+}
+
+/**
+ * A mission has started, so the proposal that led to it is spent. Recording
+ * the handoff in the conversation matters as much as clearing it: the chat is
+ * the story of how this mission came to exist, and it should not simply stop
+ * at the moment the work began.
+ */
+async function consumeProposal(projectId: string, runId: string, mission: string): Promise<void> {
+  const meta = await store.readChatMeta(projectId).catch(() => null);
+  if (!meta) return;
+  makeChatEmitter(projectId)('mission_started', { runId, mission });
+  if (!meta.proposal) return;
+  const { proposal: _spent, ...rest } = meta;
+  await store.writeChatMeta({ ...rest, updatedAt: Date.now() }).catch(() => {});
+}
+
+/**
  * Reserves a project for a new/resumed mission. Synchronous check-and-set:
  * routes call this AFTER their last await and BEFORE any further await, which
  * makes "one active mission per project" race-free on the single JS thread.
@@ -220,7 +311,7 @@ async function driveRun(
 /** Effective run configuration: defaults ← global Settings ← project overlay. */
 async function effectiveSettings(projectId: string): Promise<{
   toolPolicy: ToolPolicy; autoAllowReadOnly: boolean;
-  directorModel: ModelChoice; workerModel: ModelChoice;
+  directorModel: ModelChoice; workerModel: ModelChoice; plannerModel: ModelChoice;
 }> {
   const s = await store.readSettings()
     .catch(() => ({ global: {}, projects: {} as Record<string, object> }));
@@ -236,6 +327,7 @@ async function effectiveSettings(projectId: string): Promise<{
       (p.autoAllowReadOnly ?? g.autoAllowReadOnly) !== false,
     directorModel: modelChoice(p.directorModel ?? g.directorModel),
     workerModel: modelChoice(p.workerModel ?? g.workerModel),
+    plannerModel: modelChoice(p.plannerModel ?? g.plannerModel),
   };
 }
 
@@ -268,6 +360,7 @@ async function startRun(
     console.error(`failed to create run for project ${projectId}:`, err);
     return;
   }
+  await consumeProposal(projectId, meta.id, mission).catch(() => {});
   await driveRun(projectId, meta);
 }
 
@@ -522,6 +615,57 @@ const server = http.createServer(async (req, res) => {
         modelChoice(directorModel), modelChoice(workerModel), browserTools === true,
         resolveInstance(project.claudeInstance));
       json(res, 200, { ok: true });
+
+    } else if (url.pathname === '/chat') {
+      const projectId = req.method === 'POST'
+        ? undefined : url.searchParams.get('projectId') ?? '';
+
+      if (req.method === 'GET') {
+        if (!projectId) return json(res, 400, { error: 'projectId is required' });
+        const [meta, events] = await Promise.all([
+          chatMetaOf(projectId),
+          store.readChatEvents(projectId).catch(() => []),
+        ]);
+        json(res, 200, {
+          events,
+          costUsd: meta.costUsd,
+          proposal: meta.proposal ?? null,
+          // A turn in flight is server state, not log state: a client that
+          // loads mid-turn needs to know a reply is already on its way.
+          thinking: chatTurns.has(projectId),
+        });
+
+      } else if (req.method === 'DELETE') {
+        if (!projectId) return json(res, 400, { error: 'projectId is required' });
+        if (chatTurns.has(projectId)) {
+          return json(res, 409, { error: 'the planner is mid-reply — wait for it to finish' });
+        }
+        await store.clearChat(projectId).catch(() => {});
+        json(res, 200, { ok: true });
+
+      } else if (req.method === 'POST') {
+        const { projectId: id, text } = await readBody(req);
+        const message = typeof text === 'string' ? text.trim() : '';
+        if (typeof id !== 'string' || !message) {
+          return json(res, 400, { error: 'projectId and text are required' });
+        }
+        const project = await store.getProject(id);
+        if (!project) return json(res, 404, { error: 'unknown project' });
+        // While a mission runs, the director is who you talk to — the same
+        // input box becomes the steer bar. Planning stays an idle-only act,
+        // which is what keeps "one active mission per project" honest.
+        if (activeByProject.has(id)) {
+          return json(res, 409, { error: 'this project has a mission running — steer the director instead' });
+        }
+        // Check-and-set with no await in between, like reserveProject.
+        if (chatTurns.has(id)) return json(res, 409, { error: 'the planner is still replying' });
+        chatTurns.add(id);
+        void driveChatTurn(project, message);
+        json(res, 200, { ok: true });
+
+      } else {
+        json(res, 405, { error: 'method not allowed' });
+      }
 
     } else if (req.method === 'POST' && url.pathname === '/permission') {
       const { id, behavior, message } = await readBody(req);

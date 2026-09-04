@@ -359,6 +359,9 @@ export function useFleet() {
     void refresh();
     const poll = setInterval(refresh, 3000);
     const unsubSse = onSse((event, env) => {
+      // A planning conversation is not mission activity: its frames share the
+      // stream but must never light up an idle card's ticker.
+      if (env.chat) return;
       if (['run_started', 'run_resumed', 'run_finished', 'permission_request',
         'permission_resolved', 'question', 'question_answered'].includes(event)) void refresh();
       if (env.projectId) {
@@ -404,6 +407,167 @@ export function useRunHistory(projectId: string) {
     return unsub;
   }, [projectId, refresh]);
   return runs;
+}
+
+// ---------------------------------------------------------------------------
+// Planning conversation
+// ---------------------------------------------------------------------------
+
+/** A mission the planner drafted, waiting to be started or reworked. */
+export type MissionProposal = {
+  id: string;
+  mission: string;
+  doneWhen: string[];
+  budgetUsd: number;
+  rationale?: string;
+  createdAt: number;
+};
+
+export type ChatView = {
+  entries: Entry[];
+  /** Everything this conversation has cost since it began. */
+  costUsd: number;
+  /** The current unspent proposal, if the planner has made one. */
+  proposal: MissionProposal | null;
+  /** A turn is in flight — the planner is reading or writing its reply. */
+  thinking: boolean;
+};
+
+const emptyChat: ChatView = { entries: [], costUsd: 0, proposal: null, thinking: false };
+
+function applyChatWire(s: ChatView, e: WireEvent): ChatView {
+  const ts = e.ts ?? Date.now();
+  const d = e.data;
+  switch (e.event) {
+    case 'chat_message':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'you', kind: 'steer', title: 'you', body: d.text,
+        }],
+      };
+    case 'message': {
+      // A conversation shows what was said and what was looked at — nothing
+      // else. The per-turn `init` banner, the tool results, and the SDK's
+      // final `result` (which merely repeats the last assistant message) are
+      // mission-transcript furniture; in a chat they read as the machine
+      // talking to itself. A failed turn still surfaces, as `chat_error`.
+      const es = entriesFromSdkMessage('foreman', d.msg, ts)
+        .filter((e) => e.kind === 'text' || e.kind === 'tool');
+      return es.length ? { ...s, entries: [...s.entries, ...es] } : s;
+    }
+    case 'mission_proposed':
+      return { ...s, proposal: d as MissionProposal };
+    case 'mission_started':
+      return {
+        ...s,
+        proposal: null,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'system',
+          title: 'mission started', body: d.mission,
+        }],
+      };
+    case 'chat_cost':
+      return { ...s, costUsd: d.costUsd ?? s.costUsd };
+    case 'chat_turn':
+      return { ...s, thinking: d.state === 'thinking' };
+    case 'chat_error':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'error', title: 'planner', body: d.error,
+        }],
+      };
+    default:
+      return s;
+  }
+}
+
+type ChatAction =
+  | { t: 'reset' }
+  | { t: 'load'; view: ChatView }
+  | { t: 'dismiss' }
+  | { t: 'wire'; e: WireEvent };
+
+function chatReducer(s: ChatView, a: ChatAction): ChatView {
+  switch (a.t) {
+    case 'reset': return emptyChat;
+    case 'load': return a.view;
+    case 'dismiss': return { ...s, proposal: null };
+    case 'wire': return applyChatWire(s, a.e);
+  }
+}
+
+/**
+ * A project's planning conversation. Replays the persisted log, then follows
+ * the live stream — the same shape as {@link useRunView}, because a
+ * conversation and a mission are the same kind of thing on the wire.
+ */
+export function useChat(projectId: string | null): ChatView & {
+  send: (text: string) => Promise<string | null>;
+  clear: () => Promise<void>;
+  dismissProposal: () => void;
+} {
+  const [state, dispatch] = useReducer(chatReducer, emptyChat);
+  const buffer = useRef<WireEvent[] | null>(null);
+
+  const load = useCallback(async (id: string) => {
+    const r = await fetch(`/chat?projectId=${encodeURIComponent(id)}`).catch(() => null);
+    if (!r?.ok) return null;
+    return await r.json() as {
+      events: WireEvent[]; costUsd: number; proposal: MissionProposal | null; thinking: boolean;
+    };
+  }, []);
+
+  useEffect(() => {
+    dispatch({ t: 'reset' });
+    if (!projectId) return;
+    let cancelled = false;
+    buffer.current = [];
+
+    const unsub = onSse((event, env) => {
+      if (!env.chat || env.projectId !== projectId) return;
+      const e: WireEvent = { event, data: env.data };
+      if (buffer.current) buffer.current.push(e);
+      else dispatch({ t: 'wire', e });
+    });
+
+    void (async () => {
+      const data = await load(projectId);
+      if (cancelled) return;
+      if (data) {
+        let view: ChatView = {
+          ...emptyChat, costUsd: data.costUsd, proposal: data.proposal, thinking: data.thinking,
+        };
+        for (const e of data.events) view = applyChatWire(view, e);
+        dispatch({ t: 'load', view });
+      }
+      // Live frames that arrived during the fetch are applied after it, so a
+      // reply landing mid-load is never dropped or shown twice.
+      for (const e of buffer.current ?? []) dispatch({ t: 'wire', e });
+      buffer.current = null;
+    })();
+
+    return () => { cancelled = true; unsub(); };
+  }, [projectId, load]);
+
+  const send = useCallback(async (text: string): Promise<string | null> => {
+    if (!projectId) return 'no project';
+    const r = await post('/chat', { projectId, text });
+    return r.ok ? null : ((await r.json().catch(() => ({}))).error ?? 'could not reach the planner');
+  }, [projectId]);
+
+  const clear = useCallback(async () => {
+    if (!projectId) return;
+    await fetch(`/chat?projectId=${encodeURIComponent(projectId)}`, { method: 'DELETE' }).catch(() => {});
+    dispatch({ t: 'reset' });
+  }, [projectId]);
+
+  // Local-only: the human said "not this one" without spending a turn saying
+  // so. The server still holds it, and the next proposal replaces it.
+  const dismissProposal = useCallback(() => dispatch({ t: 'dismiss' }), []);
+
+  return { ...state, send, clear, dismissProposal };
 }
 
 /** Hash router: '#/' → fleet, '#/p/<projectId>' → project view,
