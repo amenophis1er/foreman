@@ -11,7 +11,7 @@
  *  - Emit every observable event through the injected {@link Emitter}, which
  *    both broadcasts to live clients and persists to the run's event log.
  */
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -85,6 +85,17 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
 import { makePolicy, type PendingPermission } from './policy.js';
 import { instanceOptions, resolveInstance } from './instance.js';
 import type { RunMeta, WorkerMeta } from './types.js';
+
+/**
+ * What Foreman keeps out of git inside a mission folder's .claude/.
+ *
+ * `settings.local.json` is the file an "always allow" grant creates. The
+ * `.gitignore` line covers this file itself, so adding it introduces nothing
+ * new to `git status` — without that line the fix would trade one untracked
+ * file for another. Everything else in .claude/ (settings.json, agents,
+ * commands) stays visible, since a project may legitimately track those.
+ */
+const LOCAL_IGNORE_LINES = ['settings.local.json', '.gitignore'];
 
 /** Broadcasts to SSE clients and appends to the run's event log. */
 export type Emitter = (event: string, data: unknown) => void;
@@ -299,6 +310,9 @@ export class MissionRun {
       const foremanDir = path.join(this.meta.folder, '.foreman');
       await mkdir(foremanDir, { recursive: true });
       await writeFile(path.join(foremanDir, '.gitignore'), '*\n').catch(() => {});
+      // Covers a .claude/ left by an earlier run; the one this run creates is
+      // handled again on the way out.
+      await this.ignoreLocalSettings();
 
       // Streaming prompt: the mission goes in first; steering pushes more
       // user messages, each starting a new director turn.
@@ -372,6 +386,10 @@ export class MissionRun {
       this.meta.status = 'error';
       this.emit('run_error', { error: String(err) });
     } finally {
+      // "Always allow" makes the SDK write .claude/settings.local.json into the
+      // mission folder, which appears only once a grant happens — so this runs
+      // after the work, not just before it.
+      await this.ignoreLocalSettings();
       if (this.meta.status === 'running') this.meta.status = 'interrupted';
       this.meta.endedAt = Date.now();
       this.saveMeta(this.meta);
@@ -434,6 +452,36 @@ export class MissionRun {
 
   private budgetNoticeSent = false;
   private budgetKillSent = false;
+
+  /**
+   * Keeps an "always allow" grant out of `git status`.
+   *
+   * Granting a tool for the run makes the SDK persist it to
+   * `.claude/settings.local.json` in the mission folder — a file the operator
+   * never asked for and, in a real repository, one they could commit by
+   * accident. `.foreman/` solves this by ignoring itself wholesale; `.claude/`
+   * cannot, because a project may legitimately track its own agents, commands
+   * and shared settings.json there. So only the local-settings file is ignored,
+   * an existing .gitignore is appended to rather than replaced, and the
+   * directory is never created here — a mission that grants nothing leaves the
+   * folder exactly as it found it.
+   */
+  private async ignoreLocalSettings(): Promise<void> {
+    const dir = path.join(this.meta.folder, '.claude');
+    if (!(await stat(dir).then((st) => st.isDirectory(), () => false))) return;
+
+    const file = path.join(dir, '.gitignore');
+    const existing = await readFile(file, 'utf8').catch(() => null);
+    const lines = existing === null ? [] : existing.split('\n');
+    const missing = LOCAL_IGNORE_LINES.filter(
+      (rule) => !lines.some((line) => line.trim() === rule),
+    );
+    if (missing.length === 0) return;
+
+    const prefix = existing === null || existing.endsWith('\n') ? (existing ?? '') : `${existing}\n`;
+    await writeFile(file, `${prefix}${missing.join('\n')}\n`).catch(() => {});
+  }
+
 
   private addCost(usd: number | undefined): void {
     if (typeof usd !== 'number') return;
