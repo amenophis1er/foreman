@@ -149,10 +149,19 @@ export function ProjectView({ p, models, routeRunId, onSelectRun, onBack, refres
           <div style={{ borderRight: '1px solid var(--line)', background: 'var(--bg-panel)', overflowY: 'auto', padding: 'var(--sp-3)' }}>
             <RunRail history={history} onSelectRun={setSelectedRunId} />
           </div>
-          <div style={{ overflowY: 'auto' }}>
-            <Composer folder={p.folder} defaultBudgetUsd={p.defaultBudgetUsd}
-              error={composerErr} busy={starting} models={models}
-              onStart={(v) => void startMission(v)} />
+          <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            {/* margin:auto centers the card vertically yet degrades to normal
+                flow (scrollable) when the composer is taller than the view. */}
+            <div style={{ margin: 'auto', width: '100%', padding: 'var(--sp-5) 0' }}>
+              <Composer folder={p.folder} defaultBudgetUsd={p.defaultBudgetUsd}
+                error={composerErr} busy={starting} models={models}
+                onStart={(v) => void startMission(v)}
+                style={{
+                  background: 'var(--bg-panel)', border: '1px solid var(--line)',
+                  borderRadius: 'var(--r-md)', padding: 'var(--sp-5)',
+                  margin: '0 auto', boxSizing: 'border-box',
+                }} />
+            </div>
           </div>
         </div>
       ) : (
