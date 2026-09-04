@@ -23,6 +23,7 @@ import {
   type SDKMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { makePolicy, type PendingPermission } from './policy.js';
+import { instanceOptions, resolveInstance } from './instance.js';
 import type { RunMeta, WorkerMeta } from './types.js';
 
 /** Broadcasts to SSE clients and appends to the run's event log. */
@@ -183,6 +184,7 @@ export class MissionRun {
           model: this.meta.directorModel,
           maxTurns: 150,
           systemPrompt: { type: 'preset', preset: 'claude_code', append: DIRECTOR_CHARTER },
+          ...instanceOptions(resolveInstance(this.meta.claudeInstance)),
           mcpServers: { foreman: this.makeTools() },
           canUseTool: this.policyFor('director'),
         },
@@ -266,6 +268,7 @@ export class MissionRun {
         model: this.meta.workerModel,
         maxTurns: 60,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: WORKER_CHARTER },
+        ...instanceOptions(resolveInstance(this.meta.claudeInstance)),
         canUseTool: this.policyFor(workerId),
       },
     });

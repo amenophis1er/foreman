@@ -21,7 +21,7 @@ import { appendFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { ForemanEvent, Project, RunMeta, RunSummary } from './types.js';
+import type { ClaudeInstanceRef, ForemanEvent, Project, RunMeta, RunSummary } from './types.js';
 
 const RUN_ID_RE = /^[0-9]{13}-[0-9a-f]{8}$/;
 
@@ -31,7 +31,8 @@ export function newRunId(now = Date.now()): string {
 }
 
 export class RunStore {
-  private readonly root: string;
+  /** Absolute data root; exposed so startup checks can report and test it. */
+  readonly root: string;
   private readonly runsDir: string;
   /** Serializes appends per run so event order matches emit order. */
   private appendChains = new Map<string, Promise<void>>();
@@ -76,7 +77,34 @@ export class RunStore {
 
   /** Links a folder as a project. Re-linking an already-linked folder returns
    *  the existing project instead of duplicating it. */
-  addProject(folder: string, name?: string): Promise<Project> {
+  /**
+   * Applies a partial change to one project. `claudeInstance: null` clears the
+   * pin (back to the server default) — distinct from `undefined`, which means
+   * "leave it alone", so the settings form can express both.
+   */
+  updateProject(
+    id: string,
+    patch: { name?: string; defaultBudgetUsd?: number; claudeInstance?: ClaudeInstanceRef | null },
+  ): Promise<Project | null> {
+    return this.mutateProjects((projects) => {
+      const i = projects.findIndex((p) => p.id === id);
+      if (i === -1) return { projects, result: null };
+
+      const next: Project = { ...projects[i] };
+      if (patch.name?.trim()) next.name = patch.name.trim();
+      if (typeof patch.defaultBudgetUsd === 'number' && patch.defaultBudgetUsd > 0) {
+        next.defaultBudgetUsd = patch.defaultBudgetUsd;
+      }
+      if (patch.claudeInstance === null) delete next.claudeInstance;
+      else if (patch.claudeInstance) next.claudeInstance = patch.claudeInstance;
+
+      const updated = [...projects];
+      updated[i] = next;
+      return { projects: updated, result: next };
+    });
+  }
+
+  addProject(folder: string, name?: string, claudeInstance?: ClaudeInstanceRef): Promise<Project> {
     return this.mutateProjects((projects) => {
       const existing = projects.find((p) => p.folder === folder);
       if (existing) return { projects, result: existing };
@@ -86,6 +114,7 @@ export class RunStore {
         folder,
         createdAt: Date.now(),
         defaultBudgetUsd: 5,
+        ...(claudeInstance ? { claudeInstance } : {}),
       };
       return { projects: [...projects, project], result: project };
     });

@@ -34,9 +34,28 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MissionRun } from './orchestrator.js';
 import { RunStore, newRunId } from './store.js';
-import type { ForemanEvent, ModelChoice, RunMeta } from './types.js';
+import { preflight, reportPreflight } from './preflight.js';
+import { defaultInstance, discoverInstances, effectiveConfigDir, resolveInstance } from './instance.js';
+import { dirHasCredentials, detectAuth, hasKeychainCredentials, type AuthMode } from './preflight.js';
+import type { ClaudeInstanceRef, ForemanEvent, ModelChoice, Project, RunMeta } from './types.js';
 
 /** Parses a model choice from a request body; unknown values become inherit. */
+/**
+ * The billing mode one project will actually use. `own-login` means the pinned
+ * config dir's stored login pays, so a dir without one is a misconfiguration
+ * worth surfacing before a mission starts rather than after it fails.
+ */
+async function projectBilling(p: Project, serverMode: AuthMode): Promise<AuthMode> {
+  const instance = resolveInstance(p.claudeInstance);
+  if (instance.billing !== 'own-login') return serverMode;
+  return (await dirHasCredentials(effectiveConfigDir(instance))) ? 'subscription' : 'none';
+}
+
+/** Trims an optional path field from a request body; '' means "cleared". */
+function toPath(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+}
+
 function modelChoice(v: unknown): ModelChoice {
   return v === 'opus' || v === 'sonnet' || v === 'haiku' ? v : undefined;
 }
@@ -78,6 +97,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, '..', 'ui', 'dist');
 
 const store = new RunStore(process.env.FOREMAN_HOME || undefined);
+
+/** Detected once: env is immutable for this process, and /projects polls at 3s. */
+const authPromise = detectAuth();
 /** Active runs by projectId (at most one per project); `null` marks a
  *  reservation taken synchronously before the run object exists. */
 const activeByProject = new Map<string, MissionRun | null>();
@@ -132,12 +154,16 @@ async function driveRun(projectId: string, meta: RunMeta, resumeSessionId?: stri
 async function startRun(
   projectId: string, folder: string, mission: string, budgetUsd: number,
   directorModel: ModelChoice, workerModel: ModelChoice,
+  claudeInstance: ClaudeInstanceRef,
 ): Promise<void> {
   const meta: RunMeta = {
     id: newRunId(),
     projectId,
     folder, mission, budgetUsd,
     directorModel, workerModel,
+    // Frozen at dispatch: a later change to the project or the server default
+    // must not silently move an in-flight or resumed run to another install.
+    claudeInstance,
     status: 'running', costUsd: 0,
     createdAt: Date.now(), workers: [],
   };
@@ -234,27 +260,83 @@ const server = http.createServer(async (req, res) => {
       req.on('close', () => sseClients.delete(res));
 
     } else if (req.method === 'GET' && url.pathname === '/projects') {
-      const projects = await store.listProjects();
+      const [projects, auth] = await Promise.all([store.listProjects(), authPromise]);
       json(res, 200, {
-        projects: projects.map((p) => {
+        // Billing mode travels with every fleet poll so the UI can state it
+        // plainly wherever money is about to be spent.
+        authMode: auth.mode,
+        authSource: auth.source,
+        projects: await Promise.all(projects.map(async (p) => {
           const run = activeByProject.get(p.id);
           return {
             ...p,
+            // What THIS project will actually bill, which can differ from the
+            // server's mode when the pin opts out of the inherited key.
+            billingMode: await projectBilling(p, auth.mode),
             activeRun: run ? { ...run.meta } : null,
             pendingPermissions: run?.pendingPermissionIds.length ?? 0,
             pendingQuestions: run?.pendingQuestionIds.length ?? 0,
           };
-        }),
+        })),
       });
 
     } else if (req.method === 'POST' && url.pathname === '/projects') {
-      const { folder, name } = await readBody(req);
+      const { folder, name, claudeConfigDir, claudeExecutable } = await readBody(req);
       if (typeof folder !== 'string' || !folder) return json(res, 400, { error: 'folder is required' });
       if (!path.isAbsolute(folder)) return json(res, 400, { error: `folder must be an absolute path: ${folder}` });
       const st = await stat(folder).catch(() => null);
       if (st && !st.isDirectory()) return json(res, 400, { error: `not a directory: ${folder}` });
       if (!st) await mkdir(folder, { recursive: true });
-      json(res, 200, { project: await store.addProject(folder, typeof name === 'string' ? name : undefined) });
+      const pin =
+        typeof claudeConfigDir === 'string' || typeof claudeExecutable === 'string'
+          ? {
+              ...(typeof claudeConfigDir === 'string' ? { configDir: claudeConfigDir } : {}),
+              ...(typeof claudeExecutable === 'string' ? { executable: claudeExecutable } : {}),
+            }
+          : undefined;
+      json(res, 200, {
+        project: await store.addProject(folder, typeof name === 'string' ? name : undefined, pin),
+      });
+
+    } else if (req.method === 'PATCH' && projectMatch) {
+      const { name, defaultBudgetUsd, claudeConfigDir, claudeExecutable, claudeBilling } =
+        await readBody(req);
+      // null clears the pin; undefined leaves it untouched.
+      const pinGiven =
+        claudeConfigDir !== undefined || claudeExecutable !== undefined || claudeBilling !== undefined;
+      const ownLogin = claudeBilling === 'own-login';
+      // A billing choice is itself a pin, so clearing needs all three empty.
+      const cleared =
+        pinGiven && !toPath(claudeConfigDir) && !toPath(claudeExecutable) && !ownLogin;
+      const updated = await store.updateProject(projectMatch[1], {
+        name: typeof name === 'string' ? name : undefined,
+        defaultBudgetUsd: typeof defaultBudgetUsd === 'number' ? defaultBudgetUsd : undefined,
+        claudeInstance: !pinGiven
+          ? undefined
+          : cleared
+            ? null
+            : {
+                ...(toPath(claudeConfigDir) ? { configDir: toPath(claudeConfigDir)! } : {}),
+                ...(toPath(claudeExecutable) ? { executable: toPath(claudeExecutable)! } : {}),
+                ...(ownLogin ? { billing: 'own-login' as const } : {}),
+              },
+      });
+      json(res, updated ? 200 : 404, updated ? { project: updated } : { error: 'unknown project' });
+
+    } else if (req.method === 'GET' && url.pathname === '/instances') {
+      const [instances, auth, keychain] = await Promise.all([
+        discoverInstances(dirHasCredentials),
+        detectAuth(),
+        hasKeychainCredentials(),
+      ]);
+      json(res, 200, {
+        serverDefault: defaultInstance(),
+        // Auth is process-wide: an API key in the environment outranks every
+        // stored login, so the picker must not imply the choice is per-dir.
+        authMode: auth.mode,
+        keychainLogin: keychain,
+        instances,
+      });
 
     } else if (req.method === 'DELETE' && projectMatch) {
       if (activeByProject.has(projectMatch[1])) {
@@ -277,7 +359,8 @@ const server = http.createServer(async (req, res) => {
       }
       const budget = Number(budgetUsd) > 0 ? Number(budgetUsd) : project.defaultBudgetUsd;
       void startRun(projectId, project.folder, mission, budget,
-        modelChoice(directorModel), modelChoice(workerModel));
+        modelChoice(directorModel), modelChoice(workerModel),
+        resolveInstance(project.claudeInstance));
       json(res, 200, { ok: true });
 
     } else if (req.method === 'POST' && url.pathname === '/permission') {
@@ -381,6 +464,11 @@ const server = http.createServer(async (req, res) => {
     json(res, 500, { error: String(err) });
   }
 });
+
+// Fail loudly on a misconfigured install before anything else happens.
+if (!reportPreflight(await preflight({ port: PORT, foremanHome: store.root, distDir: DIST_DIR }))) {
+  process.exit(1);
+}
 
 // Reconcile runs orphaned by a previous process before accepting traffic.
 const swept = await store.sweepOrphans();
