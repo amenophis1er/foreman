@@ -3,9 +3,9 @@ import { Icon } from '../core/Icon';
 
 /** Used until `GET /models` answers (or when it fails). Same shape the endpoint returns. */
 export const FALLBACK_MODELS = [
-  { id: 'fable', label: 'Fable', model: 'claude-fable-5-1', cost: 4, note: 'Frontier. Long-horizon planning and verification.' },
-  { id: 'opus', label: 'Opus', model: 'claude-opus-4-1', cost: 3, note: 'Deep reasoning for hard refactors.' },
-  { id: 'sonnet', label: 'Sonnet', model: 'claude-sonnet-4-5', cost: 2, note: 'Balanced. The usual worker.' },
+  { id: 'fable', label: 'Fable', model: 'claude-fable-5', cost: 4, note: 'Frontier. Long-horizon planning and verification.' },
+  { id: 'opus', label: 'Opus', model: 'claude-opus-5', cost: 3, note: 'Deep reasoning for hard refactors.' },
+  { id: 'sonnet', label: 'Sonnet', model: 'claude-sonnet-5', cost: 2, note: 'Balanced. The usual worker.' },
   { id: 'haiku', label: 'Haiku', model: 'claude-haiku-4-5', cost: 1, note: 'Fast and cheap for reads and mechanical edits.' },
 ];
 const INHERIT = { id: '', label: 'Default', model: 'inherits your Claude Code default', cost: 0 };
@@ -43,7 +43,7 @@ function CostMark({ cost }) {
  * Model picker for a role. Trigger shows the label; the menu lists label, exact model id, a 4-bar cost mark and one line of guidance.
  * `models` normally comes from `GET /models` via `ModelSelect.useModels`; falls back to `FALLBACK_MODELS`.
  */
-export function ModelSelect({ value = '', onChange, models, loading, allowDefault = true, disabled, style }) {
+export function ModelSelect({ align = 'left', value = '', onChange, models, loading, allowDefault = true, disabled, style }) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(null);
   const root = useRef(null);
@@ -73,7 +73,11 @@ export function ModelSelect({ value = '', onChange, models, loading, allowDefaul
       </button>
       {open && (
         <div role="listbox" style={{
-          position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 20, minWidth: 300,
+          // Anchor to whichever edge the trigger sits on. Left-anchored inside a
+          // right-aligned settings row, the 300px menu overhangs the modal and
+          // gives the whole panel a horizontal scrollbar.
+          position: 'absolute', top: 'calc(100% + 4px)', zIndex: 20, minWidth: 300,
+          ...(align === 'right' ? { right: 0 } : { left: 0 }),
           background: 'var(--bg-panel)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)',
           boxShadow: '0 8px 24px rgba(0,0,0,0.28)', padding: 4, display: 'flex', flexDirection: 'column',
         }}>

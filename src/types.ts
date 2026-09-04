@@ -18,6 +18,29 @@ export interface Project {
   createdAt: number;
   /** Default budget suggested in the composer. */
   defaultBudgetUsd: number;
+  /** Pins this project to one Claude Code install; server default when absent. */
+  claudeInstance?: ClaudeInstanceRef;
+}
+
+/**
+ * Which Claude Code install an agent runs under. Decides whose subscription or
+ * key is billed and which settings/plugins load.
+ */
+export interface ClaudeInstanceRef {
+  /** CLAUDE_CONFIG_DIR for the agent. */
+  configDir?: string;
+  /** Claude Code executable; the SDK's bundled one when absent. */
+  executable?: string;
+  /**
+   * Who pays for this project's missions.
+   *  - `inherit` (default): whatever the server process authenticates as. An
+   *    ANTHROPIC_API_KEY in the server environment outranks any stored login,
+   *    so every project bills that key.
+   *  - `own-login`: strip inherited API-key credentials from the agent's
+   *    environment so the pinned config dir's own stored login pays. This is
+   *    what makes per-project accounts work on a single shared server.
+   */
+  billing?: 'inherit' | 'own-login';
 }
 
 export type WorkerStatus = 'running' | 'done' | 'error';
@@ -64,6 +87,8 @@ export interface RunMeta {
   directorModel?: ModelChoice;
   /** Model override for worker sessions (cost lever). */
   workerModel?: ModelChoice;
+  /** Instance this run resolved to at dispatch, so history and resume agree. */
+  claudeInstance?: ClaudeInstanceRef;
   /** Number of times this run was resumed after an interruption. */
   resumes?: number;
   /** Tools the human granted "always allow" for this run (survives resume). */

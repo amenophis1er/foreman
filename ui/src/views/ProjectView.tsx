@@ -9,6 +9,7 @@ import { Empty } from '../ds/core/Empty';
 import { SectionTitle } from '../ds/core/SectionTitle';
 import { Banner } from '../ds/status/Banner';
 import { StatusBadge } from '../ds/status/StatusBadge';
+import { BillingBadge, type BillingMode } from '../ds/status/BillingBadge';
 import { BudgetMeter } from '../ds/status/BudgetMeter';
 import { AttentionBar } from '../ds/status/AttentionBar';
 import { RunRail } from '../ds/mission/RunRail';
@@ -100,8 +101,11 @@ function RunDetails({ r, liveCost }: { r: RunSummary; liveCost?: number }) {
   );
 }
 
-export function ProjectView({ p, models, routeRunId, onSelectRun, onBack, refreshFleet, theme, onToggleTheme, onSettings }: {
+export function ProjectView({
+  p, models, routeRunId, onSelectRun, onBack, refreshFleet, auth, theme, onToggleTheme, onSettings,
+}: {
   p: ProjectSummary; models: ModelInfo[] | null;
+  auth: { mode: BillingMode; source: string; account?: { email?: string; org?: string } };
   routeRunId: string | null; onSelectRun: (runId: string | null) => void;
   onBack: () => void; refreshFleet: () => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
@@ -176,6 +180,10 @@ export function ProjectView({ p, models, routeRunId, onSelectRun, onBack, refres
       <AppHeader mode="project" title={p.name} folder={p.folder} onBack={onBack}
         theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {headerErr && <Banner tone="error" inline>{headerErr}</Banner>}
+        <BillingBadge mode={p.billingMode ?? auth.mode} compact account={auth.account}
+          source={p.claudeInstance?.billing === 'own-login'
+            ? `${p.claudeInstance.configDir} (this project's own login)`
+            : auth.source} />
         {selectedRunId && <StatusBadge status={run.runStatus} />}
         {selectedRunId && <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} />}
         {viewingLive && run.runStatus === 'running' && (
@@ -214,6 +222,23 @@ export function ProjectView({ p, models, routeRunId, onSelectRun, onBack, refres
                   borderRadius: 'var(--r-md)', padding: 'var(--sp-5)',
                   margin: '0 auto', boxSizing: 'border-box',
                 }} />
+              {/* Who pays and which install, at the moment of commitment. The
+                  composer is a DS component with no footer slot, and this
+                  reflects project state rather than composer state, so it lives
+                  in the view beside it. */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', flexWrap: 'wrap',
+                margin: 'var(--sp-3) auto 0', maxWidth: 'var(--composer-max-w, 720px)',
+                fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
+              }}>
+                <BillingBadge mode={p.billingMode ?? auth.mode} compact account={auth.account}
+                  source={p.claudeInstance?.billing === 'own-login'
+                    ? `${p.claudeInstance.configDir} (this project's own login)`
+                    : auth.source} />
+                <span style={{ fontFamily: 'var(--font-mono)' }}>
+                  runs on {p.claudeInstance?.configDir ?? 'the server default instance'}
+                </span>
+              </div>
             </div>
           </div>
         </div>

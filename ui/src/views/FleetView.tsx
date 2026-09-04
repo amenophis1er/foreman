@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api, type ProjectSummary } from '../state';
 import { AppHeader } from '../ds/shell/AppHeader';
+import { BillingBadge, type BillingMode } from '../ds/status/BillingBadge';
 import { Empty } from '../ds/core/Empty';
 import { Banner } from '../ds/status/Banner';
 import { ProjectCard } from '../ds/fleet/ProjectCard';
@@ -43,9 +44,12 @@ function usePicker(onPick: (path: string) => void) {
   };
 }
 
-export function FleetView({ projects, connected, activity, onOpen, refresh, theme, onToggleTheme, onSettings }: {
+export function FleetView({
+  projects, connected, activity, auth, onOpen, refresh, theme, onToggleTheme, onSettings,
+}: {
   projects: ProjectSummary[]; connected: boolean;
   activity: Record<string, string>;
+  auth: { mode: BillingMode; source: string; account?: { email?: string; org?: string } };
   onOpen: (projectId: string) => void; refresh: () => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
 }) {
@@ -73,7 +77,12 @@ export function FleetView({ projects, connected, activity, onOpen, refresh, them
   };
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto', position: 'relative' }}
+    <div style={{
+      height: '100%', overflowY: 'auto', position: 'relative',
+      // Column layout so the empty state can claim the space under the header
+      // and centre in it; a populated grid still lays out and scrolls normally.
+      display: 'flex', flexDirection: 'column',
+    }}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
       onDragLeave={(e) => { if (e.target === e.currentTarget) setDragging(false); }}
       onDrop={(e) => void onDrop(e)}>
@@ -81,14 +90,23 @@ export function FleetView({ projects, connected, activity, onOpen, refresh, them
 
       <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {!connected && <Banner tone="disconnected" inline>disconnected</Banner>}
+        <BillingBadge mode={auth.mode} source={auth.source} account={auth.account} />
       </AppHeader>
 
-      <div style={{
+      {/* With no projects the grid strands a lone card in the top-left of an
+          empty page. Centre the invitation instead; once there are projects the
+          grid is the right shape again. */}
+      <div style={projects.length === 0 ? {
+        flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', gap: 'var(--sp-3)',
+        padding: 'var(--sp-5)', textAlign: 'center',
+      } : {
         display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
         gap: 'var(--sp-4)', padding: 'var(--sp-5)', maxWidth: 'var(--fleet-max)', margin: '0 auto',
       }}>
         {projects.map((p) => (
           <ProjectCard key={p.id} name={p.name} folder={p.folder}
+            instance={p.claudeInstance?.configDir}
             run={p.activeRun ? {
               mission: p.activeRun.mission,
               costUsd: p.activeRun.costUsd,
@@ -102,11 +120,15 @@ export function FleetView({ projects, connected, activity, onOpen, refresh, them
             onOpen={() => onOpen(p.id)}
             onUnlink={() => setUnlinking(p)} />
         ))}
-        <LinkProjectCard onClick={picker.show} />
-        {projects.length === 0 && (
-          <div style={{ gridColumn: '1 / -1' }}>
+        {projects.length === 0 ? (
+          <>
+            <div style={{ width: 320, maxWidth: '100%' }}>
+              <LinkProjectCard onClick={picker.show} />
+            </div>
             <Empty>No projects linked yet — link a folder to give the director a job site.</Empty>
-          </div>
+          </>
+        ) : (
+          <LinkProjectCard onClick={picker.show} />
         )}
       </div>
 

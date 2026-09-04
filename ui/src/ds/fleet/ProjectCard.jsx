@@ -9,7 +9,7 @@ function fmtDate(ms) {
 }
 
 /** A linked project on the fleet grid. Whole card is the click target; `unlink` stops propagation. */
-export function ProjectCard({ name, folder, run, mission, costUsd, budgetUsd, activity, lastRun, pendingPermissions = 0, pendingQuestions = 0, onOpen, onUnlink, style }) {
+export function ProjectCard({ name, folder, instance, run, mission, costUsd, budgetUsd, activity, lastRun, pendingPermissions = 0, pendingQuestions = 0, onOpen, onUnlink, style }) {
   const [hover, setHover] = useState(false);
   const [unlinkHover, setUnlinkHover] = useState(false);
   const active = run ?? (mission ? { mission, costUsd, budgetUsd } : null);
@@ -37,6 +37,12 @@ export function ProjectCard({ name, folder, run, mission, costUsd, budgetUsd, ac
         fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)',
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }}>{folder}</div>
+      {instance && (
+        <div title={`Missions run on ${instance}`} style={{
+          fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: -4,
+        }}>via {instance}</div>
+      )}
       <NeedsYouStrip approvals={pendingPermissions} questions={pendingQuestions} />
       {active ? (
         <>

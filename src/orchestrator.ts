@@ -11,7 +11,7 @@
  *  - Emit every observable event through the injected {@link Emitter}, which
  *    both broadcasts to live clients and persists to the run's event log.
  */
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -83,7 +83,19 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
   }
 }
 import { makePolicy, type PendingPermission } from './policy.js';
+import { instanceOptions, resolveInstance } from './instance.js';
 import type { RunMeta, WorkerMeta } from './types.js';
+
+/**
+ * What Foreman keeps out of git inside a mission folder's .claude/.
+ *
+ * `settings.local.json` is the file an "always allow" grant creates. The
+ * `.gitignore` line covers this file itself, so adding it introduces nothing
+ * new to `git status` — without that line the fix would trade one untracked
+ * file for another. Everything else in .claude/ (settings.json, agents,
+ * commands) stays visible, since a project may legitimately track those.
+ */
+const LOCAL_IGNORE_LINES = ['settings.local.json', '.gitignore'];
 
 /** Broadcasts to SSE clients and appends to the run's event log. */
 export type Emitter = (event: string, data: unknown) => void;
@@ -98,9 +110,14 @@ directing worker agents. Non-negotiable rules, in priority order:
 1. PLAN FIRST. Before anything else, write .foreman/MISSION.md in the working
    directory with: the mission (one line), DONE WHEN (verifiable criteria), a
    plan as a checklist of verifiable milestones, a Log section, and a Decisions
-   section. Update it after every milestone — it is the mission's source of
-   truth, not your context window. SCALE THE DOC TO THE MISSION: a trivial
-   task deserves a three-line doc (mission, one DONE WHEN, one milestone);
+   section. TICK THE BOXES AS YOU GO: the moment a milestone or a DONE WHEN
+   criterion is actually verified, change its "- [ ]" to "- [x]" in the same
+   turn. A log line saying something is done is not a substitute for ticking
+   it. The doc is the mission's source of truth, not your context window, and
+   it is what a resumed director reads to work out what is already finished —
+   an unticked box costs the run the budget of proving that work again.
+   SCALE THE DOC TO THE MISSION: a trivial task deserves a three-line doc
+   (mission, one DONE WHEN, one milestone);
    never pad small missions with ceremony. The doc's existence is mandatory;
    its length is not.
 2. DELEGATE IMPLEMENTATION. Use mcp__foreman__spawn_worker to have a worker do
@@ -154,6 +171,8 @@ export class MissionRun {
   private readonly workers = new Map<string, WorkerRuntime>();
   private workerSeq = 0;
   private readonly runAllowed = new Set<string>();
+  /** Set once the cap is passed; the wind-down turn is allowed, then the loop ends. */
+  private budgetStopped = false;
   private readonly pendingPermissions = new Map<string, PendingPermission>();
   private readonly pendingQuestions = new Map<string, (answer: string) => void>();
   /** The director's streaming prompt; steering pushes into it. */
@@ -291,6 +310,9 @@ export class MissionRun {
       const foremanDir = path.join(this.meta.folder, '.foreman');
       await mkdir(foremanDir, { recursive: true });
       await writeFile(path.join(foremanDir, '.gitignore'), '*\n').catch(() => {});
+      // Covers a .claude/ left by an earlier run; the one this run creates is
+      // handled again on the way out.
+      await this.ignoreLocalSettings();
 
       // Streaming prompt: the mission goes in first; steering pushes more
       // user messages, each starting a new director turn.
@@ -307,6 +329,7 @@ export class MissionRun {
           model: this.meta.directorModel,
           maxTurns: 150,
           systemPrompt: { type: 'preset', preset: 'claude_code', append: DIRECTOR_CHARTER },
+          ...instanceOptions(resolveInstance(this.meta.claudeInstance)),
           mcpServers: { foreman: this.makeTools(), ...this.browserServers() },
           canUseTool: this.policyFor('director'),
         },
@@ -326,6 +349,19 @@ export class MissionRun {
           }
           lastTurnFailed = Boolean(m.is_error);
           this.noteUsageLimit(String(m.result ?? ''));
+
+          // Enforce the cap against the director's own spend, at the only
+          // point its cost is known. One wind-down turn, then stop — checked
+          // before the pending-input test so a queued steer cannot extend a
+          // run that has already been told this was its last turn.
+          const windDown = this.budgetWindDown();
+          if (windDown) {
+            input.push(windDown);
+          } else if (this.budgetStopped) {
+            input.close();
+            this.emit('message', { agent: 'director', msg });
+            break;
+          }
           // A result means the CLI is idle with all delivered input
           // processed (a steer consumed mid-turn is folded into that
           // turn's result). Only a steer still waiting in our queue
@@ -342,12 +378,18 @@ export class MissionRun {
       }
       input.close();
       await (q as AsyncGenerator<SDKMessage>).return?.(undefined as never).catch(() => {});
-      this.meta.status = this.wasInterrupted || this.usageLimited ? 'interrupted'
+      // A run cut short by the cap is resumable, not complete — labelling it
+      // 'done' would claim a mission finished that the budget ended.
+      this.meta.status = this.wasInterrupted || this.usageLimited || this.budgetStopped ? 'interrupted'
         : lastTurnFailed ? 'error' : 'done';
     } catch (err) {
       this.meta.status = 'error';
       this.emit('run_error', { error: String(err) });
     } finally {
+      // "Always allow" makes the SDK write .claude/settings.local.json into the
+      // mission folder, which appears only once a grant happens — so this runs
+      // after the work, not just before it.
+      await this.ignoreLocalSettings();
       if (this.meta.status === 'running') this.meta.status = 'interrupted';
       this.meta.endedAt = Date.now();
       this.saveMeta(this.meta);
@@ -411,6 +453,36 @@ export class MissionRun {
   private budgetNoticeSent = false;
   private budgetKillSent = false;
 
+  /**
+   * Keeps an "always allow" grant out of `git status`.
+   *
+   * Granting a tool for the run makes the SDK persist it to
+   * `.claude/settings.local.json` in the mission folder — a file the operator
+   * never asked for and, in a real repository, one they could commit by
+   * accident. `.foreman/` solves this by ignoring itself wholesale; `.claude/`
+   * cannot, because a project may legitimately track its own agents, commands
+   * and shared settings.json there. So only the local-settings file is ignored,
+   * an existing .gitignore is appended to rather than replaced, and the
+   * directory is never created here — a mission that grants nothing leaves the
+   * folder exactly as it found it.
+   */
+  private async ignoreLocalSettings(): Promise<void> {
+    const dir = path.join(this.meta.folder, '.claude');
+    if (!(await stat(dir).then((st) => st.isDirectory(), () => false))) return;
+
+    const file = path.join(dir, '.gitignore');
+    const existing = await readFile(file, 'utf8').catch(() => null);
+    const lines = existing === null ? [] : existing.split('\n');
+    const missing = LOCAL_IGNORE_LINES.filter(
+      (rule) => !lines.some((line) => line.trim() === rule),
+    );
+    if (missing.length === 0) return;
+
+    const prefix = existing === null || existing.endsWith('\n') ? (existing ?? '') : `${existing}\n`;
+    await writeFile(file, `${prefix}${missing.join('\n')}\n`).catch(() => {});
+  }
+
+
   private addCost(usd: number | undefined): void {
     if (typeof usd !== 'number') return;
     this.meta.costUsd += usd;
@@ -471,6 +543,37 @@ export class MissionRun {
     );
   }
 
+  /**
+   * The cap applied to the director's own turns, not just to delegation.
+   *
+   * overBudget() only reaches the director through spawn_worker/message_worker,
+   * so a director that stops delegating and keeps working never sees it — the
+   * run overshoots by however much its remaining turns cost. Checked here at
+   * every turn boundary instead.
+   *
+   * Returns the wind-down instruction on the first turn past the cap, and null
+   * afterwards: exactly one bounded turn to tick MISSION.md and summarise, then
+   * {@link budgetExhausted} ends the loop. Killing the director outright would
+   * be a harder stop but would strand the mission doc mid-flight, which is the
+   * state a resume can least afford.
+   */
+  private budgetWindDown(): string | null {
+    if (this.meta.costUsd < this.meta.budgetUsd || this.budgetStopped) return null;
+    this.budgetStopped = true;
+    this.emit('budget_stop', {
+      costUsd: this.meta.costUsd,
+      budgetUsd: this.meta.budgetUsd,
+    });
+    return (
+      `BUDGET CAP REACHED: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)}. ` +
+      'This is your LAST turn — the run ends when it does. Do not start new work, do not ' +
+      'spawn or message workers, and do not begin any verification you have not already ' +
+      'finished. Use this turn only to: tick every MISSION.md box you have genuinely ' +
+      'verified, add a final log line naming what is left undone, and reply with a short ' +
+      'summary of where the mission stands so it can be resumed with a larger budget.'
+    );
+  }
+
   private async runWorker(workerId: string, prompt: string, resumeSessionId?: string):
     Promise<{ report: string; isError: boolean }> {
     const existing = this.workers.get(workerId);
@@ -493,6 +596,7 @@ export class MissionRun {
         model: this.meta.workerModel,
         maxTurns: 60,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: WORKER_CHARTER },
+        ...instanceOptions(resolveInstance(this.meta.claudeInstance)),
         mcpServers: this.browserServers(),
         canUseTool: this.policyFor(workerId),
       },

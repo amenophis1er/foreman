@@ -1,0 +1,226 @@
+/**
+ * Startup preflight — turns the ways a fresh install can be wrong into one
+ * readable screen instead of a stack trace (or, worse, silence).
+ *
+ * On credentials: Foreman runs on EITHER a Claude subscription OR an API key —
+ * both are supported, and both report real per-run cost, so budgets bind either
+ * way. What matters is that you know which one is active, because it determines
+ * who pays. The check reports the active mode and only blocks when there is no
+ * credential at all. Set FOREMAN_AUTH_MODE=api-key|subscription to assert the
+ * one you intend; startup then fails on a mismatch rather than quietly billing
+ * the other. Which Claude Code instance supplies a subscription credential is a
+ * separate axis — see resolveInstance() in instance.ts.
+ */
+import net from 'node:net';
+import { execFile } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
+import { access, mkdir, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { defaultInstance, describeInstance, effectiveConfigDir } from './instance.js';
+
+export type CheckStatus = 'ok' | 'warn' | 'error';
+
+export interface Check {
+  name: string;
+  status: CheckStatus;
+  detail: string;
+  /** Shown beneath a warn/error as the thing to actually do. */
+  fix?: string;
+}
+
+/**
+ * Every place Claude Code may hold a subscription credential. Both are checked:
+ * CLAUDE_CONFIG_DIR relocates the file but not the macOS Keychain item, so a
+ * machine can easily have one and not the other.
+ */
+function claudeCredentialsPaths(): string[] {
+  const dirs = [process.env.CLAUDE_CONFIG_DIR, path.join(os.homedir(), '.claude')].filter(
+    (d): d is string => Boolean(d),
+  );
+  return [...new Set(dirs)].map((d) => path.join(d, '.credentials.json'));
+}
+
+/** Presence only — never reads the secret. macOS stores Claude Code auth here. */
+function keychainHasCredentials(): Promise<boolean> {
+  if (process.platform !== 'darwin') return Promise.resolve(false);
+  return new Promise((resolve) => {
+    execFile('security', ['find-generic-password', '-s', 'Claude Code-credentials'], (err) =>
+      resolve(!err),
+    );
+  });
+}
+
+/** Does this specific config dir hold a stored Claude Code login? */
+export async function dirHasCredentials(configDir: string): Promise<boolean> {
+  return exists(path.join(configDir, '.credentials.json'));
+}
+
+/** Machine-wide Keychain login (macOS). Not tied to any one config dir. */
+export const hasKeychainCredentials = keychainHasCredentials;
+
+/** Who a config dir is signed in as. Reads only non-secret identity fields. */
+export interface AccountInfo { email?: string; org?: string }
+
+export async function readAccount(configDir: string): Promise<AccountInfo> {
+  try {
+    const raw = await readFile(path.join(configDir, '.claude.json'), 'utf8');
+    const acct = (JSON.parse(raw) as { oauthAccount?: Record<string, string> }).oauthAccount;
+    if (!acct) return {};
+    return { email: acct.emailAddress, org: acct.organizationName };
+  } catch {
+    return {};
+  }
+}
+
+async function exists(p: string): Promise<boolean> {
+  return access(p, constants.F_OK).then(() => true, () => false);
+}
+
+export type AuthMode = 'api-key' | 'subscription' | 'cloud' | 'none';
+
+/** Which credential the SDK will actually pick up, and where it came from. */
+export async function detectAuth(): Promise<{ mode: AuthMode; source: string; account?: AccountInfo }> {
+  if (process.env.ANTHROPIC_API_KEY) return { mode: 'api-key', source: 'ANTHROPIC_API_KEY' };
+  if (process.env.ANTHROPIC_AUTH_TOKEN) return { mode: 'api-key', source: 'ANTHROPIC_AUTH_TOKEN' };
+  if (process.env.CLAUDE_CODE_USE_BEDROCK) return { mode: 'cloud', source: 'Bedrock' };
+  if (process.env.CLAUDE_CODE_USE_VERTEX) return { mode: 'cloud', source: 'Vertex' };
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+    return { mode: 'subscription', source: 'CLAUDE_CODE_OAUTH_TOKEN' };
+  }
+
+  // The dir the AGENT will use — CLAUDE_CODE_CONFIG_DIR inherited from the
+  // launching shell counts. Reporting any other dir would name an account that
+  // is not the one being billed.
+  const dir = effectiveConfigDir({});
+  const account = await readAccount(dir);
+  const stored = (await exists(path.join(dir, '.credentials.json'))) || (await keychainHasCredentials());
+  if (stored || account.email) return { mode: 'subscription', source: dir, account };
+
+  return { mode: 'none', source: '' };
+}
+
+const MODE_LABEL: Record<AuthMode, string> = {
+  'api-key': 'API key',
+  subscription: 'Claude subscription',
+  cloud: 'cloud provider',
+  none: 'none',
+};
+
+async function checkAuth(): Promise<Check> {
+  const name = 'Credentials';
+  const { mode, source, account } = await detectAuth();
+
+  if (mode === 'none') {
+    return {
+      name,
+      status: 'error',
+      detail: 'none found — no missions can run',
+      fix: 'Log in with Claude Code, or: export ANTHROPIC_API_KEY=sk-ant-...',
+    };
+  }
+
+  const expected = process.env.FOREMAN_AUTH_MODE;
+  if (expected && expected !== mode) {
+    return {
+      name,
+      status: 'error',
+      detail: `expected ${expected}, but ${MODE_LABEL[mode]} is active (${source})`,
+      fix:
+        expected === 'api-key'
+          ? 'export ANTHROPIC_API_KEY=sk-ant-...   (an unset key silently falls back to your Claude Code login)'
+          : 'unset ANTHROPIC_API_KEY to use the subscription, or drop FOREMAN_AUTH_MODE',
+    };
+  }
+
+  const who = account?.email ? `${account.email}${account.org ? ` · ${account.org}` : ''}` : source;
+  return { name, status: 'ok', detail: `${MODE_LABEL[mode]} — ${who}` };
+}
+
+function checkInstance(): Check {
+  return { name: 'Claude Code', status: 'ok', detail: describeInstance(defaultInstance()) };
+}
+
+async function checkPort(port: number): Promise<Check> {
+  const name = `Port ${port}`;
+  const inUse = await new Promise<boolean>((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', (err: NodeJS.ErrnoException) => resolve(err.code === 'EADDRINUSE'));
+    probe.once('listening', () => probe.close(() => resolve(false)));
+    probe.listen(port, '127.0.0.1');
+  });
+
+  return inUse
+    ? {
+        name,
+        status: 'error',
+        detail: 'already in use',
+        fix: `Another Foreman may be running. Stop it, or: PORT=${port + 1} npm start`,
+      }
+    : { name, status: 'ok', detail: 'free' };
+}
+
+async function checkHome(root: string): Promise<Check> {
+  const name = 'Data directory';
+  try {
+    await mkdir(root, { recursive: true });
+    await access(root, constants.W_OK);
+    return { name, status: 'ok', detail: root };
+  } catch (err) {
+    return {
+      name,
+      status: 'error',
+      detail: `${root} is not writable (${String(err)})`,
+      fix: 'Fix permissions, or point elsewhere: FOREMAN_HOME=/path/to/dir npm start',
+    };
+  }
+}
+
+async function checkUi(distDir: string): Promise<Check> {
+  const name = 'Dashboard';
+  return (await exists(path.join(distDir, 'index.html')))
+    ? { name, status: 'ok', detail: 'built' }
+    : {
+        name,
+        status: 'warn',
+        detail: 'ui/dist not built — the API works, the dashboard does not',
+        fix: 'npm run ui:build',
+      };
+}
+
+/**
+ * Runs every check. Pure: callers decide how to report and whether to exit.
+ */
+export async function preflight(opts: {
+  port: number;
+  foremanHome: string;
+  distDir: string;
+}): Promise<Check[]> {
+  return Promise.all([
+    checkAuth(),
+    checkInstance(),
+    checkPort(opts.port),
+    checkHome(opts.foremanHome),
+    checkUi(opts.distDir),
+  ]);
+}
+
+const GLYPH: Record<CheckStatus, string> = { ok: '✓', warn: '!', error: '✗' };
+
+/** Prints the checklist. Returns true when nothing blocks startup. */
+export function reportPreflight(checks: Check[]): boolean {
+  const width = Math.max(...checks.map((c) => c.name.length));
+  console.log('Foreman preflight');
+  for (const c of checks) {
+    console.log(`  ${GLYPH[c.status]} ${c.name.padEnd(width)}  ${c.detail}`);
+    if (c.fix && c.status !== 'ok') console.log(`      ${c.fix}`);
+  }
+
+  const failed = checks.filter((c) => c.status === 'error');
+  if (failed.length) {
+    console.log(`\nNot starting — ${failed.length} blocking problem(s) above.`);
+    return false;
+  }
+  console.log('');
+  return true;
+}

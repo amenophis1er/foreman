@@ -37,7 +37,7 @@ function useModels(): ModelInfo[] | null {
 type SettingsFile = { global: Settings; projects: Record<string, Settings> };
 
 export default function App() {
-  const { projects, connected, refresh, activity } = useFleet();
+  const { projects, connected, auth, refresh, activity } = useFleet();
   const { projectId, runId, go, goRun } = useRoute();
   const [theme, toggleTheme, applyTheme] = useTheme();
   const models = useModels();
@@ -78,6 +78,8 @@ export default function App() {
   const shared = {
     theme, onToggleTheme: toggleTheme,
     onSettings: () => setSettingsOpen(true),
+    // Which account pays. Cross-cutting, so it rides with the other shell props.
+    auth,
   };
 
   return (

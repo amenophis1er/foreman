@@ -9,6 +9,12 @@ export interface ProjectCardProps {
   name: string;
   /** Absolute path, mono, ellipsized from the right. */
   folder: string;
+  /**
+   * The Claude Code install this project is pinned to, mono, under the folder.
+   * Omit when the project inherits the server default — an absent line is the
+   * signal that nothing special is going on.
+   */
+  instance?: string;
   /** The active run, if any. Absent → idle state. */
   run?: { mission: string; costUsd: number; budgetUsd: number };
   /** Flat alternative to `run` for markup contexts: passing `mission` puts the card in its running state. */

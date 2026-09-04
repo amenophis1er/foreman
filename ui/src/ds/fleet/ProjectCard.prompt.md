@@ -10,3 +10,5 @@ One card per linked folder on the fleet home. Lay them out in `repeat(auto-fill,
 
 - Four states: never run (muted hint), idle with last-run summary, running (2-line clamped mission + BudgetMeter), needs-you (warning border + pulsing strip).
 - `Unlink` is a quiet corner action that must open a `ConfirmDialog`; the card itself never unlinks.
+
+- `instance` adds a mono `via <path>` line under the folder, and only when the project pins a Claude Code install. Projects on the server default show nothing — the line's presence is what carries the meaning.
