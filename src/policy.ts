@@ -16,10 +16,24 @@
  *     but only for routine asks. A rule-forced ask or one carrying a
  *     decisionReason (e.g. a path outside the working directory) always
  *     prompts, so blanket grants never bypass guardrails.
- *  6. Everything else prompts.
+ *  6. The per-run tool policy (Settings, snapshotted at run start) applies:
+ *     'allow' runs silently, 'deny' blocks with guidance, 'ask' prompts.
+ *     Defaults are autonomy-first (Bash/Write/Edit/WebFetch allowed).
+ *  7. Write/Edit outside the mission folder ALWAYS prompts, whatever the
+ *     policy says — grants never bypass the job-site boundary.
+ *  8. Everything else prompts.
  */
 import path from 'node:path';
 import type { CanUseTool, PermissionResult, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
+import type { ToolPolicy } from './types.js';
+
+/**
+ * Autonomy-first defaults: a mission runs hands-off inside its folder.
+ * Users tighten these per project (or globally) in Settings.
+ */
+export const DEFAULT_TOOL_POLICY: ToolPolicy = {
+  Bash: 'allow', Write: 'allow', Edit: 'allow', WebFetch: 'allow',
+};
 
 export const AUTO_ALLOW_TOOLS: ReadonlySet<string> = new Set([
   'Read', 'Glob', 'Grep', 'TodoWrite', 'Task',
@@ -85,8 +99,12 @@ export function makePolicy(
   folder: string,
   runAllowed: Set<string>,
   hooks: PolicyHooks,
+  settings?: { toolPolicy?: ToolPolicy; autoAllowReadOnly?: boolean },
 ): CanUseTool {
   const foremanDir = path.join(folder, '.foreman') + path.sep;
+  const folderDir = path.resolve(folder) + path.sep;
+  const toolPolicy = { ...DEFAULT_TOOL_POLICY, ...settings?.toolPolicy };
+  const autoReadOnly = settings?.autoAllowReadOnly !== false;
 
   return async (toolName, input, opts) => {
     const routine = !opts.matchedAskRule && !opts.decisionReason;
@@ -95,14 +113,31 @@ export function makePolicy(
       (toolName === 'Write' || toolName === 'Edit') &&
       filePath !== null &&
       path.resolve(filePath).startsWith(foremanDir);
+    // A file edit outside the job site always prompts, whatever the policy
+    // says — blanket grants must not bypass the folder boundary.
+    const outsideFolder =
+      (toolName === 'Write' || toolName === 'Edit' || toolName === 'NotebookEdit') &&
+      filePath !== null &&
+      !path.resolve(filePath).startsWith(folderDir);
+
+    if (toolPolicy[toolName] === 'deny') {
+      return {
+        behavior: 'deny',
+        message: `${toolName} is denied by this project's tool policy. ` +
+          'Escalate via mcp__foreman__ask_human if the mission cannot proceed without it.',
+      };
+    }
 
     const browser = browserToolDecision(toolName, input);
     if (
-      browser === 'allow' ||
-      toolName.startsWith('mcp__foreman__') ||
-      AUTO_ALLOW_TOOLS.has(toolName) ||
-      isMissionDocWrite ||
-      (browser !== 'ask' && runAllowed.has(toolName) && routine)
+      !outsideFolder && (
+        browser === 'allow' ||
+        toolName.startsWith('mcp__foreman__') ||
+        (autoReadOnly && AUTO_ALLOW_TOOLS.has(toolName)) ||
+        isMissionDocWrite ||
+        (toolPolicy[toolName] === 'allow' && routine && browser !== 'ask') ||
+        (browser !== 'ask' && runAllowed.has(toolName) && routine)
+      )
     ) {
       hooks.onAutoAllow(agent, toolName);
       return { behavior: 'allow' };
@@ -114,7 +149,8 @@ export function makePolicy(
       input,
       title: opts.title,
       description: opts.description,
-      decisionReason: opts.decisionReason,
+      decisionReason: opts.decisionReason ??
+        (outsideFolder ? `Path is outside the mission folder (${folder})` : undefined),
     });
 
     return new Promise<PermissionResult>((resolve) => {

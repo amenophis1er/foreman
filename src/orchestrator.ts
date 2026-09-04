@@ -13,6 +13,7 @@
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import {
   query,
@@ -124,6 +125,11 @@ working directory. Never ask interactive questions — if you are blocked on a
 decision you cannot make, print "BLOCKED: <your question>" and end your turn.
 When finished, end with a concise report of what you did and how you checked it.
 `;
+
+/** Foreman's bundled Playwright MCP server, resolved from this repo. */
+const PLAYWRIGHT_MCP_CLI = fileURLToPath(
+  new URL('../node_modules/@playwright/mcp/cli.js', import.meta.url),
+);
 
 interface WorkerRuntime extends WorkerMeta {
   q?: Query;
@@ -335,8 +341,10 @@ export class MissionRun {
     return {
       playwright: {
         type: 'stdio',
-        command: 'npx',
-        args: ['--no-install', '@playwright/mcp', '--headless', '--isolated'],
+        // Absolute path: the server runs with the mission folder as cwd,
+        // where npx cannot resolve Foreman's own dependency.
+        command: process.execPath,
+        args: [PLAYWRIGHT_MCP_CLI, '--headless', '--isolated'],
       },
     };
   }
@@ -351,14 +359,61 @@ export class MissionRun {
         if (existed) this.emit('permission_resolved', { id, behavior: 'aborted' });
         return existed;
       },
-    });
+    }, { toolPolicy: this.meta.toolPolicy, autoAllowReadOnly: this.meta.autoAllowReadOnly });
   }
+
+  private budgetNoticeSent = false;
+  private budgetKillSent = false;
 
   private addCost(usd: number | undefined): void {
     if (typeof usd !== 'number') return;
     this.meta.costUsd += usd;
     this.saveMeta(this.meta);
     this.emit('cost', { costUsd: this.meta.costUsd, budgetUsd: this.meta.budgetUsd });
+    this.enforceBudget();
+  }
+
+  /**
+   * The cap is a real fence, not just a gate on new workers:
+   *  - at 100% the director gets an in-band wind-down order (delivered into
+   *    its live turn via the streaming input);
+   *  - at 125% the run is interrupted outright.
+   */
+  private enforceBudget(): void {
+    const { costUsd, budgetUsd } = this.meta;
+    if (budgetUsd <= 0) return;
+    if (!this.budgetKillSent && costUsd >= budgetUsd * 1.25) {
+      this.budgetKillSent = true;
+      this.budgetNoticeSent = true; // the kill supersedes the wind-down notice
+      this.emit('budget_alert', {
+        level: 'exceeded', costUsd, budgetUsd,
+        text: `Budget overrun past 125% ($${costUsd.toFixed(2)} of $${budgetUsd.toFixed(2)}) — run interrupted.`,
+      });
+      void this.interrupt();
+      return;
+    }
+    if (!this.budgetNoticeSent && costUsd >= budgetUsd) {
+      this.budgetNoticeSent = true;
+      this.emit('budget_alert', {
+        level: 'reached', costUsd, budgetUsd,
+        text: `Budget cap reached ($${costUsd.toFixed(2)} of $${budgetUsd.toFixed(2)}) — director ordered to wind down.`,
+      });
+      this.directorInput?.push(
+        '[BUDGET ENFORCEMENT — automated notice]\n' +
+        `The run has reached its budget cap: $${costUsd.toFixed(2)} spent of ` +
+        `$${budgetUsd.toFixed(2)}. Stop starting new work now. Update .foreman/MISSION.md ` +
+        'with the true state, summarize what is done and what is not, and end your turn. ' +
+        'If finishing is essential, ask the human for a budget increase via ' +
+        'mcp__foreman__ask_human. The run will be force-interrupted at 125% of budget.',
+      );
+    }
+  }
+
+  /** Appended to worker reports so the director can see the true burn rate
+   *  (its own turn costs are invisible to it otherwise). */
+  private costFooter(): string {
+    return `\n\n[Run cost so far: $${this.meta.costUsd.toFixed(2)} of ` +
+      `$${this.meta.budgetUsd.toFixed(2)} budget — includes director turns]`;
   }
 
   private overBudget(): string | null {
@@ -443,7 +498,7 @@ export class MissionRun {
         if (stop) return text(stop);
         const id = `worker-${++this.workerSeq}`;
         const { report, isError } = await this.runWorker(id, task);
-        return text(`[${id}${isError ? ' FAILED' : ' finished'}] ${report || '(no report)'}`);
+        return text(`[${id}${isError ? ' FAILED' : ' finished'}] ${report || '(no report)'}${this.costFooter()}`);
       },
     );
 
@@ -462,7 +517,7 @@ export class MissionRun {
         const w = this.workers.get(worker_id);
         if (!w?.sessionId) return text(`No resumable worker "${worker_id}".`);
         const { report, isError } = await this.runWorker(worker_id, message, w.sessionId);
-        return text(`[${worker_id}${isError ? ' FAILED' : ' finished'}] ${report || '(no report)'}`);
+        return text(`[${worker_id}${isError ? ' FAILED' : ' finished'}] ${report || '(no report)'}${this.costFooter()}`);
       },
     );
 

@@ -37,8 +37,9 @@ import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MissionRun } from './orchestrator.js';
+import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { RunStore, newRunId } from './store.js';
-import type { ForemanEvent, ModelChoice, RunMeta } from './types.js';
+import type { ForemanEvent, ModelChoice, RunMeta, ToolPolicy } from './types.js';
 
 /**
  * Curated model list for the composer pickers (GET /models). `id` is exactly
@@ -146,16 +147,38 @@ async function driveRun(projectId: string, meta: RunMeta, resumeSessionId?: stri
   }
 }
 
+/** Effective per-run policy: defaults ← global Settings ← project overlay. */
+async function effectivePolicy(projectId: string): Promise<{
+  toolPolicy: ToolPolicy; autoAllowReadOnly: boolean;
+}> {
+  const s = await store.readSettings()
+    .catch(() => ({ global: {}, projects: {} as Record<string, object> }));
+  const g = s.global as Record<string, unknown>;
+  const p = (s.projects as Record<string, unknown>)[projectId] as Record<string, unknown> ?? {};
+  return {
+    toolPolicy: {
+      ...DEFAULT_TOOL_POLICY,
+      ...(g.toolPolicy as ToolPolicy | undefined),
+      ...(p.toolPolicy as ToolPolicy | undefined),
+    },
+    autoAllowReadOnly:
+      (p.autoAllowReadOnly ?? g.autoAllowReadOnly) !== false,
+  };
+}
+
 async function startRun(
   projectId: string, folder: string, mission: string, budgetUsd: number,
   directorModel: ModelChoice, workerModel: ModelChoice, browserTools: boolean,
 ): Promise<void> {
+  const policy = await effectivePolicy(projectId);
   const meta: RunMeta = {
     id: newRunId(),
     projectId,
     folder, mission, budgetUsd,
     directorModel, workerModel,
     browserTools: browserTools || undefined,
+    toolPolicy: policy.toolPolicy,
+    autoAllowReadOnly: policy.autoAllowReadOnly,
     status: 'running', costUsd: 0,
     createdAt: Date.now(), workers: [],
   };

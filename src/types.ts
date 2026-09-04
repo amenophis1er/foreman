@@ -48,8 +48,15 @@ export interface WorkerMeta {
  */
 export type ModelChoice = string | undefined;
 
+/** Per-tool decision applied before any prompt is considered. */
+export type ToolPolicy = Record<string, 'allow' | 'ask' | 'deny'>;
+
 /** Persisted run metadata (meta.json). Small, rewritten atomically on change. */
 export interface RunMeta {
+  /** Effective tool policy, snapshotted from Settings at run start. */
+  toolPolicy?: ToolPolicy;
+  /** Whether read-only tools run silently (Settings; default true). */
+  autoAllowReadOnly?: boolean;
   id: string;
   /** Owning project; absent on runs recorded before projects existed. */
   projectId?: string;
