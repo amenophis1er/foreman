@@ -1,8 +1,42 @@
 {
   "name": "foreman",
   "version": "1.0.0",
-  "description": "Foreman — autonomous mission runner on the Claude Agent SDK (phase-1 spike)",
-  "main": "index.js",
+  "description": "Autonomous mission runner on the Claude Agent SDK: a director agent plans, delegates to workers, verifies, and reports \u2014 driven from a browser dashboard.",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "agent-sdk",
+    "agents",
+    "orchestration",
+    "autonomous",
+    "ai"
+  ],
+  "homepage": "https://github.com/amenophis1er/foreman#readme",
+  "bugs": {
+    "url": "https://github.com/amenophis1er/foreman/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amenophis1er/foreman.git"
+  },
+  "license": "ISC",
+  "author": "Amen AMOUZOU",
+  "type": "module",
+  "bin": {
+    "foreman": "./bin/foreman.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "ui/dist",
+    "skills",
+    "README.md",
+    "DESIGN.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "node --import tsx --test src/store.test.ts",
     "start": "tsx src/server.ts",
@@ -10,10 +44,6 @@
     "ui:dev": "npm --prefix ui run dev",
     "ui:build": "npm --prefix ui run build"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "module",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.259",
     "@playwright/mcp": "^0.0.80",

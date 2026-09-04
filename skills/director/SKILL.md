@@ -10,13 +10,16 @@ and worker sessions with budgets, approval cards, and MISSION.md governance;
 the human supervises from the dashboard, not from this session. Do NOT do the
 mission's work yourself here.
 
-Foreman lives at `~/Projects/personal/foreman`, serving `http://localhost:4177`.
+Foreman serves `http://localhost:4177` and is started with the `foreman`
+command. Set `FOREMAN_URL` to point at a different host or port.
 
 ## Steps
 
-1. **Safety guard.** If the current working directory is inside
-   `~/Projects/personal/foreman`, STOP and tell the user: Foreman must never
-   run missions on itself (oversight-infrastructure rule).
+1. **Safety guard.** If the current working directory is inside a Foreman
+   checkout, STOP and tell the user: Foreman must never run missions on itself
+   (oversight-infrastructure rule). A directory whose `package.json` has a
+   `foreman` bin, or which contains `src/orchestrator.ts` alongside
+   `src/policy.ts`, is a Foreman checkout.
 
 2. **Parse the arguments.** Everything except the flags is the mission brief.
    Flags: `--budget N` (default 5), `--worker <model>`, `--director <model>`
@@ -26,14 +29,14 @@ Foreman lives at `~/Projects/personal/foreman`, serving `http://localhost:4177`.
 
 3. **Ensure the server is up** (start detached if not):
    ```bash
-   curl -sf -m 2 http://localhost:4177/projects >/dev/null || \
-     (cd ~/Projects/personal/foreman && nohup npm start > /tmp/foreman-server.log 2>&1 & disown; sleep 3)
+   curl -sf -m 2 "${FOREMAN_URL:-http://localhost:4177}/projects" >/dev/null || \
+     (nohup foreman start > /tmp/foreman-server.log 2>&1 & disown; sleep 3)
    ```
 
 4. **Link the cwd as a project** (idempotent — relinking returns the existing
    project). Capture the project id from the JSON response:
    ```bash
-   curl -s -X POST http://localhost:4177/projects \
+   curl -s -X POST "${FOREMAN_URL:-http://localhost:4177}/projects" \
      -H 'content-type: application/json' \
      -d "{\"folder\": \"$PWD\"}"
    ```
@@ -41,7 +44,7 @@ Foreman lives at `~/Projects/personal/foreman`, serving `http://localhost:4177`.
 5. **Start the mission** (include directorModel/workerModel keys only when
    the flags were given):
    ```bash
-   curl -s -X POST http://localhost:4177/run \
+   curl -s -X POST "${FOREMAN_URL:-http://localhost:4177}/run" \
      -H 'content-type: application/json' \
      -d '{"projectId": "<id>", "mission": "<brief>", "budgetUsd": <budget>}'
    ```
@@ -51,7 +54,7 @@ Foreman lives at `~/Projects/personal/foreman`, serving `http://localhost:4177`.
 6. **Open the dashboard and hand off.** Auto-open the project view
    (ignore failure — e.g. over SSH):
    ```bash
-   open "http://localhost:4177/#/p/<projectId>" 2>/dev/null || true
+   open "${FOREMAN_URL:-http://localhost:4177}/#/p/<projectId>" 2>/dev/null || true
    ```
    Then ALWAYS print the control URL verbatim in your final message — it is
    the single place to approve tools and answer the director's questions:

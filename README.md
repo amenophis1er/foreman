@@ -15,14 +15,36 @@ Code sessions.)
 ## Run it
 
 ```sh
-npm install && npm --prefix ui install
-npm run ui:build     # build the dashboard
-npm start            # serves http://localhost:4177
+npm ci && npm --prefix ui ci   # ci, not install — honours the lockfiles
+npm run ui:build               # build the dashboard
+npm start                      # serves http://localhost:4177
 ```
 
-Auth: the SDK spawns your local Claude Code engine, so whatever Claude Code
-is logged in with (claude.ai subscription or `ANTHROPIC_API_KEY`) is what
-missions run on. Dollar figures shown are notional API-rate costs.
+Installed as a package, `foreman` starts the server from any directory;
+`foreman --help` lists the environment variables.
+
+### Which account pays
+
+The SDK spawns your local Claude Code engine, so missions run on whatever that
+install is logged in with — a Claude subscription or an `ANTHROPIC_API_KEY`.
+Both report real per-run cost, so budgets bind either way.
+
+A machine can hold more than one login, and `CLAUDE_CONFIG_DIR` inherited from
+the launching shell silently decides which one is used. So startup prints the
+account it resolved to, and the dashboard shows it beside every place a mission
+can be started:
+
+```
+✓ Credentials     Claude subscription — you@example.com · Your Org
+✓ Claude Code     /Users/you/.claude · bundled executable
+```
+
+Pin it explicitly with `FOREMAN_CLAUDE_CONFIG_DIR`, and assert the mode you
+intend with `FOREMAN_AUTH_MODE=api-key|subscription` so an unset key fails at
+startup instead of quietly billing the other account. A project can pin its own
+install, and choose whether it inherits the server's billing or uses that
+install's own login — which is what makes personal and work projects coexist on
+one server.
 
 Dev loop: `npm run ui:dev` (Vite, proxies to :4177) · `npm test` (store
 tests) · `npx tsc -p .` and `npm --prefix ui run typecheck`.
