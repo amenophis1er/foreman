@@ -49,7 +49,7 @@ export function FleetView({
 }: {
   projects: ProjectSummary[]; connected: boolean;
   activity: Record<string, string>;
-  auth: { mode: BillingMode; source: string };
+  auth: { mode: BillingMode; source: string; account?: { email?: string; org?: string } };
   onOpen: (projectId: string) => void; refresh: () => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
 }) {
@@ -85,7 +85,7 @@ export function FleetView({
 
       <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {!connected && <Banner tone="disconnected" inline>disconnected</Banner>}
-        <BillingBadge mode={auth.mode} source={auth.source} />
+        <BillingBadge mode={auth.mode} source={auth.source} account={auth.account} />
       </AppHeader>
 
       <div style={{

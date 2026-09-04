@@ -15,6 +15,12 @@ export interface BillingBadgeProps {
   mode: BillingMode;
   /** Where the credential came from; shown in the tooltip, e.g. `ANTHROPIC_API_KEY`. */
   source?: string;
+  /**
+   * Which Claude account is signed in. When present its email replaces the mode
+   * word in the label — on a machine with several logins, "subscription" alone
+   * does not say who pays, which is the only thing worth showing.
+   */
+  account?: { email?: string; org?: string };
   /** Drops the `billing:` prefix and tightens padding, for dense rows. */
   compact?: boolean;
   style?: CSSProperties;

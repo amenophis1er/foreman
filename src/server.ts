@@ -41,7 +41,9 @@ import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
 import { defaultInstance, discoverInstances, effectiveConfigDir, resolveInstance } from './instance.js';
-import { dirHasCredentials, detectAuth, hasKeychainCredentials, type AuthMode } from './preflight.js';
+import {
+  dirHasCredentials, detectAuth, hasKeychainCredentials, readAccount, type AuthMode,
+} from './preflight.js';
 import type {
   ClaudeInstanceRef, ForemanEvent, ModelChoice, Project, RunMeta, ToolPolicy,
 } from './types.js';
@@ -376,6 +378,7 @@ const server = http.createServer(async (req, res) => {
         // plainly wherever money is about to be spent.
         authMode: auth.mode,
         authSource: auth.source,
+        authAccount: auth.account ?? null,
         projects: await Promise.all(projects.map(async (p) => {
           const run = activeByProject.get(p.id);
           // Newest finished run for the idle-card summary (runs are newest-first).
@@ -440,16 +443,22 @@ const server = http.createServer(async (req, res) => {
       json(res, updated ? 200 : 404, updated ? { project: updated } : { error: 'unknown project' });
 
     } else if (req.method === 'GET' && url.pathname === '/instances') {
-      const [instances, auth, keychain] = await Promise.all([
+      const [discovered, auth, keychain] = await Promise.all([
         discoverInstances(dirHasCredentials),
         detectAuth(),
         hasKeychainCredentials(),
       ]);
+      // Which account each dir is signed in as — the thing that actually
+      // distinguishes one install from another.
+      const instances = await Promise.all(discovered.map(async (i) => ({
+        ...i, account: await readAccount(i.configDir),
+      })));
       json(res, 200, {
         serverDefault: defaultInstance(),
         // Auth is process-wide: an API key in the environment outranks every
         // stored login, so the picker must not imply the choice is per-dir.
         authMode: auth.mode,
+        authAccount: auth.account ?? null,
         keychainLogin: keychain,
         instances,
       });

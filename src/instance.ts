@@ -86,13 +86,21 @@ export function instanceOptions(instance: ClaudeInstance): {
   return options;
 }
 
-/** One-line description for the preflight screen and run history. */
+/**
+ * One-line description for the preflight screen and run history.
+ *
+ * Resolves through effectiveConfigDir rather than assuming ~/.claude, because a
+ * CLAUDE_CONFIG_DIR inherited from the launching shell silently selects a
+ * different account — and printing the wrong directory here is worse than
+ * printing nothing, since this line is what someone checks before spending.
+ */
 export function describeInstance(instance: ClaudeInstance): string {
-  const parts = [
-    instance.configDir ?? `${path.join(os.homedir(), '.claude')} (inherited)`,
+  const dir = effectiveConfigDir(instance);
+  const inherited = !instance.configDir ? ' (inherited)' : '';
+  return [
+    `${dir}${inherited}`,
     instance.executable ? path.basename(instance.executable) : 'bundled executable',
-  ];
-  return parts.join(' · ');
+  ].join(' · ');
 }
 
 /** One Claude Code install offered in the project settings picker. */
