@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api, type ProjectSummary } from '../state';
-import { BudgetMeter, Button, Empty, StatusBadge, type Status } from '../design/ui';
+import { BillingBadge, BudgetMeter, Button, Empty, StatusBadge, type AuthMode, type Status } from '../design/ui';
 import { FolderPicker } from './FolderPicker';
 
 function ProjectCard({ p, onOpen, onUnlink }: {
@@ -25,6 +25,12 @@ function ProjectCard({ p, onOpen, onUnlink }: {
         fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)',
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }}>{p.folder}</div>
+      {p.claudeInstance?.configDir && (
+        <div style={{
+          fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: -4,
+        }}>via {p.claudeInstance.configDir}</div>
+      )}
 
       {needsYou > 0 && (
         <div className="pulse" style={{
@@ -61,8 +67,9 @@ function ProjectCard({ p, onOpen, onUnlink }: {
   );
 }
 
-export function FleetView({ projects, connected, onOpen, refresh }: {
+export function FleetView({ projects, connected, auth, onOpen, refresh }: {
   projects: ProjectSummary[]; connected: boolean;
+  auth: { mode: AuthMode; source: string };
   onOpen: (projectId: string) => void; refresh: () => void;
 }) {
   const [picker, setPicker] = useState(false);
@@ -111,11 +118,14 @@ export function FleetView({ projects, connected, onOpen, refresh }: {
       }}>
         <h1 style={{ margin: 0, fontSize: 18, color: 'var(--brand)' }}>Foreman</h1>
         <span style={{ color: 'var(--ink-2)', fontSize: 'var(--fs-sm)' }}>mission control</span>
-        {!connected && (
-          <span style={{ marginLeft: 'auto', color: 'var(--status-serious)', fontSize: 'var(--fs-sm)' }}>
-            ⏻ disconnected
-          </span>
-        )}
+        <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)' }}>
+          {!connected && (
+            <span style={{ color: 'var(--status-serious)', fontSize: 'var(--fs-sm)' }}>
+              ⏻ disconnected
+            </span>
+          )}
+          <BillingBadge mode={auth.mode} source={auth.source} />
+        </span>
       </header>
 
       <div style={{
