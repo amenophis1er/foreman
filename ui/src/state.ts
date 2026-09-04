@@ -170,6 +170,22 @@ function applyWire(s: RunView, e: WireEvent): RunView {
           title: 'steer', body: d.text, to: d.to, timing: d.timing,
         }],
       };
+    case 'usage_limit':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'error',
+          title: 'usage limit', body: d.text,
+        }],
+      };
+    case 'models_changed':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'system',
+          title: 'models changed', body: d.text,
+        }],
+      };
     case 'budget_alert':
       return {
         ...s,

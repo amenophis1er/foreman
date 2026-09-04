@@ -131,6 +131,9 @@ const PLAYWRIGHT_MCP_CLI = fileURLToPath(
   new URL('../node_modules/@playwright/mcp/cli.js', import.meta.url),
 );
 
+/** Claude subscription/quota exhaustion — an external pause, not a failure. */
+const USAGE_LIMIT_RE = /out of usage credits|usage limit reached|upgrade to increase your usage/i;
+
 interface WorkerRuntime extends WorkerMeta {
   q?: Query;
 }
@@ -148,6 +151,7 @@ export class MissionRun {
   /** Director cost is cumulative per query; track the last figure for deltas. */
   private directorCostSeen = 0;
   private wasInterrupted = false;
+  private usageLimited = false;
 
   constructor(
     meta: RunMeta,
@@ -297,6 +301,7 @@ export class MissionRun {
             this.directorCostSeen = total;
           }
           lastTurnFailed = Boolean(m.is_error);
+          this.noteUsageLimit(String(m.result ?? ''));
           // A result means the CLI is idle with all delivered input
           // processed (a steer consumed mid-turn is folded into that
           // turn's result). Only a steer still waiting in our queue
@@ -313,7 +318,7 @@ export class MissionRun {
       }
       input.close();
       await (q as AsyncGenerator<SDKMessage>).return?.(undefined as never).catch(() => {});
-      this.meta.status = this.wasInterrupted ? 'interrupted'
+      this.meta.status = this.wasInterrupted || this.usageLimited ? 'interrupted'
         : lastTurnFailed ? 'error' : 'done';
     } catch (err) {
       this.meta.status = 'error';
@@ -360,6 +365,23 @@ export class MissionRun {
         return existed;
       },
     }, { toolPolicy: this.meta.toolPolicy, autoAllowReadOnly: this.meta.autoAllowReadOnly });
+  }
+
+  /**
+   * Detects Claude quota exhaustion in a result. This is not a mission
+   * failure: no more work is possible until credits refresh, so the run
+   * is marked interrupted (resumable) and the human is told plainly.
+   */
+  private noteUsageLimit(text: string): void {
+    if (this.usageLimited || !USAGE_LIMIT_RE.test(text)) return;
+    this.usageLimited = true;
+    this.directorInput?.close(); // further turns would only burn retries
+    this.emit('usage_limit', {
+      text: 'Paused: your Claude usage credits are exhausted, so no agent can ' +
+        'make progress right now. This is not a mission failure — the work so ' +
+        'far is saved. Resume once credits refresh (or switch to a cheaper ' +
+        'model in Settings, which resume will pick up).',
+    });
   }
 
   private budgetNoticeSent = false;
@@ -462,6 +484,7 @@ export class MissionRun {
         if (m.type === 'result') {
           report = String(m.result ?? '');
           isError = Boolean(m.is_error);
+          this.noteUsageLimit(report);
           this.addCost(m.total_cost_usd as number | undefined);
           w.costUsd += (m.total_cost_usd as number | undefined) ?? 0;
         }
