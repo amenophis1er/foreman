@@ -319,22 +319,36 @@ export function useRunHistory(projectId: string) {
   return runs;
 }
 
-/** Hash router: '#/' → fleet, '#/p/<projectId>' → project view. */
-export function useRoute(): { projectId: string | null; go: (projectId: string | null) => void } {
+/** Hash router: '#/' → fleet, '#/p/<projectId>' → project view,
+ *  '#/p/<projectId>/r/<runId>' → a specific run (survives refresh). */
+export function useRoute(): {
+  projectId: string | null;
+  runId: string | null;
+  go: (projectId: string | null) => void;
+  goRun: (projectId: string, runId: string | null) => void;
+} {
   const parse = () => {
-    const m = window.location.hash.match(/^#\/p\/([^/]+)/);
-    return m ? decodeURIComponent(m[1]) : null;
+    const m = window.location.hash.match(/^#\/p\/([^/]+)(?:\/r\/([^/]+))?/);
+    return {
+      projectId: m ? decodeURIComponent(m[1]) : null,
+      runId: m?.[2] ? decodeURIComponent(m[2]) : null,
+    };
   };
-  const [projectId, setProjectId] = useState<string | null>(parse);
+  const [route, setRoute] = useState(parse);
   useEffect(() => {
-    const onHash = () => setProjectId(parse());
+    const onHash = () => setRoute(parse());
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
   const go = useCallback((id: string | null) => {
     window.location.hash = id ? `#/p/${encodeURIComponent(id)}` : '#/';
   }, []);
-  return { projectId, go };
+  const goRun = useCallback((projectId: string, runId: string | null) => {
+    window.location.hash = runId
+      ? `#/p/${encodeURIComponent(projectId)}/r/${encodeURIComponent(runId)}`
+      : `#/p/${encodeURIComponent(projectId)}`;
+  }, []);
+  return { ...route, go, goRun };
 }
 
 // ---------------------------------------------------------------------------
