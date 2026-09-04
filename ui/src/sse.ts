@@ -2,13 +2,21 @@
 // enveloped frame ({runId, projectId, data}) plus the SSE event name and can
 // filter by run or project themselves.
 
-export type Envelope = { runId: string; projectId: string; data: any };
+export type Envelope = {
+  /** Null on planning-chat frames — a conversation belongs to no run. */
+  runId: string;
+  projectId: string;
+  /** True for a project's planning conversation, absent for mission frames. */
+  chat?: boolean;
+  data: any;
+};
 export type SseListener = (event: string, env: Envelope) => void;
 
 export const SSE_EVENTS = [
   'run_started', 'run_resumed', 'run_finished', 'run_error', 'cost',
   'message', 'steer', 'budget_alert', 'usage_limit', 'models_changed', 'auto_allowed', 'worker_started', 'worker_finished',
   'permission_request', 'permission_resolved', 'question', 'question_answered',
+  'chat_message', 'chat_turn', 'chat_cost', 'chat_error', 'mission_proposed', 'mission_started',
 ] as const;
 
 const listeners = new Set<SseListener>();

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  api, useRunHistory, useRunView,
+  api, useChat, useRunHistory, useRunView,
   type ProjectSummary, type RunSummary, type RunView as RunViewState,
 } from '../state';
 import { AppHeader } from '../ds/shell/AppHeader';
@@ -19,6 +19,9 @@ import { ApprovalCard } from '../ds/mission/ApprovalCard';
 import { QuestionCard } from '../ds/mission/QuestionCard';
 import { PlanBoard } from '../ds/mission/PlanBoard';
 import { Composer } from '../ds/mission/Composer';
+import { ChatBar } from '../ds/mission/ChatBar';
+import { ProposalCard } from '../ds/mission/ProposalCard';
+import { Tabs } from '../ds/core/Tabs';
 import { SteerBar } from '../ds/mission/SteerBar';
 import type { ModelInfo } from '../ds/forms/ModelSelect';
 
@@ -120,6 +123,80 @@ function Transcript({ run, filter, jump, order, header }: {
   );
 }
 
+/**
+ * The planning conversation: transcript, proposal, input.
+ *
+ * Deliberately reuses the mission transcript's rendering. A planning turn and
+ * a mission turn are the same thing on the wire — SDK messages in an event
+ * log — and showing them the same way is what makes the handoff read as one
+ * continuous story rather than two products bolted together.
+ */
+function PlanPane({ chat, folder, starting, error, onStart }: {
+  chat: ReturnType<typeof useChat>;
+  folder: string;
+  starting: boolean;
+  error: string;
+  onStart: (mission: string, budget: number) => void;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+
+  useEffect(() => {
+    const el = box.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [chat.entries.length, chat.proposal, chat.thinking]);
+
+  return (
+    <>
+      <div ref={box}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+        }}
+        style={{
+          flex: 1, minHeight: 0, overflowY: 'auto', padding: 'var(--sp-3)',
+          display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)',
+        }}>
+        {chat.entries.length === 0 && !chat.thinking && (
+          <div style={{
+            margin: 'auto', maxWidth: '34rem', textAlign: 'center',
+            display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)',
+          }}>
+            <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 'var(--fw-semibold)' }}>
+              Talk it through first
+            </span>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-1)', lineHeight: 'var(--lh-prose)' }}>
+              The foreman reads <span style={{ fontFamily: 'var(--font-mono)' }}>{folder}</span> and
+              thinks it through with you — what you want, what is already there, what could go wrong.
+              When the shape is clear it drafts a mission for you to start.
+            </span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+              It can read the project. It cannot change it — only a mission does that.
+            </span>
+          </div>
+        )}
+        {chat.entries.map((e) => (
+          <TranscriptEntry key={e.id} agent={e.agent} title={e.title}
+            kind={e.kind} body={e.body} ts={e.ts} />
+        ))}
+        {chat.proposal && (
+          <ProposalCard
+            mission={chat.proposal.mission}
+            doneWhen={chat.proposal.doneWhen}
+            budgetUsd={chat.proposal.budgetUsd}
+            rationale={chat.proposal.rationale}
+            busy={starting} error={error}
+            onStart={({ mission, budget }) => onStart(mission, budget)}
+            onDismiss={chat.dismissProposal} />
+        )}
+      </div>
+      <div style={{ padding: 'var(--sp-2) var(--sp-3) var(--sp-3)', flex: '0 0 auto' }}>
+        <ChatBar busy={chat.thinking} onSend={(t) => void chat.send(t)} />
+      </div>
+    </>
+  );
+}
+
 /** Key run properties (models, budget, browser), pulled from run metadata. */
 function RunDetails({ r, liveCost }: { r: RunSummary; liveCost?: number }) {
   const rows: Array<[string, string]> = [
@@ -182,6 +259,11 @@ export function ProjectView({
   const [composerErr, setComposerErr] = useState('');
   const [starting, setStarting] = useState(false);
   const rightRail = useRef<HTMLDivElement>(null);
+  const chat = useChat(activeRunId ? null : p.id);
+  // Idle projects open on the conversation: the composer asks for a
+  // well-specified brief at the moment you know least, which is the wrong
+  // order. Writing one directly stays one click away.
+  const [idleMode, setIdleMode] = useState<'plan' | 'compose'>('plan');
 
   const doResume = async () => {
     if (!selectedRunId) return;
@@ -193,7 +275,7 @@ export function ProjectView({
   };
 
   const startMission = async (v: {
-    mission: string; budget: number; directorModel: string; workerModel: string;
+    mission: string; budget: number; directorModel?: string; workerModel?: string;
     browserTools?: boolean;
   }) => {
     setComposerErr('');
@@ -255,7 +337,35 @@ export function ProjectView({
           <div style={{ borderRight: '1px solid var(--line)', background: 'var(--bg-panel)', overflowY: 'auto', padding: 'var(--sp-3)' }}>
             <RunRail history={history} onSelectRun={setSelectedRunId} />
           </div>
-          <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <div style={{ minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', flex: '0 0 auto',
+              padding: 'var(--sp-2) var(--sp-3)', borderBottom: '1px solid var(--line)',
+            }}>
+              <Tabs size="sm" value={idleMode} onChange={(v) => setIdleMode(v as 'plan' | 'compose')}
+                tabs={[
+                  { value: 'plan', label: 'Plan', icon: 'steer' },
+                  { value: 'compose', label: 'Write a mission', icon: 'write' },
+                ]} />
+              <span style={{ flex: 1 }} />
+              {idleMode === 'plan' && chat.costUsd > 0 && (
+                <span title="What this conversation has cost so far. Planning is not charged to any mission budget."
+                  style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums' }}>
+                  conversation ${chat.costUsd.toFixed(3)}
+                </span>
+              )}
+              {idleMode === 'plan' && chat.entries.length > 0 && (
+                <Button variant="ghost" size="sm" icon="close" disabled={chat.thinking}
+                  title="Forget this conversation and start a new one"
+                  onClick={() => void chat.clear()}>Clear</Button>
+              )}
+            </div>
+
+            {idleMode === 'plan' ? (
+              <PlanPane chat={chat} folder={p.folder} starting={starting} error={composerErr}
+                onStart={(mission, budget) => void startMission({ mission, budget })} />
+            ) : (
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
             {/* margin:auto centers the card vertically yet degrades to normal
                 flow (scrollable) when the composer is taller than the view. */}
             <div style={{ margin: 'auto', width: '100%', padding: 'var(--sp-5) 0' }}>
@@ -285,6 +395,8 @@ export function ProjectView({
                 </span>
               </div>
             </div>
+            </div>
+            )}
           </div>
         </div>
       ) : (

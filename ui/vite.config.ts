@@ -11,7 +11,7 @@ export default defineConfig({
     // of it. Prefix matching means "/run" also covers "/runs/<id>/events".
     proxy: Object.fromEntries(
       [
-        "/answer", "/browse", "/events", "/instances", "/interrupt", "/locate",
+        "/answer", "/browse", "/chat", "/events", "/instances", "/interrupt", "/locate",
         "/missiondoc", "/mkdir", "/models", "/permission", "/projects", "/run",
         "/runs", "/settings", "/steer",
       ].map((p) => [p, { target: api, changeOrigin: true }]),
