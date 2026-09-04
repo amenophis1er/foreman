@@ -24,6 +24,15 @@ export const MISSION_TEMPLATES = [
     brief: 'Audit: <area, e.g. error handling / security / accessibility>\n\nDone when: a written report in .foreman/AUDIT.md lists findings ranked by severity with file:line references — no code changes.\nConstraints: read-only; do not modify source files.\nAsk me before: nothing — this mission only reads.' },
 ];
 
+/** `/Users/you/Projects/a/b/c` → `~/Projects/…/b/c`. Full path stays in the tooltip. */
+function shortPath(p) {
+  if (!p) return '';
+  let s = p.replace(/^\/(Users|home)\/[^/]+/, '~');
+  const parts = s.split('/');
+  if (parts.length > 4) s = [parts[0], parts[1], '…', ...parts.slice(-2)].join('/');
+  return s;
+}
+
 function draftKey(folder) { return `foreman:draft:${folder || 'default'}`; }
 const fileKey = (f) => `${f.name}:${f.size}`;
 
@@ -119,9 +128,12 @@ export function Composer({ folder, defaultBudgetUsd = 5, error, busy, templates 
       maxWidth: 'var(--composer-max)', margin: 'var(--sp-5) auto', padding: '0 var(--sp-4)',
       display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)', ...style,
     }}>
-      <div>
+      <div style={{ minWidth: 0 }}>
         <h2 style={{ margin: 0, fontSize: 'var(--fs-lg)' }}>New mission</h2>
-        <div style={{ color: 'var(--ink-2)', fontSize: 'var(--fs-sm)', fontFamily: 'var(--font-mono)' }}>{folder}</div>
+        <div title={folder} style={{
+          color: 'var(--ink-2)', fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)',
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>{shortPath(folder)}</div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', marginRight: 2 }}>
@@ -181,12 +193,12 @@ export function Composer({ folder, defaultBudgetUsd = 5, error, busy, templates 
         <Field label="Browser" hint="Headless Playwright for the agents — navigate, click, screenshot. Non-local URLs still ask you.">
           <Switch checked={browserTools} onChange={setBrowserTools} label={browserTools ? 'on' : 'off'} />
         </Field>
-        <span style={{ flex: 1 }} />
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5, paddingTop: 19 }}>
-          <Button variant="primary" disabled={!canStart} onClick={start}>Start mission</Button>
-          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)' }}>⌘↵</span>
-        </div>
-        {error && <Banner tone="error" inline style={{ flexBasis: '100%' }}>{error}</Banner>}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
+        {error && <Banner tone="error" inline style={{ marginRight: 'auto' }}>{error}</Banner>}
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)' }}>⌘↵</span>
+        <Button variant="primary" disabled={!canStart} onClick={start}>Start mission</Button>
       </div>
     </div>
   );
