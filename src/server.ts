@@ -53,10 +53,10 @@ import type {
  * what the SDK receives as `options.model`.
  */
 const MODELS = [
-  { id: 'fable', label: 'Fable', model: 'claude-fable (frontier)', cost: 4, note: 'Frontier. Long-horizon planning and verification.' },
-  { id: 'opus', label: 'Opus', model: 'claude-opus (latest)', cost: 3, note: 'Deep reasoning for hard refactors.' },
-  { id: 'sonnet', label: 'Sonnet', model: 'claude-sonnet (latest)', cost: 2, note: 'Balanced. The usual worker.' },
-  { id: 'haiku', label: 'Haiku', model: 'claude-haiku (latest)', cost: 1, note: 'Fast and cheap for reads and mechanical edits.' },
+  { id: 'fable', label: 'Fable', model: 'claude-fable-5', cost: 4, note: 'Frontier. Long-horizon planning and verification.' },
+  { id: 'opus', label: 'Opus', model: 'claude-opus-5', cost: 3, note: 'Deep reasoning for hard refactors.' },
+  { id: 'sonnet', label: 'Sonnet', model: 'claude-sonnet-5', cost: 2, note: 'Balanced. The usual worker.' },
+  { id: 'haiku', label: 'Haiku', model: 'claude-haiku-4-5', cost: 1, note: 'Fast and cheap for reads and mechanical edits.' },
 ];
 
 /**
