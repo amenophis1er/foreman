@@ -129,10 +129,28 @@ function reserveProject(projectId: string): boolean {
 }
 
 /** Runs a mission to completion. The project must already be reserved. */
-async function driveRun(projectId: string, meta: RunMeta, resumeSessionId?: string): Promise<void> {
-  const run = new MissionRun(meta, makeEmitter(meta.id, projectId), (m) => void store.writeMeta(m));
+async function driveRun(
+  projectId: string, meta: RunMeta, resumeSessionId?: string,
+  changes?: { directorChanged: boolean; workerChanged: boolean },
+): Promise<void> {
+  const emit = makeEmitter(meta.id, projectId);
+  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m));
   activeByProject.set(projectId, run);
   try {
+    if (changes?.directorChanged || changes?.workerChanged) {
+      const parts = [
+        changes.directorChanged ? `director → ${meta.directorModel}` : null,
+        changes.workerChanged ? `workers → ${meta.workerModel}` : null,
+      ].filter(Boolean).join(', ');
+      emit('models_changed', {
+        text: `Models updated from Settings before resume: ${parts}.` +
+          (changes.directorChanged
+            ? ' The director starts a fresh session (a model cannot change mid-session);' +
+              ' it recovers state from .foreman/MISSION.md.'
+            : ''),
+        directorModel: meta.directorModel, workerModel: meta.workerModel,
+      });
+    }
     await run.start(resumeSessionId);
   } catch (err) {
     // start() catches mission errors itself; anything reaching here is a
@@ -147,9 +165,10 @@ async function driveRun(projectId: string, meta: RunMeta, resumeSessionId?: stri
   }
 }
 
-/** Effective per-run policy: defaults ← global Settings ← project overlay. */
-async function effectivePolicy(projectId: string): Promise<{
+/** Effective run configuration: defaults ← global Settings ← project overlay. */
+async function effectiveSettings(projectId: string): Promise<{
   toolPolicy: ToolPolicy; autoAllowReadOnly: boolean;
+  directorModel: ModelChoice; workerModel: ModelChoice;
 }> {
   const s = await store.readSettings()
     .catch(() => ({ global: {}, projects: {} as Record<string, object> }));
@@ -163,6 +182,8 @@ async function effectivePolicy(projectId: string): Promise<{
     },
     autoAllowReadOnly:
       (p.autoAllowReadOnly ?? g.autoAllowReadOnly) !== false,
+    directorModel: modelChoice(p.directorModel ?? g.directorModel),
+    workerModel: modelChoice(p.workerModel ?? g.workerModel),
   };
 }
 
@@ -170,15 +191,17 @@ async function startRun(
   projectId: string, folder: string, mission: string, budgetUsd: number,
   directorModel: ModelChoice, workerModel: ModelChoice, browserTools: boolean,
 ): Promise<void> {
-  const policy = await effectivePolicy(projectId);
+  const settings = await effectiveSettings(projectId);
   const meta: RunMeta = {
     id: newRunId(),
     projectId,
     folder, mission, budgetUsd,
-    directorModel, workerModel,
+    // An explicit composer choice wins; "Default" inherits from Settings.
+    directorModel: directorModel ?? settings.directorModel,
+    workerModel: workerModel ?? settings.workerModel,
     browserTools: browserTools || undefined,
-    toolPolicy: policy.toolPolicy,
-    autoAllowReadOnly: policy.autoAllowReadOnly,
+    toolPolicy: settings.toolPolicy,
+    autoAllowReadOnly: settings.autoAllowReadOnly,
     status: 'running', costUsd: 0,
     createdAt: Date.now(), workers: [],
   };
@@ -195,13 +218,28 @@ async function startRun(
 /** Resumes an interrupted run by restoring the director's session. */
 async function resumeRun(projectId: string, meta: RunMeta): Promise<void> {
   const sessionId = meta.directorSessionId;
+  // Resume re-reads Settings, so changing models or tool policy after a
+  // failure takes effect on the retry. A director session cannot switch
+  // model mid-session, so a changed director model restarts the session
+  // fresh (the mission doc carries the state forward).
+  const settings = await effectiveSettings(projectId);
+  const directorChanged =
+    settings.directorModel !== undefined && settings.directorModel !== meta.directorModel;
+  const workerChanged =
+    settings.workerModel !== undefined && settings.workerModel !== meta.workerModel;
+  if (directorChanged) meta.directorModel = settings.directorModel;
+  if (workerChanged) meta.workerModel = settings.workerModel;
+  meta.toolPolicy = settings.toolPolicy;
+  meta.autoAllowReadOnly = settings.autoAllowReadOnly;
   meta.status = 'running';
   meta.endedAt = undefined;
   meta.resumes = (meta.resumes ?? 0) + 1;
   await store.writeMeta(meta).catch((err) => {
     console.error(`failed to persist resume of ${meta.id}:`, err);
   });
-  await driveRun(projectId, meta, sessionId);
+  await driveRun(projectId, meta, directorChanged ? undefined : sessionId, {
+    directorChanged, workerChanged,
+  });
 }
 
 // ---------------------------------------------------------------------------
