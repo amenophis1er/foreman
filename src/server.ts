@@ -10,6 +10,7 @@
  *
  * Endpoints:
  *   GET    /                     React app (ui/dist; build hint when missing)
+ *   GET    /favicon.svg          Brand mark from ui/public
  *   GET    /events               SSE stream (enveloped ForemanEvents)
  *   GET    /settings             Persisted UI settings (global + project overlays)
  *   PUT    /settings             Save settings {global, projectId?, project?}
@@ -117,6 +118,7 @@ async function locateFolders(name: string): Promise<string[]> {
 const PORT = Number(process.env.PORT ?? 4177);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, '..', 'ui', 'dist');
+const ROOT_ASSETS = new Set(['/favicon.svg']);
 
 const store = new RunStore(process.env.FOREMAN_HOME || undefined);
 
@@ -333,7 +335,11 @@ const server = http.createServer(async (req, res) => {
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
 
   try {
-    if (req.method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/assets/'))) {
+    if (req.method === 'GET' && (url.pathname === '/'
+      || url.pathname.startsWith('/assets/')
+      // Root-level static files Vite emits from ui/public. Listed explicitly so
+      // a stray path can never shadow an API route.
+      || ROOT_ASSETS.has(url.pathname))) {
       if (!(await serveStatic(url.pathname, res))) json(res, 404, { error: 'not found' });
 
     } else if (req.method === 'GET' && url.pathname === '/events') {
