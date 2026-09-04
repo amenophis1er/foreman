@@ -7,7 +7,7 @@ export type SseListener = (event: string, env: Envelope) => void;
 
 export const SSE_EVENTS = [
   'run_started', 'run_resumed', 'run_finished', 'run_error', 'cost',
-  'message', 'auto_allowed', 'worker_started', 'worker_finished',
+  'message', 'steer', 'budget_alert', 'usage_limit', 'models_changed', 'auto_allowed', 'worker_started', 'worker_finished',
   'permission_request', 'permission_resolved', 'question', 'question_answered',
 ] as const;
 

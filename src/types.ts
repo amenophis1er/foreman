@@ -65,11 +65,21 @@ export interface WorkerMeta {
   task: string;
 }
 
-/** Model choice for an agent; `undefined` inherits the harness default. */
-export type ModelChoice = 'opus' | 'sonnet' | 'haiku' | undefined;
+/**
+ * Model for an agent: a harness alias (opus/sonnet/haiku), a full claude-*
+ * model id, or `undefined` to inherit the harness default.
+ */
+export type ModelChoice = string | undefined;
+
+/** Per-tool decision applied before any prompt is considered. */
+export type ToolPolicy = Record<string, 'allow' | 'ask' | 'deny'>;
 
 /** Persisted run metadata (meta.json). Small, rewritten atomically on change. */
 export interface RunMeta {
+  /** Effective tool policy, snapshotted from Settings at run start. */
+  toolPolicy?: ToolPolicy;
+  /** Whether read-only tools run silently (Settings; default true). */
+  autoAllowReadOnly?: boolean;
   id: string;
   /** Owning project; absent on runs recorded before projects existed. */
   projectId?: string;
@@ -83,6 +93,8 @@ export interface RunMeta {
   resumes?: number;
   /** Tools the human granted "always allow" for this run (survives resume). */
   allowedTools?: string[];
+  /** Give agents a headless Playwright browser (navigate, click, screenshot). */
+  browserTools?: boolean;
   folder: string;
   mission: string;
   budgetUsd: number;
@@ -99,3 +111,12 @@ export type RunSummary = RunMeta;
 
 /** Result of a permission decision made by the human. */
 export type PermissionDecision = 'allow' | 'allow_always' | 'deny';
+
+/** Free-form UI settings blob (shape owned by the design system's modal). */
+export type SettingsValues = Record<string, unknown>;
+
+/** Persisted settings: global values + sparse per-project overlays. */
+export interface SettingsFile {
+  global: SettingsValues;
+  projects: Record<string, SettingsValues>;
+}

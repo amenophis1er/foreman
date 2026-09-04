@@ -1,170 +1,143 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   api, useRunHistory, useRunView,
-  type ModelChoice, type ProjectSummary, type RunSummary,
+  type ProjectSummary, type RunSummary, type RunView as RunViewState,
 } from '../state';
-import { BillingBadge, Button, BudgetMeter, Empty, SectionTitle, StatusBadge, type AuthMode } from '../design/ui';
-import { AgentTree } from './AgentTree';
-import { Transcript } from './Transcript';
-import { RightPanel } from './RightPanel';
-import { ProjectSettings } from './ProjectSettings';
+import { AppHeader } from '../ds/shell/AppHeader';
+import { Button } from '../ds/core/Button';
+import { Empty } from '../ds/core/Empty';
+import { SectionTitle } from '../ds/core/SectionTitle';
+import { Banner } from '../ds/status/Banner';
+import { StatusBadge } from '../ds/status/StatusBadge';
+import { BillingBadge, type BillingMode } from '../ds/status/BillingBadge';
+import { BudgetMeter } from '../ds/status/BudgetMeter';
+import { AttentionBar } from '../ds/status/AttentionBar';
+import { RunRail } from '../ds/mission/RunRail';
+import { RunTimeline } from '../ds/mission/RunTimeline';
+import { TranscriptEntry } from '../ds/mission/TranscriptEntry';
+import { ApprovalCard } from '../ds/mission/ApprovalCard';
+import { QuestionCard } from '../ds/mission/QuestionCard';
+import { PlanBoard } from '../ds/mission/PlanBoard';
+import { Composer } from '../ds/mission/Composer';
+import { SteerBar } from '../ds/mission/SteerBar';
+import type { ModelInfo } from '../ds/forms/ModelSelect';
 
-/** Full-width mission composer, shown when the project has no active run. */
-const MODEL_OPTIONS: { value: ModelChoice; label: string }[] = [
-  { value: '', label: 'default' },
-  { value: 'opus', label: 'opus' },
-  { value: 'sonnet', label: 'sonnet' },
-  { value: 'haiku', label: 'haiku' },
-];
-
-function ModelSelect({ label, value, onChange, hint }: {
-  label: string; value: ModelChoice; onChange: (m: ModelChoice) => void; hint: string;
+function Transcript({ run, filter, jump, header }: {
+  run: RunViewState; filter: string | null;
+  /** Entry to scroll to and flash; `n` forces the effect on repeat clicks. */
+  jump: { id: number; n: number } | null;
+  header?: React.ReactNode;
 }) {
-  return (
-    <label title={hint}
-      style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--ink-1)', fontSize: 'var(--fs-sm)' }}>
-      {label}
-      <select value={value} onChange={(e) => onChange(e.target.value as ModelChoice)}
-        style={{
-          background: 'var(--bg-card)', border: '1px solid var(--line-strong)',
-          borderRadius: 'var(--r-sm)', padding: '6px 9px', color: 'var(--ink-0)',
-        }}>
-        {MODEL_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-    </label>
-  );
-}
+  const box = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  const [flashId, setFlashId] = useState<number | null>(null);
+  const shown = filter ? run.entries.filter((e) => e.agent === filter) : run.entries;
 
-function Composer({ p, auth, onStarted }: {
-  p: ProjectSummary; auth: { mode: AuthMode; source: string }; onStarted: () => void;
-}) {
-  const [mission, setMission] = useState('');
-  const [budget, setBudget] = useState(p.defaultBudgetUsd);
-  const [directorModel, setDirectorModel] = useState<ModelChoice>('');
-  const [workerModel, setWorkerModel] = useState<ModelChoice>('');
-  const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const el = box.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [shown.length]);
 
-  const start = async () => {
-    setErr('');
-    setBusy(true);
-    const r = await api.run(p.id, mission.trim(), budget, directorModel, workerModel)
-      .finally(() => setBusy(false));
-    if (!r.ok) setErr((await r.json()).error);
-    else onStarted();
-  };
+  useEffect(() => {
+    if (!jump) return;
+    pinned.current = false; // stop auto-scroll from fighting the jump
+    // rAF so a filter change from the same click has rendered first.
+    const raf = requestAnimationFrame(() => {
+      document.getElementById(`entry-${jump.id}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setFlashId(jump.id);
+    });
+    const t = setTimeout(() => setFlashId(null), 1600);
+    return () => { cancelAnimationFrame(raf); clearTimeout(t); };
+  }, [jump]);
 
   return (
-    <div style={{
-      maxWidth: 720, margin: 'var(--sp-5) auto', padding: '0 var(--sp-4)',
-      display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)',
-    }}>
-      <div>
-        <h2 style={{ margin: 0, fontSize: 'var(--fs-lg)' }}>New mission</h2>
-        <div style={{ color: 'var(--ink-2)', fontSize: 'var(--fs-sm)', fontFamily: 'var(--font-mono)' }}>
-          {p.folder}
-        </div>
-      </div>
-      <textarea
-        value={mission}
-        onChange={(e) => setMission(e.target.value)}
-        placeholder={'Describe the mission…\n\nSay what "done" looks like, name constraints, and flag any decision the director should ask you about before implementing.'}
-        style={{
-          width: '100%', minHeight: 180, resize: 'vertical',
-          background: 'var(--bg-card)', border: '1px solid var(--line-strong)',
-          borderRadius: 'var(--r-md)', padding: 'var(--sp-3)', color: 'var(--ink-0)',
-          lineHeight: 1.55,
-        }} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--ink-1)', fontSize: 'var(--fs-sm)' }}>
-          Budget $
-          <input type="number" min={1} value={budget}
-            onChange={(e) => setBudget(Number(e.target.value))}
-            style={{
-              width: 70, background: 'var(--bg-card)', border: '1px solid var(--line-strong)',
-              borderRadius: 'var(--r-sm)', padding: '6px 9px', color: 'var(--ink-0)',
-            }} />
-        </label>
-        <ModelSelect label="Director" value={directorModel} onChange={setDirectorModel}
-          hint="Model for the director (planning, verification). Default inherits your Claude Code default." />
-        <ModelSelect label="Workers" value={workerModel} onChange={setWorkerModel}
-          hint="Model for workers (implementation). Pick sonnet or haiku to cut cost." />
-        <Button variant="primary" disabled={busy || !mission.trim()} onClick={start}>
-          Start mission
-        </Button>
-        {err && <span style={{ color: 'var(--status-critical)', fontSize: 'var(--fs-sm)' }}>✕ {err}</span>}
-      </div>
-
-      {/* Who pays and which install, stated at the moment of commitment. */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', flexWrap: 'wrap',
-        fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
-        marginTop: 'calc(-1 * var(--sp-2))',
+    <div ref={box}
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+      }}
+      style={{
+        overflowY: 'auto', padding: 'var(--sp-3)', minHeight: 0, flex: 1,
+        display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)',
       }}>
-        <BillingBadge mode={p.billingMode ?? auth.mode}
-          source={p.claudeInstance?.billing === 'own-login'
-            ? `${p.claudeInstance.configDir} (this project's own login)`
-            : auth.source}
-          compact />
-        <span style={{ fontFamily: 'var(--font-mono)' }}>
-          runs on {p.claudeInstance?.configDir ?? 'the server default instance'}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function RunList({ runs, selected, onSelect }: {
-  runs: RunSummary[]; selected: string | null; onSelect: (id: string) => void;
-}) {
-  return (
-    <div style={{ marginTop: 'var(--sp-4)' }}>
-      <SectionTitle>Runs</SectionTitle>
-      {runs.length === 0 && <Empty>No runs yet.</Empty>}
-      {runs.map((r) => (
-        <div key={r.id} role="button" onClick={() => onSelect(r.id)}
-          title={r.mission}
-          style={{
-            padding: '6px 10px', borderRadius: 'var(--r-sm)', cursor: 'pointer',
-            background: selected === r.id ? 'var(--bg-card)' : 'transparent',
-            border: selected === r.id ? '1px solid var(--line-strong)' : '1px solid transparent',
-            marginBottom: 2,
-          }}>
-          <div style={{
-            fontSize: 'var(--fs-sm)', overflow: 'hidden', whiteSpace: 'nowrap',
-            textOverflow: 'ellipsis', color: 'var(--ink-0)',
-          }}>{r.mission}</div>
-          <div style={{ display: 'flex', gap: 'var(--sp-2)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', alignItems: 'center' }}>
-            <span>{new Date(r.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
-            <span>${r.costUsd.toFixed(2)}</span>
-            <StatusBadge status={r.status} />
-          </div>
+      {header}
+      {shown.length === 0 && <Empty>Transcript will appear here.</Empty>}
+      {shown.map((e) => (
+        <div key={e.id} id={`entry-${e.id}`} style={{
+          scrollMarginTop: 8, borderRadius: 'var(--r-sm)',
+          outline: flashId === e.id ? '2px solid var(--brand)' : 'none',
+          transition: 'outline-color var(--dur-fast) var(--ease)',
+        }}>
+          <TranscriptEntry agent={e.agent} title={e.title}
+            kind={e.kind} body={e.body} ts={e.ts} to={e.to} timing={e.timing} />
         </div>
       ))}
     </div>
   );
 }
 
-export function ProjectView({ p, auth, onBack, refreshFleet }: {
-  p: ProjectSummary; auth: { mode: AuthMode; source: string };
+/** Key run properties (models, budget, browser), pulled from run metadata. */
+function RunDetails({ r, liveCost }: { r: RunSummary; liveCost?: number }) {
+  const rows: Array<[string, string]> = [
+    ['director', r.directorModel || 'default'],
+    ['workers', r.workerModel || 'default'],
+    ['budget', `$${((liveCost ?? r.costUsd) || 0).toFixed(2)} / $${r.budgetUsd.toFixed(2)}`],
+    ['browser', r.browserTools ? 'on' : 'off'],
+  ];
+  if (r.resumes) rows.push(['resumes', String(r.resumes)]);
+  return (
+    <div style={{
+      marginTop: 8, display: 'grid', gridTemplateColumns: 'auto 1fr',
+      columnGap: 10, rowGap: 2, fontSize: 'var(--fs-xs)',
+    }}>
+      {rows.map(([k, v]) => (
+        <React.Fragment key={k}>
+          <span style={{ color: 'var(--ink-2)' }}>{k}</span>
+          <span style={{ color: 'var(--ink-1)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span>
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
+export function ProjectView({
+  p, models, routeRunId, onSelectRun, onBack, refreshFleet, auth, theme, onToggleTheme, onSettings,
+}: {
+  p: ProjectSummary; models: ModelInfo[] | null;
+  auth: { mode: BillingMode; source: string };
+  routeRunId: string | null; onSelectRun: (runId: string | null) => void;
   onBack: () => void; refreshFleet: () => void;
+  theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
 }) {
   const history = useRunHistory(p.id);
   const activeRunId = p.activeRun?.id ?? null;
-  // Which run is displayed: the active one by default, or a history selection.
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(activeRunId);
+  // The selected run lives in the URL so a refresh restores the same view.
+  const selectedRunId = routeRunId;
+  const setSelectedRunId = onSelectRun;
   useEffect(() => {
-    // A newly started mission takes over the view.
-    if (activeRunId) setSelectedRunId(activeRunId);
+    if (activeRunId) onSelectRun(activeRunId);
+    // Snap to the active run only when it starts/changes, so history
+    // browsing during a live mission is not fought over.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRunId]);
 
   const viewingLive = selectedRunId !== null && selectedRunId === activeRunId;
   const run = useRunView(selectedRunId, viewingLive);
   const selectedRun = history.find((r) => r.id === selectedRunId);
-  const [agentFilter, setAgentFilter] = useState<string | null>(null);
+  const [filter, setFilter] = useState<string | null>(null);
+  const [jump, setJump] = useState<{ id: number; n: number } | null>(null);
+  const jumpTo = (e: { id?: string | number; agent: string }) => {
+    if (typeof e.id !== 'number') return;
+    if (filter && filter !== e.agent) setFilter(null); // entry must be visible
+    setJump({ id: e.id, n: Date.now() });
+  };
   const [resuming, setResuming] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(true);
   const [headerErr, setHeaderErr] = useState('');
+  const [composerErr, setComposerErr] = useState('');
+  const [starting, setStarting] = useState(false);
+  const rightRail = useRef<HTMLDivElement>(null);
 
   const doResume = async () => {
     if (!selectedRunId) return;
@@ -175,94 +148,188 @@ export function ProjectView({ p, auth, onBack, refreshFleet }: {
     else refreshFleet();
   };
 
+  const startMission = async (v: {
+    mission: string; budget: number; directorModel: string; workerModel: string;
+    browserTools?: boolean;
+  }) => {
+    setComposerErr('');
+    setStarting(true);
+    const r = await api
+      .run(p.id, v.mission, v.budget, v.directorModel, v.workerModel, Boolean(v.browserTools))
+      .finally(() => setStarting(false));
+    if (!r.ok) setComposerErr((await r.json()).error);
+    else refreshFleet();
+  };
+
   const showComposer = !activeRunId && selectedRunId === null;
+  const canResume = !activeRunId && selectedRunId
+    && (selectedRun?.status === 'interrupted' || selectedRun?.status === 'error')
+    && selectedRun?.directorSessionId;
+
+  const railCurrent = selectedRunId ? {
+    id: selectedRunId,
+    mission: run.mission || selectedRun?.mission || '',
+    createdAt: selectedRun?.createdAt,
+    costUsd: run.costUsd,
+    status: run.runStatus,
+    live: viewingLive && run.runStatus === 'running',
+  } : undefined;
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <header style={{
-        display: 'flex', alignItems: 'center', gap: 'var(--sp-3)',
-        padding: 'var(--sp-2) var(--sp-3)', background: 'var(--bg-panel)',
-        borderBottom: '1px solid var(--line)',
-      }}>
-        <Button onClick={onBack} title="Back to fleet">← Fleet</Button>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
-            <span style={{ fontWeight: 600 }}>{p.name}</span>
-            <button title="Project settings" onClick={() => setSettingsOpen(true)} style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: 'var(--ink-2)', fontSize: 'var(--fs-md)', padding: 0, lineHeight: 1,
-            }}>&#9881;</button>
-          </div>
-          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)' }}>
-            {p.folder}
-            {p.claudeInstance?.configDir && <> &middot; via {p.claudeInstance.configDir}</>}
-          </div>
-        </div>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)' }}>
-          {headerErr && (
-            <span style={{ color: 'var(--status-critical)', fontSize: 'var(--fs-sm)' }}>✕ {headerErr}</span>
-          )}
-          <BillingBadge mode={p.billingMode ?? auth.mode}
-            source={p.claudeInstance?.billing === 'own-login'
-              ? `${p.claudeInstance.configDir} (this project's own login)`
-              : auth.source}
-            compact />
-          {selectedRunId && <StatusBadge status={run.runStatus} />}
-          {selectedRunId && <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} />}
-          {viewingLive && run.runStatus === 'running' && (
-            <Button variant="danger" onClick={() => void api.interrupt(selectedRunId!)}>Interrupt</Button>
-          )}
-          {!activeRunId && selectedRunId
-            && (selectedRun?.status === 'interrupted' || selectedRun?.status === 'error')
-            && selectedRun?.directorSessionId && (
-            <Button variant="good" disabled={resuming}
-              title="Restore the director's session and continue this mission"
-              onClick={() => void doResume()}>
-              {resuming ? '⟳ Resuming…' : '⟳ Resume'}
-            </Button>
-          )}
-          {!activeRunId && selectedRunId && (
-            <Button variant="primary" onClick={() => setSelectedRunId(null)}>New mission</Button>
-          )}
-        </div>
-      </header>
-
-      {settingsOpen && (
-        <ProjectSettings p={p} onClose={() => setSettingsOpen(false)} onSaved={refreshFleet}
-          onUnlink={() => { void api.unlinkProject(p.id).then(() => { refreshFleet(); onBack(); }); }} />
-      )}
+      <AppHeader mode="project" title={p.name} folder={p.folder} onBack={onBack}
+        theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
+        {headerErr && <Banner tone="error" inline>{headerErr}</Banner>}
+        <BillingBadge mode={p.billingMode ?? auth.mode} compact
+          source={p.claudeInstance?.billing === 'own-login'
+            ? `${p.claudeInstance.configDir} (this project's own login)`
+            : auth.source} />
+        {selectedRunId && <StatusBadge status={run.runStatus} />}
+        {selectedRunId && <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} />}
+        {viewingLive && run.runStatus === 'running' && (
+          <Button variant="danger" onClick={() => void api.interrupt(selectedRunId!)}>Interrupt</Button>
+        )}
+        {canResume && (
+          <Button variant="good" icon="resume" disabled={resuming}
+            title="Restore the director's session and continue this mission"
+            onClick={() => void doResume()}>
+            {resuming ? 'Resuming…' : 'Resume'}
+          </Button>
+        )}
+        {!activeRunId && selectedRunId && (
+          <Button variant="primary" onClick={() => setSelectedRunId(null)}>New mission</Button>
+        )}
+      </AppHeader>
 
       {selectedRunId && !viewingLive && (
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 'var(--sp-3)',
-          padding: 'var(--sp-1) var(--sp-3)', background: 'var(--bg-inset)',
-          borderBottom: '1px solid var(--line)', fontSize: 'var(--fs-sm)', color: 'var(--ink-1)',
-        }}>
-          <span aria-hidden style={{ color: 'var(--status-warning)' }}>◷</span>
-          Viewing a past run (read-only).
-        </div>
+        <Banner tone="readonly">Viewing a past run (read-only).</Banner>
       )}
 
       {showComposer ? (
-        <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: '250px 1fr' }}>
+        <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'var(--rail-left) 1fr' }}>
           <div style={{ borderRight: '1px solid var(--line)', background: 'var(--bg-panel)', overflowY: 'auto', padding: 'var(--sp-3)' }}>
-            <RunList runs={history} selected={null} onSelect={setSelectedRunId} />
+            <RunRail history={history} onSelectRun={setSelectedRunId} />
           </div>
-          <div style={{ overflowY: 'auto' }}>
-            <Composer p={p} auth={auth} onStarted={refreshFleet} />
+          <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            {/* margin:auto centers the card vertically yet degrades to normal
+                flow (scrollable) when the composer is taller than the view. */}
+            <div style={{ margin: 'auto', width: '100%', padding: 'var(--sp-5) 0' }}>
+              <Composer folder={p.folder} defaultBudgetUsd={p.defaultBudgetUsd}
+                error={composerErr} busy={starting} models={models}
+                onStart={(v) => void startMission(v)}
+                style={{
+                  background: 'var(--bg-panel)', border: '1px solid var(--line)',
+                  borderRadius: 'var(--r-md)', padding: 'var(--sp-5)',
+                  margin: '0 auto', boxSizing: 'border-box',
+                }} />
+              {/* Who pays and which install, at the moment of commitment. The
+                  composer is a DS component with no footer slot, and this
+                  reflects project state rather than composer state, so it lives
+                  in the view beside it. */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', flexWrap: 'wrap',
+                margin: 'var(--sp-3) auto 0', maxWidth: 'var(--composer-max-w, 720px)',
+                fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
+              }}>
+                <BillingBadge mode={p.billingMode ?? auth.mode} compact
+                  source={p.claudeInstance?.billing === 'own-login'
+                    ? `${p.claudeInstance.configDir} (this project's own login)`
+                    : auth.source} />
+                <span style={{ fontFamily: 'var(--font-mono)' }}>
+                  runs on {p.claudeInstance?.configDir ?? 'the server default instance'}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       ) : (
-        <main style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: '250px 1fr 340px' }}>
-          <div style={{ borderRight: '1px solid var(--line)', background: 'var(--bg-panel)', minHeight: 0, overflow: 'hidden auto', padding: 'var(--sp-3)' }}>
-            <AgentTree s={run} selected={agentFilter} onSelect={setAgentFilter} />
-            <RunList runs={history} selected={selectedRunId} onSelect={setSelectedRunId} />
+        <main style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'var(--rail-left) 1fr var(--rail-right)' }}>
+          <div style={{ borderRight: '1px solid var(--line)', background: 'var(--bg-panel)', minHeight: 0, minWidth: 0, overflow: 'hidden auto', padding: 'var(--sp-3)' }}>
+            <RunRail current={railCurrent} agents={run.agents} history={history}
+              selectedRunId={selectedRunId ?? undefined}
+              filter={filter} onFilter={(a) => setFilter(filter === a ? null : a)}
+              onSelectRun={setSelectedRunId}
+              sessionId={run.directorSessionId}
+              details={selectedRun && <RunDetails r={selectedRun} liveCost={run.costUsd} />} />
           </div>
-          <div style={{ minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <Transcript s={run} filter={agentFilter} />
+          <div style={{ minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+            {(run.entries.length > 0 || run.approvals.length + run.questions.length > 0) && (
+              <div style={{
+                padding: 'var(--sp-3)', borderBottom: '1px solid var(--line)',
+                display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)',
+                flex: '0 0 auto',
+              }}>
+                <AttentionBar approvals={run.approvals.length} questions={run.questions.length}
+                  onReview={() => rightRail.current?.scrollIntoView({ behavior: 'smooth' })} />
+                {run.entries.length > 0 && (
+                  <div style={{
+                    background: 'var(--bg-panel)', border: '1px solid var(--line)',
+                    borderRadius: 'var(--r-sm)', padding: '8px 10px',
+                  }}>
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      marginBottom: showTimeline ? 8 : 0, fontSize: 'var(--fs-xs)',
+                      color: 'var(--ink-2)', textTransform: 'uppercase',
+                      letterSpacing: 'var(--ls-caps)',
+                    }}>
+                      Timeline<span style={{ flex: 1 }} />
+                      <Button variant="ghost" size="sm"
+                        icon={showTimeline ? 'chevronDown' : 'chevronRight'}
+                        onClick={() => setShowTimeline(!showTimeline)}>
+                        {showTimeline ? 'Hide' : 'Show'}
+                      </Button>
+                    </div>
+                    {showTimeline && (
+                      <RunTimeline agents={run.agents} entries={run.entries}
+                        live={viewingLive && run.runStatus === 'running'}
+                        selected={filter}
+                        onSelect={(a) => setFilter(filter === a ? null : a)}
+                        onTick={jumpTo} />
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            <Transcript run={run} filter={filter} jump={jump} />
+            {viewingLive && (
+              <div style={{ padding: 'var(--sp-2) var(--sp-3) var(--sp-3)', flex: '0 0 auto' }}>
+                <SteerBar
+                  agents={[{ id: 'director', status: run.runStatus === 'running' ? 'running' : 'done' }]}
+                  to="director" onTo={() => {}}
+                  timing="next" onTiming={() => {}}
+                  disabled={run.runStatus !== 'running'}
+                  disabledReason="Run finished — start a new mission."
+                  onSend={(text) => void api.steer(selectedRunId!, text)} />
+              </div>
+            )}
           </div>
-          <div style={{ borderLeft: '1px solid var(--line)', background: 'var(--bg-panel)', minHeight: 0, overflow: 'hidden auto' }}>
-            <RightPanel s={run} />
+          <div ref={rightRail} style={{
+            borderLeft: '1px solid var(--line)', background: 'var(--bg-panel)',
+            minHeight: 0, minWidth: 0, overflow: 'hidden auto', padding: 'var(--sp-3)',
+            display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)',
+          }}>
+            <section>
+              <SectionTitle>Approvals</SectionTitle>
+              {run.approvals.length === 0 && <Empty>No pending approvals.</Empty>}
+              {run.approvals.map((a) => (
+                <ApprovalCard key={a.id} agent={a.agent} title={a.title}
+                  toolName={a.toolName} decisionReason={a.decisionReason} input={a.input}
+                  onAllow={() => void api.permission(a.id, 'allow')}
+                  onAlways={() => void api.permission(a.id, 'allow_always')}
+                  onDeny={() => void api.permission(a.id, 'deny')}
+                  style={{ marginBottom: 'var(--sp-2)' }} />
+              ))}
+            </section>
+            <section>
+              <SectionTitle>Questions</SectionTitle>
+              {run.questions.length === 0 && <Empty>No questions from the director.</Empty>}
+              {run.questions.map((q) => (
+                <QuestionCard key={q.id} question={q.question}
+                  onAnswer={(answer) => void api.answer(q.id, answer)}
+                  style={{ marginBottom: 'var(--sp-2)' }} />
+              ))}
+            </section>
+            <PlanBoard doc={run.missionDoc ?? undefined} />
           </div>
         </main>
       )}

@@ -337,6 +337,17 @@ but the choice of tool matters:
   built-in mission phase?
 - Containerized workers (Docker): worth it for isolation/"full unleash" runs,
   or is policy + budgets enough for personal use?
+- Mission shapes (the super-agent direction): keep the MISSION.md *invariant*
+  (goal, success criteria, decisions, log — externalized outside the context
+  window; it is what makes runs resumable, auditable, steerable) but free the
+  *format*. Proportionality is now in the charter (a 3-line doc is valid for
+  a small task); next is shape-awareness — **build** (deliverable, DONE WHEN:
+  today's checklist), **research/decide** (deliverable is an answer + a
+  recommendation), **assist/monitor** (ongoing goal, "until told to stop",
+  per-period budgets, Notifier as heartbeat). The doc skeleton should follow
+  the declared shape. Foreman's long-term identity: a governance layer
+  (goal doc + budget + policy + escalation) around any capable agent — coding
+  was just the first capability plugged in; the browser (below) is the second.
 - Unattended operation: a "Trust this run" pre-grant toggle, plus human
   notification channels (Telegram/Slack/webhook behind a Notifier interface)
   with an availability policy (quiet hours, severity threshold) and an
