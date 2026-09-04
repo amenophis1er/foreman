@@ -31,7 +31,7 @@ export const ICONS = {
   disconnected: 'WifiOff', readonly: 'History', warning: 'TriangleAlert', critical: 'OctagonAlert',
   caution: 'TriangleAlert', resume: 'RotateCw', orchestration: 'Bot', add: 'Plus', parent: 'CornerLeftUp',
   back: 'ArrowLeft', folder: 'Folder', needsYou: 'Bell', unlink: 'Unlink', sun: 'Sun', moon: 'Moon',
-  sort: 'ArrowUpDown', timeline: 'Clock', transcript: 'AlignLeft', crew: 'Users', chevronDown: 'ChevronDown', chevronRight: 'ChevronRight',
+  search: 'Search', sort: 'ArrowUpDown', timeline: 'Clock', transcript: 'AlignLeft', crew: 'Users', chevronDown: 'ChevronDown', chevronRight: 'ChevronRight',
   raw: 'Braces', question: 'MessageCircleQuestion', approval: 'ShieldCheck', check: 'Check', close: 'X',
   budget: 'Coins', template: 'LayoutTemplate', draft: 'Save', filter: 'Filter', settings: 'Settings',
   attach: 'Paperclip', file: 'File', image: 'Image', code: 'Code', codeBlock: 'SquareCode', quote: 'Quote',
