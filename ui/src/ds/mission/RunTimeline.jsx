@@ -3,8 +3,9 @@ import { AgentDot, agentColor } from '../status/AgentDot';
 
 function fmt(ms) { return new Date(ms).toLocaleTimeString(undefined, { hour12: false }); }
 
-/** Compact swimlane timeline of a run: one lane per agent, activity span + event ticks, optional live edge. */
-export function RunTimeline({ agents = [], entries = [], live, selected, onSelect, height = 22, style }) {
+/** Compact swimlane timeline of a run: one lane per agent, activity span + event ticks, optional live edge.
+ *  With `onTick`, each tick is a click target (with a widened invisible hitbox) for jumping to that entry. */
+export function RunTimeline({ agents = [], entries = [], live, selected, onSelect, onTick, height = 22, style }) {
   if (!entries.length) return null;
   const t0 = Math.min(...entries.map((e) => e.ts));
   const last = Math.max(...entries.map((e) => e.ts));
@@ -33,14 +34,29 @@ export function RunTimeline({ agents = [], entries = [], live, selected, onSelec
                 position: 'absolute', left: x(a0), width: `calc(${x(a1)} - ${x(a0)})`, top: 6, bottom: 6, minWidth: 3,
                 background: agentColor(id), opacity: 0.15, borderRadius: 3,
               }} />
-              {mine.map((e) => (
-                <span key={e.id ?? e.ts} title={`${fmt(e.ts)} · ${e.title || e.kind}`} style={{
-                  position: 'absolute', left: x(e.ts), top: e.kind === 'text' ? 3 : 7, width: e.kind === 'text' ? 3 : 2,
-                  height: e.kind === 'text' ? height - 6 : height - 14, marginLeft: -1, borderRadius: 1,
-                  background: e.kind === 'error' ? 'var(--status-critical)' : e.kind === 'tool' ? 'var(--ink-0)' : agentColor(id),
-                  boxShadow: '0 0 0 1px var(--bg-inset)',
-                }} />
-              ))}
+              {mine.map((e) => {
+                const tick = (
+                  <span style={{
+                    display: 'block', width: e.kind === 'text' ? 3 : 2,
+                    height: e.kind === 'text' ? height - 6 : height - 14, borderRadius: 1,
+                    background: e.kind === 'error' ? 'var(--status-critical)' : e.kind === 'tool' ? 'var(--ink-0)' : agentColor(id),
+                    boxShadow: '0 0 0 1px var(--bg-inset)',
+                  }} />
+                );
+                const label = `${fmt(e.ts)} · ${e.title || e.kind}`;
+                return onTick ? (
+                  <button key={e.id ?? e.ts} type="button" title={label} aria-label={`Jump to ${label}`}
+                    onClick={() => onTick(e)} style={{
+                      position: 'absolute', left: x(e.ts), top: 0, bottom: 0, width: 9, marginLeft: -4,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                    }}>{tick}</button>
+                ) : (
+                  <span key={e.id ?? e.ts} title={label} style={{
+                    position: 'absolute', left: x(e.ts), top: e.kind === 'text' ? 3 : 7, marginLeft: -1,
+                  }}>{tick}</span>
+                );
+              })}
               {live && st === 'running' && <span className="pulse" style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 2, background: 'var(--status-good)' }} />}
             </div>
           </React.Fragment>

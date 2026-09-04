@@ -21,17 +21,34 @@ import { Composer } from '../ds/mission/Composer';
 import { SteerBar } from '../ds/mission/SteerBar';
 import type { ModelInfo } from '../ds/forms/ModelSelect';
 
-function Transcript({ run, filter, header }: {
-  run: RunViewState; filter: string | null; header?: React.ReactNode;
+function Transcript({ run, filter, jump, header }: {
+  run: RunViewState; filter: string | null;
+  /** Entry to scroll to and flash; `n` forces the effect on repeat clicks. */
+  jump: { id: number; n: number } | null;
+  header?: React.ReactNode;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  const [flashId, setFlashId] = useState<number | null>(null);
   const shown = filter ? run.entries.filter((e) => e.agent === filter) : run.entries;
 
   useEffect(() => {
     const el = box.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
   }, [shown.length]);
+
+  useEffect(() => {
+    if (!jump) return;
+    pinned.current = false; // stop auto-scroll from fighting the jump
+    // rAF so a filter change from the same click has rendered first.
+    const raf = requestAnimationFrame(() => {
+      document.getElementById(`entry-${jump.id}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setFlashId(jump.id);
+    });
+    const t = setTimeout(() => setFlashId(null), 1600);
+    return () => { cancelAnimationFrame(raf); clearTimeout(t); };
+  }, [jump]);
 
   return (
     <div ref={box}
@@ -46,8 +63,14 @@ function Transcript({ run, filter, header }: {
       {header}
       {shown.length === 0 && <Empty>Transcript will appear here.</Empty>}
       {shown.map((e) => (
-        <TranscriptEntry key={e.id} agent={e.agent} title={e.title}
-          kind={e.kind} body={e.body} ts={e.ts} to={e.to} timing={e.timing} />
+        <div key={e.id} id={`entry-${e.id}`} style={{
+          scrollMarginTop: 8, borderRadius: 'var(--r-sm)',
+          outline: flashId === e.id ? '2px solid var(--brand)' : 'none',
+          transition: 'outline-color var(--dur-fast) var(--ease)',
+        }}>
+          <TranscriptEntry agent={e.agent} title={e.title}
+            kind={e.kind} body={e.body} ts={e.ts} to={e.to} timing={e.timing} />
+        </div>
       ))}
     </div>
   );
@@ -75,6 +98,12 @@ export function ProjectView({ p, models, routeRunId, onSelectRun, onBack, refres
   const run = useRunView(selectedRunId, viewingLive);
   const selectedRun = history.find((r) => r.id === selectedRunId);
   const [filter, setFilter] = useState<string | null>(null);
+  const [jump, setJump] = useState<{ id: number; n: number } | null>(null);
+  const jumpTo = (e: { id?: string | number; agent: string }) => {
+    if (typeof e.id !== 'number') return;
+    if (filter && filter !== e.agent) setFilter(null); // entry must be visible
+    setJump({ id: e.id, n: Date.now() });
+  };
   const [resuming, setResuming] = useState(false);
   const [showTimeline, setShowTimeline] = useState(true);
   const [headerErr, setHeaderErr] = useState('');
@@ -204,13 +233,14 @@ export function ProjectView({ p, models, routeRunId, onSelectRun, onBack, refres
                       <RunTimeline agents={run.agents} entries={run.entries}
                         live={viewingLive && run.runStatus === 'running'}
                         selected={filter}
-                        onSelect={(a) => setFilter(filter === a ? null : a)} />
+                        onSelect={(a) => setFilter(filter === a ? null : a)}
+                        onTick={jumpTo} />
                     )}
                   </div>
                 )}
               </div>
             )}
-            <Transcript run={run} filter={filter} />
+            <Transcript run={run} filter={filter} jump={jump} />
             {viewingLive && (
               <div style={{ padding: 'var(--sp-2) var(--sp-3) var(--sp-3)', flex: '0 0 auto' }}>
                 <SteerBar
