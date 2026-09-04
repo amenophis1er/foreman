@@ -36,6 +36,19 @@ function shortPath(p) {
 function draftKey(folder) { return `foreman:draft:${folder || 'default'}`; }
 const fileKey = (f) => `${f.name}:${f.size}`;
 
+/** A single keycap, e.g. ⌘ or ↵, for shortcut hints beside actions. */
+function Kbd({ children }) {
+  return (
+    <kbd style={{
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      minWidth: 18, height: 18, padding: '0 4px', boxSizing: 'border-box',
+      background: 'var(--bg-inset)', border: '1px solid var(--line-strong)',
+      borderRadius: 4, color: 'var(--ink-1)',
+      fontFamily: 'var(--font-mono)', fontSize: 11, lineHeight: 1,
+    }}>{children}</kbd>
+  );
+}
+
 function ToolbarButton({ icon, label, active, onClick }) {
   const [hover, setHover] = useState(false);
   return (
@@ -197,7 +210,12 @@ export function Composer({ folder, defaultBudgetUsd = 5, error, busy, templates 
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
         {error && <Banner tone="error" inline style={{ marginRight: 'auto' }}>{error}</Banner>}
-        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)' }}>⌘↵</span>
+        <span title="Start the mission with Cmd+Enter from the editor" style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
+        }}>
+          <Kbd>⌘</Kbd><Kbd>↵</Kbd>
+        </span>
         <Button variant="primary" disabled={!canStart} onClick={start}>Start mission</Button>
       </div>
     </div>
