@@ -95,3 +95,43 @@ export function BudgetMeter({ spent, budget }: { spent: number; budget: number }
 export function agentColor(agent: string): string {
   return agent === 'director' ? 'var(--brand)' : 'var(--agent-worker)';
 }
+
+export type AuthMode = 'api-key' | 'subscription' | 'cloud' | 'none';
+
+const BILLING_META: Record<AuthMode, { icon: string; label: string; color: string; hint: string }> = {
+  'api-key':     { icon: '$', label: 'API key billing', color: 'var(--status-warning)',
+                   hint: 'Missions bill a metered API key, not a Claude subscription. Usage is charged per token.' },
+  subscription:  { icon: '◐', label: 'subscription',    color: 'var(--ink-2)',
+                   hint: 'Missions run on the signed-in Claude subscription.' },
+  cloud:         { icon: '☁', label: 'cloud provider',  color: 'var(--ink-2)',
+                   hint: 'Missions bill a cloud provider (Bedrock/Vertex).' },
+  none:          { icon: '✕', label: 'no credentials',  color: 'var(--status-critical)',
+                   hint: 'No credentials found — missions cannot run.' },
+};
+
+/**
+ * States which account pays, wherever money is about to be spent.
+ *
+ * An API key in the server environment silently outranks a Claude subscription
+ * login, so someone who believes they are spending plan quota can instead be
+ * running up a metered bill. That case is the one that needs to be unmissable,
+ * so it alone wears a status colour; the others stay muted. Icon + label always,
+ * never colour alone.
+ */
+export function BillingBadge({ mode, source, compact }: {
+  mode: AuthMode; source?: string; compact?: boolean;
+}) {
+  const m = BILLING_META[mode];
+  return (
+    <span title={source ? `${m.hint}\nSource: ${source}` : m.hint} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 'var(--sp-1)',
+      fontSize: compact ? 'var(--fs-xs)' : 'var(--fs-sm)', color: 'var(--ink-1)',
+      padding: compact ? '1px 6px' : '2px 8px', borderRadius: 999,
+      background: 'var(--bg-inset)', border: `1px solid ${mode === 'api-key' ? m.color : 'var(--line)'}`,
+      whiteSpace: 'nowrap',
+    }}>
+      <span aria-hidden style={{ color: m.color, fontWeight: 600 }}>{m.icon}</span>
+      {compact ? m.label : `billing: ${m.label}`}
+    </span>
+  );
+}

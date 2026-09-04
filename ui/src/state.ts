@@ -33,6 +33,15 @@ export type AgentInfo = { id: string; status: Status; task?: string };
 
 export type ModelChoice = 'opus' | 'sonnet' | 'haiku' | '';
 
+/** Pins a project to one Claude Code install; server default when absent. */
+export type AuthMode = 'api-key' | 'subscription' | 'cloud' | 'none';
+
+export type ClaudeInstancePin = {
+  configDir?: string; executable?: string;
+  /** 'own-login' drops the server's API key so the pinned account pays. */
+  billing?: 'inherit' | 'own-login';
+};
+
 export type RunSummary = {
   id: string; projectId?: string; folder: string; mission: string;
   budgetUsd: number; status: Status; costUsd: number;
@@ -43,6 +52,9 @@ export type RunSummary = {
 
 export type ProjectSummary = {
   id: string; name: string; folder: string; createdAt: number;
+  claudeInstance?: ClaudeInstancePin;
+  /** What this project will actually bill; can differ from the server's mode. */
+  billingMode?: AuthMode;
   defaultBudgetUsd: number;
   activeRun: RunSummary | null;
   pendingPermissions: number;
@@ -258,10 +270,14 @@ export function useRunView(runId: string | null, live: boolean): RunView {
 export function useFleet() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [connected, setConnected] = useState(false);
+  const [auth, setAuth] = useState<{ mode: AuthMode; source: string }>({ mode: 'none', source: '' });
 
   const refresh = useCallback(async () => {
     const r = await fetch('/projects').catch(() => null);
-    if (r?.ok) setProjects((await r.json()).projects);
+    if (!r?.ok) return;
+    const data = await r.json();
+    setProjects(data.projects);
+    setAuth({ mode: data.authMode ?? 'none', source: data.authSource ?? '' });
   }, []);
 
   useEffect(() => {
@@ -282,7 +298,7 @@ export function useFleet() {
     };
   }, [refresh]);
 
-  return { projects, connected, refresh };
+  return { projects, connected, auth, refresh };
 }
 
 /** Persisted run history for one project, newest first. */
@@ -333,7 +349,25 @@ const post = (url: string, body: unknown) =>
   });
 
 export const api = {
-  linkProject: (folder: string, name?: string) => post('/projects', { folder, name }),
+  linkProject: (folder: string, name?: string, instance?: ClaudeInstancePin) =>
+    post('/projects', {
+      folder, name,
+      claudeConfigDir: instance?.configDir || undefined,
+      claudeExecutable: instance?.executable || undefined,
+    }),
+  instances: () => fetch('/instances'),
+  updateProject: (
+    projectId: string,
+    patch: {
+      claudeConfigDir?: string; claudeExecutable?: string;
+      claudeBilling?: 'inherit' | 'own-login';
+      defaultBudgetUsd?: number; name?: string;
+    },
+  ) =>
+    fetch(`/projects/${encodeURIComponent(projectId)}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
   unlinkProject: (projectId: string) =>
     fetch(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
   run: (projectId: string, mission: string, budgetUsd: number,

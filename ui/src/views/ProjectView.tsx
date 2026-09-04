@@ -3,10 +3,11 @@ import {
   api, useRunHistory, useRunView,
   type ModelChoice, type ProjectSummary, type RunSummary,
 } from '../state';
-import { Button, BudgetMeter, Empty, SectionTitle, StatusBadge } from '../design/ui';
+import { BillingBadge, Button, BudgetMeter, Empty, SectionTitle, StatusBadge, type AuthMode } from '../design/ui';
 import { AgentTree } from './AgentTree';
 import { Transcript } from './Transcript';
 import { RightPanel } from './RightPanel';
+import { ProjectSettings } from './ProjectSettings';
 
 /** Full-width mission composer, shown when the project has no active run. */
 const MODEL_OPTIONS: { value: ModelChoice; label: string }[] = [
@@ -34,7 +35,9 @@ function ModelSelect({ label, value, onChange, hint }: {
   );
 }
 
-function Composer({ p, onStarted }: { p: ProjectSummary; onStarted: () => void }) {
+function Composer({ p, auth, onStarted }: {
+  p: ProjectSummary; auth: { mode: AuthMode; source: string }; onStarted: () => void;
+}) {
   const [mission, setMission] = useState('');
   const [budget, setBudget] = useState(p.defaultBudgetUsd);
   const [directorModel, setDirectorModel] = useState<ModelChoice>('');
@@ -91,6 +94,22 @@ function Composer({ p, onStarted }: { p: ProjectSummary; onStarted: () => void }
         </Button>
         {err && <span style={{ color: 'var(--status-critical)', fontSize: 'var(--fs-sm)' }}>✕ {err}</span>}
       </div>
+
+      {/* Who pays and which install, stated at the moment of commitment. */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', flexWrap: 'wrap',
+        fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
+        marginTop: 'calc(-1 * var(--sp-2))',
+      }}>
+        <BillingBadge mode={p.billingMode ?? auth.mode}
+          source={p.claudeInstance?.billing === 'own-login'
+            ? `${p.claudeInstance.configDir} (this project's own login)`
+            : auth.source}
+          compact />
+        <span style={{ fontFamily: 'var(--font-mono)' }}>
+          runs on {p.claudeInstance?.configDir ?? 'the server default instance'}
+        </span>
+      </div>
     </div>
   );
 }
@@ -126,8 +145,9 @@ function RunList({ runs, selected, onSelect }: {
   );
 }
 
-export function ProjectView({ p, onBack, refreshFleet }: {
-  p: ProjectSummary; onBack: () => void; refreshFleet: () => void;
+export function ProjectView({ p, auth, onBack, refreshFleet }: {
+  p: ProjectSummary; auth: { mode: AuthMode; source: string };
+  onBack: () => void; refreshFleet: () => void;
 }) {
   const history = useRunHistory(p.id);
   const activeRunId = p.activeRun?.id ?? null;
@@ -143,6 +163,7 @@ export function ProjectView({ p, onBack, refreshFleet }: {
   const selectedRun = history.find((r) => r.id === selectedRunId);
   const [agentFilter, setAgentFilter] = useState<string | null>(null);
   const [resuming, setResuming] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [headerErr, setHeaderErr] = useState('');
 
   const doResume = async () => {
@@ -165,15 +186,27 @@ export function ProjectView({ p, onBack, refreshFleet }: {
       }}>
         <Button onClick={onBack} title="Back to fleet">← Fleet</Button>
         <div>
-          <div style={{ fontWeight: 600 }}>{p.name}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
+            <span style={{ fontWeight: 600 }}>{p.name}</span>
+            <button title="Project settings" onClick={() => setSettingsOpen(true)} style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: 'var(--ink-2)', fontSize: 'var(--fs-md)', padding: 0, lineHeight: 1,
+            }}>&#9881;</button>
+          </div>
           <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)' }}>
             {p.folder}
+            {p.claudeInstance?.configDir && <> &middot; via {p.claudeInstance.configDir}</>}
           </div>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)' }}>
           {headerErr && (
             <span style={{ color: 'var(--status-critical)', fontSize: 'var(--fs-sm)' }}>✕ {headerErr}</span>
           )}
+          <BillingBadge mode={p.billingMode ?? auth.mode}
+            source={p.claudeInstance?.billing === 'own-login'
+              ? `${p.claudeInstance.configDir} (this project's own login)`
+              : auth.source}
+            compact />
           {selectedRunId && <StatusBadge status={run.runStatus} />}
           {selectedRunId && <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} />}
           {viewingLive && run.runStatus === 'running' && (
@@ -194,6 +227,11 @@ export function ProjectView({ p, onBack, refreshFleet }: {
         </div>
       </header>
 
+      {settingsOpen && (
+        <ProjectSettings p={p} onClose={() => setSettingsOpen(false)} onSaved={refreshFleet}
+          onUnlink={() => { void api.unlinkProject(p.id).then(() => { refreshFleet(); onBack(); }); }} />
+      )}
+
       {selectedRunId && !viewingLive && (
         <div style={{
           display: 'flex', alignItems: 'center', gap: 'var(--sp-3)',
@@ -211,7 +249,7 @@ export function ProjectView({ p, onBack, refreshFleet }: {
             <RunList runs={history} selected={null} onSelect={setSelectedRunId} />
           </div>
           <div style={{ overflowY: 'auto' }}>
-            <Composer p={p} onStarted={refreshFleet} />
+            <Composer p={p} auth={auth} onStarted={refreshFleet} />
           </div>
         </div>
       ) : (
