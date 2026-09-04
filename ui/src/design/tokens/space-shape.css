@@ -1,0 +1,31 @@
+/* Foreman space & shape — a 4px scale that stops at 24, two radii, one pill. */
+:root {
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+
+  --r-sm: 6px;   /* buttons, inputs, transcript cards, rows */
+  --r-md: 10px;  /* project cards, modals, composer textarea */
+  --r-pill: 999px; /* status badges, agent dots */
+
+  /* Layout constants lifted from the shipped views */
+  --rail-left: 250px;
+  --rail-right: 340px;
+  --bp-narrow: 900px;  /* below: single column + tabs */
+  --bp-medium: 1180px; /* below: left rail collapses into a crew strip */
+  --fleet-max: 1200px;
+  --composer-max: 720px;
+  --card-min: 300px;
+  --card-min-h: 130px;
+  --modal-w: 480px;
+  --modal-w-wide: 520px;
+
+  --accent-w: 3px;   /* Card left accent stripe */
+  --meter-h: 4px;    /* BudgetMeter track */
+  --dot: 8px;        /* agent identity dot */
+  --dot-sm: 6px;     /* transcript meta dot */
+
+  --focus: 0 0 0 2px var(--bg-app), 0 0 0 4px var(--brand);
+}

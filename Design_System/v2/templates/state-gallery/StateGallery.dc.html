@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<!-- @template name="States gallery" description="Every state Foreman can be in — idle, running, needs-you, interrupted, done, read-only, error, empty — side by side." -->
+<helmet><script src="./ds-base.js"></script></helmet>
+<div style="min-height:100vh;background:#121417;color:#e8e6df;font:13px/1.45 'Source Sans 3',ui-sans-serif,system-ui,sans-serif;padding:24px;display:flex;flex-direction:column;gap:28px;max-width:1200px;margin:0 auto">
+<div>
+<div style="font-size:11px;color:#6d7683;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px">Fleet card — never run · running · needs you</div>
+<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px">
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.ProjectCard" name="Gamma" folder="/Users/you/Projects/website" hint-size="100%,170px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.ProjectCard" name="Beta" folder="/Users/you/Projects/personal-foreman/scratchpad/fleet-beta" mission="Refactor the store reducer into pure functions and add tests for each branch." cost-usd="3.80" budget-usd="5" hint-size="100%,170px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.ProjectCard" name="Alpha" folder="/Users/you/Projects/personal-foreman/scratchpad/fleet-alpha" mission="Ask me which filename to create, then have a worker create it containing the word test." cost-usd="4.80" budget-usd="5" pending-permissions="2" pending-questions="1" hint-size="100%,170px"></x-import>
+</div>
+</div>
+<div>
+<div style="font-size:11px;color:#6d7683;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px">Project header — live · interrupted · finished · read-only replay</div>
+<div style="display:flex;flex-direction:column;gap:14px;border:1px solid #2d323b;border-radius:10px;overflow:hidden">
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.AppHeader" mode="project" theme="dark" title="Alpha" folder="/Users/you/Projects/personal-foreman/scratchpad/fleet-alpha" hint-size="100%,48px">
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.StatusBadge" status="running" hint-size="90px,22px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.BudgetMeter" spent="1.24" budget="5" hint-size="170px,22px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.Button" variant="danger" hint-size="80px,30px">Interrupt</x-import>
+</x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.AppHeader" mode="project" theme="dark" title="Alpha" folder="/Users/you/Projects/personal-foreman/scratchpad/fleet-alpha" hint-size="100%,48px">
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.StatusBadge" status="interrupted" hint-size="110px,22px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.BudgetMeter" spent="3.55" budget="5" hint-size="170px,22px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.Button" variant="good" icon="resume" hint-size="100px,30px">Resume</x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.Button" variant="primary" hint-size="110px,30px">New mission</x-import>
+</x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.AppHeader" mode="project" theme="dark" title="Alpha" folder="/Users/you/Projects/personal-foreman/scratchpad/fleet-alpha" hint-size="100%,48px">
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.Banner" tone="error" inline="{{ true }}" hint-size="200px,18px">a mission is already running in this project</x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.StatusBadge" status="error" hint-size="80px,22px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.BudgetMeter" spent="4.92" budget="5" hint-size="170px,22px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.Button" variant="primary" hint-size="110px,30px">New mission</x-import>
+</x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.Banner" tone="readonly" hint-size="100%,26px">Viewing a past run (read-only).</x-import>
+</div>
+</div>
+<div style="display:grid;grid-template-columns:340px 1fr;gap:24px;align-items:start">
+<div>
+<div style="font-size:11px;color:#6d7683;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px">Right rail — nothing pending</div>
+<div style="display:flex;flex-direction:column;gap:16px;background:#1a1d22;border:1px solid #2d323b;border-radius:6px;padding:12px">
+<section>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.SectionTitle" hint-size="100%,18px">Approvals</x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.Empty" hint-size="100%,18px">No pending approvals.</x-import>
+</section>
+<section>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.SectionTitle" hint-size="100%,18px">Questions</x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.Empty" hint-size="100%,18px">No questions from the director.</x-import>
+</section>
+<section>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.SectionTitle" hint-size="100%,18px">Plan</x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.Empty" hint-size="100%,18px">MISSION.md not written yet.</x-import>
+</section>
+</div>
+</div>
+<div>
+<div style="font-size:11px;color:#6d7683;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px">Transcript — text · tool · result · system · error</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.TranscriptEntry" agent="director" kind="text" body="Worker reports done. Verifying independently rather than trusting the report." ts="2026-09-03T07:53:48" hint-size="100%,48px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.TranscriptEntry" agent="worker-1" title="Write" kind="tool" body='{"file_path":"…/fleet-alpha/hello.txt","content":"test\n"}' ts="2026-09-03T07:53:41" hint-size="100%,48px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.TranscriptEntry" agent="director" title="result" kind="result" body="The file …/fleet-alpha/.foreman/MISSION.md has been updated successfully." ts="2026-09-03T07:53:19" hint-size="100%,48px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.TranscriptEntry" agent="director" title="init" kind="system" body="model: claude-fable-5-1" ts="2026-09-03T07:53:12" hint-size="100%,48px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.TranscriptEntry" agent="worker-2" title="result" kind="error" body="Error: ENOENT: no such file or directory, open 'scratchpad/out.json'" ts="2026-09-03T07:53:52" hint-size="100%,48px"></x-import>
+</div>
+</div>
+</div>
+<div>
+<div style="font-size:11px;color:#6d7683;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px">Budget — under 70% · warning at 70% · critical at 90%</div>
+<div style="display:flex;gap:24px;flex-wrap:wrap">
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.BudgetMeter" spent="1.24" budget="5" hint-size="180px,22px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.BudgetMeter" spent="3.70" budget="5" hint-size="180px,22px"></x-import>
+<x-import component-from-global-scope="ForemanDesignSystem_5f77fb.BudgetMeter" spent="4.80" budget="5" hint-size="180px,22px"></x-import>
+</div>
+</div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:1100}}"></script>
+</body>
+</html>

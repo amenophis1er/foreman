@@ -1,0 +1,13 @@
+<!-- @dsCard group="Motion" viewport="700x160" name="States — hover, press, focus, selected" subtitle="Interactive feedback is a color step, never a movement" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>body{padding:16px;display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.b{padding:6px 12px;border-radius:var(--r-sm);font-size:var(--fs-md);text-align:center}.n{font-size:var(--fs-xs);color:var(--ink-2);margin-top:6px}.row{padding:7px 10px;border-radius:var(--r-sm);font-size:var(--fs-md)}</style>
+</head><body>
+<div><div class="b" style="background:var(--bg-card);border:1px solid var(--line-strong)">rest</div><div class="n">--bg-card on --line-strong</div></div>
+<div><div class="b" style="background:var(--bg-card);border:1px solid var(--ink-2)">hover</div><div class="n">border lifts to --ink-2</div></div>
+<div><div class="b" style="background:var(--bg-inset);border:1px solid var(--ink-2)">press</div><div class="n">surface drops to --bg-inset</div></div>
+<div><div class="b" style="background:var(--bg-card);border:1px solid var(--line-strong);box-shadow:var(--focus)">focus</div><div class="n">--focus: 2px offset + 4px gold</div></div>
+<div><div class="row" style="background:transparent;border:1px solid transparent;color:var(--ink-0)">row · rest</div><div class="n">transparent</div></div>
+<div><div class="row" style="background:var(--bg-inset);border:1px solid transparent">row · hover</div><div class="n">--bg-inset</div></div>
+<div><div class="row" style="background:var(--bg-card);border:1px solid var(--line-strong)">row · selected</div><div class="n">--bg-card + --line-strong</div></div>
+<div><div class="b" style="background:var(--brand);color:var(--brand-ink);font-weight:600;opacity:.5">disabled</div><div class="n">opacity 0.5, label kept</div></div>
+</body></html>

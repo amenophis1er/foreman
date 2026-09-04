@@ -1,0 +1,4 @@
+/* Foreman webfonts — Source Sans 3 (UI) and IBM Plex Mono (machine text), served from Google Fonts.
+   Both are open-licensed; drop the .woff2 files into assets/fonts/ and replace this @import
+   with @font-face rules to ship them offline. */
+@import url("https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap");

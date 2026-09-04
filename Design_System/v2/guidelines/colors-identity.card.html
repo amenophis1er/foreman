@@ -1,0 +1,18 @@
+<!-- @dsCard group="Colors" viewport="700x170" name="Identity" subtitle="Gold is the director and the brand; workers take a fixed slot on a six-hue violet ramp" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>body{padding:16px;display:flex;flex-direction:column;gap:14px}.top{display:grid;grid-template-columns:1fr 1fr;gap:14px}.sw{height:44px;border-radius:var(--r-sm);display:flex;align-items:center;padding:0 12px;font-size:var(--fs-sm);font-weight:600}.n{font-family:var(--font-mono);font-size:var(--fs-xs);color:var(--ink-2);margin-top:6px}.u{font-size:var(--fs-xs);color:var(--ink-1);margin-top:2px}.ramp{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.r{height:32px;border-radius:var(--r-sm)}</style>
+</head><body>
+<div class="top">
+<div><div class="sw" style="background:var(--brand);color:var(--brand-ink)">Start mission</div><div class="n">--brand · #e8b04b (light: #c98f1f)</div><div class="u">Foreman, the director, primary actions, approval + question accents</div></div>
+<div><div class="sw" style="background:var(--brand-ink);color:var(--ink-0);border:1px solid var(--line)">text on brand</div><div class="n">--brand-ink</div><div class="u">The only ink used on top of gold fills</div></div>
+</div>
+<div class="ramp">
+<div><div class="r" style="background:var(--agent-worker-1)"></div><div class="n">--agent-worker-1</div></div>
+<div><div class="r" style="background:var(--agent-worker-2)"></div><div class="n">--agent-worker-2</div></div>
+<div><div class="r" style="background:var(--agent-worker-3)"></div><div class="n">--agent-worker-3</div></div>
+<div><div class="r" style="background:var(--agent-worker-4)"></div><div class="n">--agent-worker-4</div></div>
+<div><div class="r" style="background:var(--agent-worker-5)"></div><div class="n">--agent-worker-5</div></div>
+<div><div class="r" style="background:var(--agent-worker-6)"></div><div class="n">--agent-worker-6</div></div>
+</div>
+<div class="u" style="margin-top:-6px">worker-N → slot ((N−1) mod 6)+1. Same id, same color in every run. All six stay in the violet family so "violet = worker" still reads.</div>
+</body></html>

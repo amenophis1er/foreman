@@ -13,15 +13,75 @@
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import {
   query,
   tool,
   createSdkMcpServer,
+  type McpServerConfig,
   type Query,
   type PermissionResult,
   type SDKMessage,
+  type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+
+/**
+ * A pushable async iterable of user messages — the director's streaming
+ * prompt. Steering pushes additional messages; `close()` ends the
+ * conversation once the mission's final turn has completed.
+ */
+class MessageStream implements AsyncIterable<SDKUserMessage> {
+  private queue: SDKUserMessage[] = [];
+  private waiter: ((r: IteratorResult<SDKUserMessage>) => void) | null = null;
+  private closed = false;
+
+  push(text: string): boolean {
+    if (this.closed) return false;
+    const msg: SDKUserMessage = {
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text }] },
+      parent_tool_use_id: null,
+      session_id: '',
+    };
+    if (this.waiter) {
+      const w = this.waiter;
+      this.waiter = null;
+      w({ value: msg, done: false });
+    } else {
+      this.queue.push(msg);
+    }
+    return true;
+  }
+
+  close(): void {
+    this.closed = true;
+    if (this.waiter) {
+      const w = this.waiter;
+      this.waiter = null;
+      w({ value: undefined, done: true });
+    }
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  /** Messages pushed but not yet consumed by the SDK's input pump. */
+  get pending(): number {
+    return this.queue.length;
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    return {
+      next: (): Promise<IteratorResult<SDKUserMessage>> => {
+        if (this.queue.length) return Promise.resolve({ value: this.queue.shift()!, done: false });
+        if (this.closed) return Promise.resolve({ value: undefined, done: true });
+        return new Promise((resolve) => { this.waiter = resolve; });
+      },
+    };
+  }
+}
 import { makePolicy, type PendingPermission } from './policy.js';
 import { instanceOptions, resolveInstance } from './instance.js';
 import type { RunMeta, WorkerMeta } from './types.js';
@@ -40,7 +100,10 @@ directing worker agents. Non-negotiable rules, in priority order:
    directory with: the mission (one line), DONE WHEN (verifiable criteria), a
    plan as a checklist of verifiable milestones, a Log section, and a Decisions
    section. Update it after every milestone — it is the mission's source of
-   truth, not your context window.
+   truth, not your context window. SCALE THE DOC TO THE MISSION: a trivial
+   task deserves a three-line doc (mission, one DONE WHEN, one milestone);
+   never pad small missions with ceremony. The doc's existence is mandatory;
+   its length is not.
 2. DELEGATE IMPLEMENTATION. Use mcp__foreman__spawn_worker to have a worker do
    the building/editing. Give each worker one well-scoped, self-contained task
    with full context (paths, constraints, expected result). Use
@@ -48,12 +111,22 @@ directing worker agents. Non-negotiable rules, in priority order:
    existing worker. You may read files and run verification commands yourself,
    but implementation edits belong to workers.
 3. VERIFY INDEPENDENTLY. Never trust a worker's "done". Read the files and run
-   the checks yourself before ticking a milestone.
-4. ESCALATE, DON'T POWER THROUGH. Anything irreversible, out of scope, or
+   the checks yourself before ticking a milestone. Artifacts you produce
+   (screenshots, reports, exports) must depict the FINAL state: if any file
+   changes after you captured them, RE-CAPTURE before ticking that milestone.
+   An artifact older than the code it documents is a false report.
+4. REPORT WHAT YOU SEE. Judge the work as a competent professional would, not
+   only against the letter of the acceptance criteria. If you observe a defect
+   the criteria did not name — tap targets too small to use, unreadable
+   contrast, a broken layout, a hazard, an obviously wrong result — fix it
+   when it is clearly in scope, and otherwise say so plainly in your final
+   summary and in MISSION.md. Staying silent about a problem you could see is
+   a failed mission even when every listed box is ticked.
+5. ESCALATE, DON'T POWER THROUGH. Anything irreversible, out of scope, or
    surprising: ask the human via mcp__foreman__ask_human and wait for the answer.
-5. NEVER modify Foreman itself, its server, or any oversight tooling. Tooling
+6. NEVER modify Foreman itself, its server, or any oversight tooling. Tooling
    failure is an escalation, never a self-repair.
-6. When DONE WHEN is verified, update MISSION.md (all boxes ticked, final log
+7. When DONE WHEN is verified, update MISSION.md (all boxes ticked, final log
    entry) and end with a short summary of what was built and how you verified it.
 `;
 
@@ -63,6 +136,14 @@ working directory. Never ask interactive questions — if you are blocked on a
 decision you cannot make, print "BLOCKED: <your question>" and end your turn.
 When finished, end with a concise report of what you did and how you checked it.
 `;
+
+/** Foreman's bundled Playwright MCP server, resolved from this repo. */
+const PLAYWRIGHT_MCP_CLI = fileURLToPath(
+  new URL('../node_modules/@playwright/mcp/cli.js', import.meta.url),
+);
+
+/** Claude subscription/quota exhaustion — an external pause, not a failure. */
+const USAGE_LIMIT_RE = /out of usage credits|usage limit reached|upgrade to increase your usage/i;
 
 interface WorkerRuntime extends WorkerMeta {
   q?: Query;
@@ -76,6 +157,12 @@ export class MissionRun {
   private readonly runAllowed = new Set<string>();
   private readonly pendingPermissions = new Map<string, PendingPermission>();
   private readonly pendingQuestions = new Map<string, (answer: string) => void>();
+  /** The director's streaming prompt; steering pushes into it. */
+  private directorInput?: MessageStream;
+  /** Director cost is cumulative per query; track the last figure for deltas. */
+  private directorCostSeen = 0;
+  private wasInterrupted = false;
+  private usageLimited = false;
 
   constructor(
     meta: RunMeta,
@@ -133,7 +220,24 @@ export class MissionRun {
     return true;
   }
 
+  /**
+   * Unsolicited operator guidance to the director, delivered at its next
+   * turn boundary. Returns false once the mission is finishing.
+   */
+  steer(text: string): boolean {
+    if (!this.directorInput || this.directorInput.isClosed) return false;
+    this.emit('steer', { to: 'director', text, timing: 'next' });
+    return this.directorInput.push(
+      '[OPERATOR STEER — mid-mission note from the human overseer]\n' +
+      `${text}\n\n` +
+      'Acknowledge briefly, update .foreman/MISSION.md if this changes the plan ' +
+      'or DONE WHEN, and continue the mission with this guidance applied.',
+    );
+  }
+
   async interrupt(): Promise<void> {
+    this.wasInterrupted = true;
+    this.directorInput?.close(); // no further turns; let the session wind down
     for (const w of this.workers.values()) {
       if (w.q) await w.q.interrupt().catch(() => {});
     }
@@ -144,11 +248,18 @@ export class MissionRun {
 
   /**
    * Runs the mission to completion. Resolves when the director ends.
-   * With `resumeSessionId`, the director session is resumed with its prior
-   * context and instructed to re-verify state against MISSION.md first.
+   *
+   * Passing `resume` marks this as a continuation: the director is told to
+   * re-verify state against MISSION.md rather than start the mission over.
+   * `resume.sessionId` restores its prior context when available — it is
+   * absent when the director's model changed, since a session cannot switch
+   * models. Resuming WITHOUT a session is still a resume: the mission doc
+   * and the working directory carry the state across.
    */
-  async start(resumeSessionId?: string): Promise<void> {
-    this.emit(resumeSessionId ? 'run_resumed' : 'run_started', {
+  async start(resume?: { sessionId?: string }): Promise<void> {
+    const resumeSessionId = resume?.sessionId;
+    const isResume = resume !== undefined;
+    this.emit(isResume ? 'run_resumed' : 'run_started', {
       runId: this.meta.id,
       folder: this.meta.folder,
       mission: this.meta.mission,
@@ -156,12 +267,19 @@ export class MissionRun {
       costUsd: this.meta.costUsd,
     });
 
-    const prompt = resumeSessionId
+    const prompt = isResume
       ? `MISSION (unchanged): ${this.meta.mission}\n\n` +
-        'This mission was interrupted (process restart or crash) and is now being resumed. ' +
-        'Do not trust your memory of progress: re-read .foreman/MISSION.md if it exists ' +
-        '(write it first if it does not), inspect the working directory, and verify which ' +
-        'milestones are actually complete. Update the doc to match reality, then continue ' +
+        'This mission was interrupted (process restart, crash, usage limit, or an ' +
+        'operator stop) and is now being resumed. DO NOT START OVER. ' +
+        (resumeSessionId
+          ? 'Do not trust your memory of progress: '
+          : 'You are a NEW session with no memory of this mission at all — everything ' +
+            'you know must come from disk. ') +
+        're-read .foreman/MISSION.md if it exists ' +
+        '(write it first if it does not), inspect the working directory to see which ' +
+        'files already exist and what state they are in, and verify which milestones are ' +
+        'actually complete. Keep completed work; do not rewrite files that already ' +
+        'satisfy their milestone. Update the doc to match reality, then continue ' +
         'the mission to DONE WHEN. ' +
         `Budget note: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)} is already spent.`
       : `MISSION: ${this.meta.mission}\n\nBudget: $${this.meta.budgetUsd.toFixed(2)} total for this run. ` +
@@ -175,8 +293,14 @@ export class MissionRun {
       await mkdir(foremanDir, { recursive: true });
       await writeFile(path.join(foremanDir, '.gitignore'), '*\n').catch(() => {});
 
+      // Streaming prompt: the mission goes in first; steering pushes more
+      // user messages, each starting a new director turn.
+      const input = new MessageStream();
+      this.directorInput = input;
+      input.push(prompt);
+
       const q = query({
-        prompt,
+        prompt: input,
         options: {
           cwd: this.meta.folder,
           permissionMode: 'default',
@@ -185,21 +309,43 @@ export class MissionRun {
           maxTurns: 150,
           systemPrompt: { type: 'preset', preset: 'claude_code', append: DIRECTOR_CHARTER },
           ...instanceOptions(resolveInstance(this.meta.claudeInstance)),
-          mcpServers: { foreman: this.makeTools() },
+          mcpServers: { foreman: this.makeTools(), ...this.browserServers() },
           canUseTool: this.policyFor('director'),
         },
       });
       this.directorQ = q;
 
+      let lastTurnFailed = false;
       for await (const msg of this.directorQ as AsyncIterable<SDKMessage>) {
         const m = msg as Record<string, unknown>;
         if (typeof m.session_id === 'string') this.meta.directorSessionId = m.session_id;
         if (m.type === 'result') {
-          this.addCost(m.total_cost_usd as number | undefined);
-          this.meta.status = m.is_error ? 'error' : 'done';
+          // Cumulative per query() call — record only the delta per turn.
+          const total = m.total_cost_usd as number | undefined;
+          if (typeof total === 'number') {
+            this.addCost(total - this.directorCostSeen);
+            this.directorCostSeen = total;
+          }
+          lastTurnFailed = Boolean(m.is_error);
+          this.noteUsageLimit(String(m.result ?? ''));
+          // A result means the CLI is idle with all delivered input
+          // processed (a steer consumed mid-turn is folded into that
+          // turn's result). Only a steer still waiting in our queue
+          // guarantees another turn; otherwise the mission is over.
+          // Closing the input stream alone does not end the CLI
+          // session, so break and dispose the query explicitly.
+          if (input.pending === 0) {
+            input.close();
+            this.emit('message', { agent: 'director', msg });
+            break;
+          }
         }
         this.emit('message', { agent: 'director', msg });
       }
+      input.close();
+      await (q as AsyncGenerator<SDKMessage>).return?.(undefined as never).catch(() => {});
+      this.meta.status = this.wasInterrupted || this.usageLimited ? 'interrupted'
+        : lastTurnFailed ? 'error' : 'done';
     } catch (err) {
       this.meta.status = 'error';
       this.emit('run_error', { error: String(err) });
@@ -217,9 +363,26 @@ export class MissionRun {
 
   // -- internals ------------------------------------------------------------
 
+  /**
+   * A headless Playwright browser (its own profile — never the user's
+   * Chrome), granted when the mission enabled browser tools.
+   */
+  private browserServers(): Record<string, McpServerConfig> {
+    if (!this.meta.browserTools) return {};
+    return {
+      playwright: {
+        type: 'stdio',
+        // Absolute path: the server runs with the mission folder as cwd,
+        // where npx cannot resolve Foreman's own dependency.
+        command: process.execPath,
+        args: [PLAYWRIGHT_MCP_CLI, '--headless', '--isolated'],
+      },
+    };
+  }
+
   private policyFor(agent: string) {
     return makePolicy(agent, this.meta.folder, this.runAllowed, {
-      onAutoAllow: (a, toolName) => this.emit('auto_allowed', { agent: a, toolName }),
+      onAutoAllow: (a, toolName, reason) => this.emit('auto_allowed', { agent: a, toolName, reason }),
       onAsk: (a, id, req) => this.emit('permission_request', { id, agent: a, ...req }),
       register: (id, pending) => void this.pendingPermissions.set(id, pending),
       unregister: (id) => {
@@ -227,14 +390,78 @@ export class MissionRun {
         if (existed) this.emit('permission_resolved', { id, behavior: 'aborted' });
         return existed;
       },
+    }, { toolPolicy: this.meta.toolPolicy, autoAllowReadOnly: this.meta.autoAllowReadOnly });
+  }
+
+  /**
+   * Detects Claude quota exhaustion in a result. This is not a mission
+   * failure: no more work is possible until credits refresh, so the run
+   * is marked interrupted (resumable) and the human is told plainly.
+   */
+  private noteUsageLimit(text: string): void {
+    if (this.usageLimited || !USAGE_LIMIT_RE.test(text)) return;
+    this.usageLimited = true;
+    this.directorInput?.close(); // further turns would only burn retries
+    this.emit('usage_limit', {
+      text: 'Paused: your Claude usage credits are exhausted, so no agent can ' +
+        'make progress right now. This is not a mission failure — the work so ' +
+        'far is saved. Resume once credits refresh (or switch to a cheaper ' +
+        'model in Settings, which resume will pick up).',
     });
   }
+
+  private budgetNoticeSent = false;
+  private budgetKillSent = false;
 
   private addCost(usd: number | undefined): void {
     if (typeof usd !== 'number') return;
     this.meta.costUsd += usd;
     this.saveMeta(this.meta);
     this.emit('cost', { costUsd: this.meta.costUsd, budgetUsd: this.meta.budgetUsd });
+    this.enforceBudget();
+  }
+
+  /**
+   * The cap is a real fence, not just a gate on new workers:
+   *  - at 100% the director gets an in-band wind-down order (delivered into
+   *    its live turn via the streaming input);
+   *  - at 125% the run is interrupted outright.
+   */
+  private enforceBudget(): void {
+    const { costUsd, budgetUsd } = this.meta;
+    if (budgetUsd <= 0) return;
+    if (!this.budgetKillSent && costUsd >= budgetUsd * 1.25) {
+      this.budgetKillSent = true;
+      this.budgetNoticeSent = true; // the kill supersedes the wind-down notice
+      this.emit('budget_alert', {
+        level: 'exceeded', costUsd, budgetUsd,
+        text: `Budget overrun past 125% ($${costUsd.toFixed(2)} of $${budgetUsd.toFixed(2)}) — run interrupted.`,
+      });
+      void this.interrupt();
+      return;
+    }
+    if (!this.budgetNoticeSent && costUsd >= budgetUsd) {
+      this.budgetNoticeSent = true;
+      this.emit('budget_alert', {
+        level: 'reached', costUsd, budgetUsd,
+        text: `Budget cap reached ($${costUsd.toFixed(2)} of $${budgetUsd.toFixed(2)}) — director ordered to wind down.`,
+      });
+      this.directorInput?.push(
+        '[BUDGET ENFORCEMENT — automated notice]\n' +
+        `The run has reached its budget cap: $${costUsd.toFixed(2)} spent of ` +
+        `$${budgetUsd.toFixed(2)}. Stop starting new work now. Update .foreman/MISSION.md ` +
+        'with the true state, summarize what is done and what is not, and end your turn. ' +
+        'If finishing is essential, ask the human for a budget increase via ' +
+        'mcp__foreman__ask_human. The run will be force-interrupted at 125% of budget.',
+      );
+    }
+  }
+
+  /** Appended to worker reports so the director can see the true burn rate
+   *  (its own turn costs are invisible to it otherwise). */
+  private costFooter(): string {
+    return `\n\n[Run cost so far: $${this.meta.costUsd.toFixed(2)} of ` +
+      `$${this.meta.budgetUsd.toFixed(2)} budget — includes director turns]`;
   }
 
   private overBudget(): string | null {
@@ -269,6 +496,7 @@ export class MissionRun {
         maxTurns: 60,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: WORKER_CHARTER },
         ...instanceOptions(resolveInstance(this.meta.claudeInstance)),
+        mcpServers: this.browserServers(),
         canUseTool: this.policyFor(workerId),
       },
     });
@@ -283,6 +511,7 @@ export class MissionRun {
         if (m.type === 'result') {
           report = String(m.result ?? '');
           isError = Boolean(m.is_error);
+          this.noteUsageLimit(report);
           this.addCost(m.total_cost_usd as number | undefined);
           w.costUsd += (m.total_cost_usd as number | undefined) ?? 0;
         }
@@ -319,7 +548,7 @@ export class MissionRun {
         if (stop) return text(stop);
         const id = `worker-${++this.workerSeq}`;
         const { report, isError } = await this.runWorker(id, task);
-        return text(`[${id}${isError ? ' FAILED' : ' finished'}] ${report || '(no report)'}`);
+        return text(`[${id}${isError ? ' FAILED' : ' finished'}] ${report || '(no report)'}${this.costFooter()}`);
       },
     );
 
@@ -338,7 +567,7 @@ export class MissionRun {
         const w = this.workers.get(worker_id);
         if (!w?.sessionId) return text(`No resumable worker "${worker_id}".`);
         const { report, isError } = await this.runWorker(worker_id, message, w.sessionId);
-        return text(`[${worker_id}${isError ? ' FAILED' : ' finished'}] ${report || '(no report)'}`);
+        return text(`[${worker_id}${isError ? ' FAILED' : ' finished'}] ${report || '(no report)'}${this.costFooter()}`);
       },
     );
 

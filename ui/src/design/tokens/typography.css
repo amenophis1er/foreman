@@ -1,0 +1,25 @@
+/* Foreman type — a humanist sans for reading, a mono for machine truth. Five sizes, one line-height. */
+:root {
+  --font-ui: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --fs-xs: 11px;   /* labels, section titles, timestamps, mono paths */
+  --fs-sm: 12px;   /* secondary text, badges, meta rows */
+  --fs-md: 13px;   /* base body */
+  --fs-lg: 15px;   /* card titles, subheads */
+  --fs-xl: 18px;   /* the one app title */
+
+  --lh: 1.45; /* @kind font */
+  --lh-prose: 1.55; /* @kind font */
+
+  --fw-regular: 400; /* @kind font */
+  --fw-medium: 500; /* @kind font */
+  --fw-semibold: 600; /* @kind font */
+
+  --ls-caps: 0.08em; /* uppercase section titles only */
+
+  --icon-sm: 14px;  /* inside badges, chips, meta rows */
+  --icon-md: 16px;  /* buttons, rows, banners */
+  --icon-lg: 20px;  /* header icon buttons, link tile */
+  --icon-stroke: 1.75; /* @kind other */
+}

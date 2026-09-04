@@ -8,7 +8,8 @@
 //    The same applyWire() path renders replay and live identically.
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { onConnection, onSse, type Envelope } from './sse';
-import type { Status } from './design/ui';
+
+export type Status = 'idle' | 'running' | 'done' | 'error' | 'interrupted';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -18,9 +19,12 @@ export type Entry = {
   id: number;
   ts: number;
   agent: string;
-  kind: 'text' | 'tool' | 'result' | 'system' | 'error';
+  kind: 'text' | 'tool' | 'result' | 'system' | 'error' | 'steer';
   title: string;
   body: string;
+  /** steer entries only: recipient and delivery timing. */
+  to?: string;
+  timing?: 'next' | 'now';
 };
 
 export type Approval = {
@@ -31,7 +35,8 @@ export type Approval = {
 export type Question = { id: string; question: string };
 export type AgentInfo = { id: string; status: Status; task?: string };
 
-export type ModelChoice = 'opus' | 'sonnet' | 'haiku' | '';
+/** '' inherits; otherwise an id from GET /models or a full claude-* id. */
+export type ModelChoice = string;
 
 /** Pins a project to one Claude Code install; server default when absent. */
 export type AuthMode = 'api-key' | 'subscription' | 'cloud' | 'none';
@@ -47,6 +52,7 @@ export type RunSummary = {
   budgetUsd: number; status: Status; costUsd: number;
   createdAt: number; endedAt?: number;
   directorModel?: string; workerModel?: string; resumes?: number;
+  browserTools?: boolean;
   directorSessionId?: string;
 };
 
@@ -57,6 +63,7 @@ export type ProjectSummary = {
   billingMode?: AuthMode;
   defaultBudgetUsd: number;
   activeRun: RunSummary | null;
+  lastRun: { mission: string; status: Status; createdAt?: number; costUsd?: number } | null;
   pendingPermissions: number;
   pendingQuestions: number;
 };
@@ -97,8 +104,9 @@ function entriesFromSdkMessage(agent: string, msg: any, ts: number): Entry[] {
     for (const b of msg.message?.content ?? []) {
       if (b.type === 'text' && b.text?.trim()) push('text', agent, b.text);
       else if (b.type === 'tool_use') {
-        push('tool', String(b.name).replace('mcp__foreman__', '⚙ '),
-          JSON.stringify(b.input).slice(0, 500));
+        const name = String(b.name).replace('mcp__foreman__', '').replace('mcp__playwright__', '');
+        // Body must stay valid JSON for the ToolCall chip's diff/pretty view.
+        push('tool', name, JSON.stringify(b.input).slice(0, 4000));
       }
     }
   } else if (msg.type === 'user' && Array.isArray(msg.message?.content)) {
@@ -166,6 +174,39 @@ function applyWire(s: RunView, e: WireEvent): RunView {
       return es.length || extra.directorSessionId
         ? { ...s, ...extra, entries: [...s.entries.slice(-1499), ...es] } : s;
     }
+    case 'steer':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'you', kind: 'steer',
+          title: 'steer', body: d.text, to: d.to, timing: d.timing,
+        }],
+      };
+    case 'usage_limit':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'error',
+          title: 'usage limit', body: d.text,
+        }],
+      };
+    case 'models_changed':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'system',
+          title: 'models changed', body: d.text,
+        }],
+      };
+    case 'budget_alert':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system',
+          kind: d.level === 'exceeded' ? 'error' : 'system',
+          title: 'budget', body: d.text,
+        }],
+      };
     case 'worker_started': {
       const rest = s.agents.filter((x) => x.id !== d.id);
       const prev = s.agents.find((x) => x.id === d.id);
@@ -267,10 +308,35 @@ export function useRunView(runId: string | null, live: boolean): RunView {
 }
 
 /** The project list with active runs and pending counts. */
+/** One-line summary of a live event, for the fleet card activity ticker. */
+function activityLine(event: string, d: any): string | null {
+  if (event === 'message') {
+    const msg = d.msg;
+    if (msg?.type === 'assistant') {
+      for (const b of msg.message?.content ?? []) {
+        if (b.type === 'text' && b.text?.trim()) return `${d.agent}: ${b.text.trim()}`;
+        if (b.type === 'tool_use') {
+          const name = String(b.name || '').replace(/^mcp__(foreman|playwright)__/, '');
+          return `${d.agent} · ${name}`;
+        }
+      }
+    }
+    return null;
+  }
+  if (event === 'worker_started') return `${d.id} ${d.resumed ? 'resumed' : 'spawned'}`;
+  if (event === 'worker_finished') return `${d.id} ${d.status}`;
+  if (event === 'steer') return `you → ${d.to}: ${d.text}`;
+  if (event === 'budget_alert') return d.text;
+  if (event === 'question') return `director asks: ${d.question}`;
+  return null;
+}
+
 export function useFleet() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [connected, setConnected] = useState(false);
   const [auth, setAuth] = useState<{ mode: AuthMode; source: string }>({ mode: 'none', source: '' });
+  /** Latest one-line activity per project, from the live event stream. */
+  const [activity, setActivity] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async () => {
     const r = await fetch('/projects').catch(() => null);
@@ -283,9 +349,20 @@ export function useFleet() {
   useEffect(() => {
     void refresh();
     const poll = setInterval(refresh, 3000);
-    const unsubSse = onSse((event) => {
+    const unsubSse = onSse((event, env) => {
       if (['run_started', 'run_resumed', 'run_finished', 'permission_request',
         'permission_resolved', 'question', 'question_answered'].includes(event)) void refresh();
+      if (env.projectId) {
+        if (event === 'run_finished') {
+          setActivity((a) => {
+            const { [env.projectId]: _gone, ...rest } = a;
+            return rest;
+          });
+        } else {
+          const line = activityLine(event, env.data);
+          if (line) setActivity((a) => ({ ...a, [env.projectId]: line.slice(0, 160) }));
+        }
+      }
     });
     const unsubConn = onConnection((up) => {
       setConnected(up);
@@ -298,7 +375,7 @@ export function useFleet() {
     };
   }, [refresh]);
 
-  return { projects, connected, auth, refresh };
+  return { projects, connected, auth, refresh, activity };
 }
 
 /** Persisted run history for one project, newest first. */
@@ -320,22 +397,36 @@ export function useRunHistory(projectId: string) {
   return runs;
 }
 
-/** Hash router: '#/' → fleet, '#/p/<projectId>' → project view. */
-export function useRoute(): { projectId: string | null; go: (projectId: string | null) => void } {
+/** Hash router: '#/' → fleet, '#/p/<projectId>' → project view,
+ *  '#/p/<projectId>/r/<runId>' → a specific run (survives refresh). */
+export function useRoute(): {
+  projectId: string | null;
+  runId: string | null;
+  go: (projectId: string | null) => void;
+  goRun: (projectId: string, runId: string | null) => void;
+} {
   const parse = () => {
-    const m = window.location.hash.match(/^#\/p\/([^/]+)/);
-    return m ? decodeURIComponent(m[1]) : null;
+    const m = window.location.hash.match(/^#\/p\/([^/]+)(?:\/r\/([^/]+))?/);
+    return {
+      projectId: m ? decodeURIComponent(m[1]) : null,
+      runId: m?.[2] ? decodeURIComponent(m[2]) : null,
+    };
   };
-  const [projectId, setProjectId] = useState<string | null>(parse);
+  const [route, setRoute] = useState(parse);
   useEffect(() => {
-    const onHash = () => setProjectId(parse());
+    const onHash = () => setRoute(parse());
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
   const go = useCallback((id: string | null) => {
     window.location.hash = id ? `#/p/${encodeURIComponent(id)}` : '#/';
   }, []);
-  return { projectId, go };
+  const goRun = useCallback((projectId: string, runId: string | null) => {
+    window.location.hash = runId
+      ? `#/p/${encodeURIComponent(projectId)}/r/${encodeURIComponent(runId)}`
+      : `#/p/${encodeURIComponent(projectId)}`;
+  }, []);
+  return { ...route, go, goRun };
 }
 
 // ---------------------------------------------------------------------------
@@ -371,17 +462,19 @@ export const api = {
   unlinkProject: (projectId: string) =>
     fetch(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
   run: (projectId: string, mission: string, budgetUsd: number,
-    directorModel?: ModelChoice, workerModel?: ModelChoice) =>
+    directorModel?: ModelChoice, workerModel?: ModelChoice, browserTools?: boolean) =>
     post('/run', {
       projectId, mission, budgetUsd,
       directorModel: directorModel || undefined,
       workerModel: workerModel || undefined,
+      browserTools: browserTools || undefined,
     }),
   resume: (runId: string) =>
     post(`/runs/${encodeURIComponent(runId)}/resume`, {}),
   permission: (id: string, behavior: 'allow' | 'allow_always' | 'deny', message?: string) =>
     post('/permission', { id, behavior, message }),
   answer: (id: string, text: string) => post('/answer', { id, text }),
+  steer: (runId: string, text: string) => post('/steer', { runId, text }),
   interrupt: (runId: string) => post('/interrupt', { runId }),
   browse: (path?: string) =>
     fetch('/browse' + (path ? `?path=${encodeURIComponent(path)}` : '')),

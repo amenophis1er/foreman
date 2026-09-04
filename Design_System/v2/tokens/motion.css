@@ -1,0 +1,14 @@
+/* Foreman motion — almost none. Two things move: the budget fill and the
+   needs-you pulse. Nothing slides, bounces, or scales. */
+:root {
+  --dur-fast: 120ms; /* @kind other */
+  --dur-meter: 300ms; /* @kind other */
+  --dur-pulse: 1600ms; /* @kind other */
+  --ease: ease-in-out; /* @kind other */
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.pulse { animation: pulse var(--dur-pulse) var(--ease) infinite; }

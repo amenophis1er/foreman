@@ -1,0 +1,15 @@
+<!-- @dsCard group="Colors" viewport="700x190" name="Light theme" subtitle="data-theme=&quot;light&quot; on &lt;html&gt; flips surfaces and ink; identity and status hues darken to hold contrast" -->
+<!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css">
+<style>body{padding:0;display:grid;grid-template-columns:1fr 1fr}.half{padding:16px;display:flex;flex-direction:column;gap:8px;background:var(--bg-app);color:var(--ink-0)}.sw{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.s{height:26px;border-radius:4px;border:1px solid var(--line)}.n{font-size:var(--fs-xs);color:var(--ink-2);font-family:var(--font-mono)}.card{background:var(--bg-card);border:1px solid var(--line);border-left:3px solid var(--brand);border-radius:var(--r-sm);padding:8px 10px;font-size:var(--fs-sm)}.pill{display:inline-flex;align-items:center;gap:5px;font-size:var(--fs-sm);color:var(--ink-1);padding:2px 8px;border-radius:999px;background:var(--bg-inset);border:1px solid var(--line)}.dot{width:8px;height:8px;border-radius:999px;background:var(--status-good)}.btn{display:inline-block;padding:4px 10px;border-radius:6px;background:var(--brand);color:var(--brand-ink);font-weight:600;font-size:var(--fs-sm)}</style>
+</head><body>
+<div class="half"><div class="n">:root (dark)</div>
+<div class="sw"><div class="s" style="background:var(--bg-app)"></div><div class="s" style="background:var(--bg-panel)"></div><div class="s" style="background:var(--bg-card)"></div><div class="s" style="background:var(--bg-inset)"></div></div>
+<div class="card"><b style="color:var(--brand)">Director asks:</b> which filename?</div>
+<div style="display:flex;gap:8px;align-items:center"><span class="pill"><span class="dot"></span>running</span><span class="btn">Start mission</span><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--agent-worker-1)"></span><span style="color:var(--status-critical);font-size:var(--fs-sm)">error</span></div>
+</div>
+<div class="half" data-theme="light"><div class="n">[data-theme="light"]</div>
+<div class="sw"><div class="s" style="background:var(--bg-app)"></div><div class="s" style="background:var(--bg-panel)"></div><div class="s" style="background:var(--bg-card)"></div><div class="s" style="background:var(--bg-inset)"></div></div>
+<div class="card"><b style="color:var(--brand)">Director asks:</b> which filename?</div>
+<div style="display:flex;gap:8px;align-items:center"><span class="pill"><span class="dot"></span>running</span><span class="btn">Start mission</span><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--agent-worker-1)"></span><span style="color:var(--status-critical);font-size:var(--fs-sm)">error</span></div>
+</div>
+</body></html>
