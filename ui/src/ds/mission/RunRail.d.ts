@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react';
+
 export interface RailRun { id: string; mission: string; createdAt?: number; costUsd?: number; status: string; live?: boolean; }
 export interface RailAgent { id: string; status: string; task?: string; }
 
@@ -18,6 +20,8 @@ export interface RunRailProps {
   onSelectRun?: (id: string) => void;
   /** Director session id; first 8 chars shown in mono. */
   sessionId?: string;
+  /** Extra node rendered inside the current-run block (e.g. a run-properties list). */
+  details?: ReactNode;
 }
 
 export declare function RunRail(props: RunRailProps): JSX.Element;

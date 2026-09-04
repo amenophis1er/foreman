@@ -9,7 +9,7 @@ function fmtDate(ms) {
 }
 
 /** A linked project on the fleet grid. Whole card is the click target; `unlink` stops propagation. */
-export function ProjectCard({ name, folder, run, mission, costUsd, budgetUsd, lastRun, pendingPermissions = 0, pendingQuestions = 0, onOpen, onUnlink, style }) {
+export function ProjectCard({ name, folder, run, mission, costUsd, budgetUsd, activity, lastRun, pendingPermissions = 0, pendingQuestions = 0, onOpen, onUnlink, style }) {
   const [hover, setHover] = useState(false);
   const [unlinkHover, setUnlinkHover] = useState(false);
   const active = run ?? (mission ? { mission, costUsd, budgetUsd } : null);
@@ -45,6 +45,12 @@ export function ProjectCard({ name, folder, run, mission, costUsd, budgetUsd, la
             WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
           }}>{active.mission}</div>
           <BudgetMeter spent={active.costUsd} budget={active.budgetUsd} />
+          {activity && (
+            <div key={activity} className="ticker" title={activity} style={{
+              fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>{activity}</div>
+          )}
         </>
       ) : lastRun ? (
         <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>

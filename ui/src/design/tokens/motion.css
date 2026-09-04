@@ -12,3 +12,9 @@
   50% { opacity: 0.55; }
 }
 .pulse { animation: pulse var(--dur-pulse) var(--ease) infinite; }
+
+@keyframes ticker-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+.ticker { animation: ticker-in var(--dur-fast, 150ms) var(--ease) both; }

@@ -37,7 +37,7 @@ function useModels(): ModelInfo[] | null {
 type SettingsFile = { global: Settings; projects: Record<string, Settings> };
 
 export default function App() {
-  const { projects, connected, refresh } = useFleet();
+  const { projects, connected, refresh, activity } = useFleet();
   const { projectId, runId, go, goRun } = useRoute();
   const [theme, toggleTheme, applyTheme] = useTheme();
   const models = useModels();
@@ -87,7 +87,7 @@ export default function App() {
           onSelectRun={(id) => goRun(project.id, id)}
           onBack={() => go(null)} refreshFleet={refresh} {...shared} />
       ) : (
-        <FleetView projects={projects} connected={connected}
+        <FleetView projects={projects} connected={connected} activity={activity}
           onOpen={(id) => go(id)} refresh={refresh} {...shared} />
       )}
       {settingsOpen && (
