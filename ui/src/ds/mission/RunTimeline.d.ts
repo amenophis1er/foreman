@@ -16,6 +16,8 @@ export interface RunTimelineProps {
   /** Currently filtered agent — other lanes dim. */
   selected?: string | null;
   onSelect?: (agent: string) => void;
+  /** Makes each tick a click target (widened hitbox) for jumping to its entry. */
+  onTick?: (entry: TimelineEntry) => void;
   /** Lane height in px. 22 default; 32 for a full-height view. */
   height?: number;
   style?: CSSProperties;
