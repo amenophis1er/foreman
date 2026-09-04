@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   api, useRunHistory, useRunView,
-  type ProjectSummary, type RunView as RunViewState,
+  type ProjectSummary, type RunSummary, type RunView as RunViewState,
 } from '../state';
 import { AppHeader } from '../ds/shell/AppHeader';
 import { Button } from '../ds/core/Button';
@@ -71,6 +71,30 @@ function Transcript({ run, filter, jump, header }: {
           <TranscriptEntry agent={e.agent} title={e.title}
             kind={e.kind} body={e.body} ts={e.ts} to={e.to} timing={e.timing} />
         </div>
+      ))}
+    </div>
+  );
+}
+
+/** Key run properties (models, budget, browser), pulled from run metadata. */
+function RunDetails({ r, liveCost }: { r: RunSummary; liveCost?: number }) {
+  const rows: Array<[string, string]> = [
+    ['director', r.directorModel || 'default'],
+    ['workers', r.workerModel || 'default'],
+    ['budget', `$${((liveCost ?? r.costUsd) || 0).toFixed(2)} / $${r.budgetUsd.toFixed(2)}`],
+    ['browser', r.browserTools ? 'on' : 'off'],
+  ];
+  if (r.resumes) rows.push(['resumes', String(r.resumes)]);
+  return (
+    <div style={{
+      marginTop: 8, display: 'grid', gridTemplateColumns: 'auto 1fr',
+      columnGap: 10, rowGap: 2, fontSize: 'var(--fs-xs)',
+    }}>
+      {rows.map(([k, v]) => (
+        <React.Fragment key={k}>
+          <span style={{ color: 'var(--ink-2)' }}>{k}</span>
+          <span style={{ color: 'var(--ink-1)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span>
+        </React.Fragment>
       ))}
     </div>
   );
@@ -200,7 +224,8 @@ export function ProjectView({ p, models, routeRunId, onSelectRun, onBack, refres
               selectedRunId={selectedRunId ?? undefined}
               filter={filter} onFilter={(a) => setFilter(filter === a ? null : a)}
               onSelectRun={setSelectedRunId}
-              sessionId={run.directorSessionId} />
+              sessionId={run.directorSessionId}
+              details={selectedRun && <RunDetails r={selectedRun} liveCost={run.costUsd} />} />
           </div>
           <div style={{ minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             {(run.entries.length > 0 || run.approvals.length + run.questions.length > 0) && (

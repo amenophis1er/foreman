@@ -16,6 +16,8 @@ export interface ProjectCardProps {
   costUsd?: number;
   budgetUsd?: number;
   /** Most recent finished run, shown when idle: status · date · cost · one-line mission. */
+  /** Latest live event, one line — shown as a ticker under the budget meter. */
+  activity?: string;
   lastRun?: { mission: string; status: 'done' | 'error' | 'interrupted'; createdAt?: number; costUsd?: number };
   /** Pending approvals — drives the warning border and pulsing strip. */
   pendingPermissions?: number;

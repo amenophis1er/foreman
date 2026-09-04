@@ -8,7 +8,7 @@ import { AgentRow } from './AgentRow';
  * The left rail, restructured (debt item 1): the selected run sits on top with its crew nested under it,
  * then "Mission history" lists the other runs. Crew is visibly a property of a run, not a sibling section.
  */
-export function RunRail({ current, agents = [], history = [], selectedRunId, filter, onFilter, onSelectRun, sessionId }) {
+export function RunRail({ current, agents = [], history = [], selectedRunId, filter, onFilter, onSelectRun, sessionId, details }) {
   const director = agents.find((a) => a.id === 'director');
   const workers = agents.filter((a) => a.id !== 'director');
   const others = history.filter((r) => r.id !== selectedRunId);
@@ -33,6 +33,7 @@ export function RunRail({ current, agents = [], history = [], selectedRunId, fil
                 Showing only <b style={{ color: 'var(--ink-1)' }}>{filter}</b> — click again to clear.
               </div>
             )}
+            {details}
             {sessionId && (
               <div style={{ marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)' }}>
                 director session {String(sessionId).slice(0, 8)}

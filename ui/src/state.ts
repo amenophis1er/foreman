@@ -43,6 +43,7 @@ export type RunSummary = {
   budgetUsd: number; status: Status; costUsd: number;
   createdAt: number; endedAt?: number;
   directorModel?: string; workerModel?: string; resumes?: number;
+  browserTools?: boolean;
   directorSessionId?: string;
 };
 
@@ -279,9 +280,34 @@ export function useRunView(runId: string | null, live: boolean): RunView {
 }
 
 /** The project list with active runs and pending counts. */
+/** One-line summary of a live event, for the fleet card activity ticker. */
+function activityLine(event: string, d: any): string | null {
+  if (event === 'message') {
+    const msg = d.msg;
+    if (msg?.type === 'assistant') {
+      for (const b of msg.message?.content ?? []) {
+        if (b.type === 'text' && b.text?.trim()) return `${d.agent}: ${b.text.trim()}`;
+        if (b.type === 'tool_use') {
+          const name = String(b.name || '').replace(/^mcp__(foreman|playwright)__/, '');
+          return `${d.agent} · ${name}`;
+        }
+      }
+    }
+    return null;
+  }
+  if (event === 'worker_started') return `${d.id} ${d.resumed ? 'resumed' : 'spawned'}`;
+  if (event === 'worker_finished') return `${d.id} ${d.status}`;
+  if (event === 'steer') return `you → ${d.to}: ${d.text}`;
+  if (event === 'budget_alert') return d.text;
+  if (event === 'question') return `director asks: ${d.question}`;
+  return null;
+}
+
 export function useFleet() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [connected, setConnected] = useState(false);
+  /** Latest one-line activity per project, from the live event stream. */
+  const [activity, setActivity] = useState<Record<string, string>>({});
 
   const refresh = useCallback(async () => {
     const r = await fetch('/projects').catch(() => null);
@@ -291,9 +317,20 @@ export function useFleet() {
   useEffect(() => {
     void refresh();
     const poll = setInterval(refresh, 3000);
-    const unsubSse = onSse((event) => {
+    const unsubSse = onSse((event, env) => {
       if (['run_started', 'run_resumed', 'run_finished', 'permission_request',
         'permission_resolved', 'question', 'question_answered'].includes(event)) void refresh();
+      if (env.projectId) {
+        if (event === 'run_finished') {
+          setActivity((a) => {
+            const { [env.projectId]: _gone, ...rest } = a;
+            return rest;
+          });
+        } else {
+          const line = activityLine(event, env.data);
+          if (line) setActivity((a) => ({ ...a, [env.projectId]: line.slice(0, 160) }));
+        }
+      }
     });
     const unsubConn = onConnection((up) => {
       setConnected(up);
@@ -306,7 +343,7 @@ export function useFleet() {
     };
   }, [refresh]);
 
-  return { projects, connected, refresh };
+  return { projects, connected, refresh, activity };
 }
 
 /** Persisted run history for one project, newest first. */

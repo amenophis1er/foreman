@@ -43,8 +43,9 @@ function usePicker(onPick: (path: string) => void) {
   };
 }
 
-export function FleetView({ projects, connected, onOpen, refresh, theme, onToggleTheme, onSettings }: {
+export function FleetView({ projects, connected, activity, onOpen, refresh, theme, onToggleTheme, onSettings }: {
   projects: ProjectSummary[]; connected: boolean;
+  activity: Record<string, string>;
   onOpen: (projectId: string) => void; refresh: () => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
 }) {
@@ -95,6 +96,7 @@ export function FleetView({ projects, connected, onOpen, refresh, theme, onToggl
             } : undefined}
             lastRun={!p.activeRun && p.lastRun && p.lastRun.status !== 'idle' && p.lastRun.status !== 'running'
               ? { ...p.lastRun, status: p.lastRun.status } : undefined}
+            activity={p.activeRun ? activity[p.id] : undefined}
             pendingPermissions={p.pendingPermissions}
             pendingQuestions={p.pendingQuestions}
             onOpen={() => onOpen(p.id)}
