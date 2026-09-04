@@ -21,7 +21,7 @@ export const DEFAULT_SETTINGS = {
   directorModel: 'fable', workerModel: 'sonnet',
   budgetCap: 5, budgetWarnAt: 80, budgetHardStop: true,
   autoAllowReadOnly: true, alwaysSurvivesResume: true,
-  toolPolicy: { Bash: 'ask', Write: 'ask', Edit: 'ask', WebFetch: 'ask', spawn_worker: 'allow' },
+  toolPolicy: { Bash: 'allow', Write: 'allow', Edit: 'allow', WebFetch: 'allow', spawn_worker: 'allow' },
   theme: 'system', density: 'comfortable', showTimestamps: true,
   notifyNeedsYou: true, notifyDone: true, notifyBudget: true, sound: false,
   projectsRoot: '~/Projects', missionDir: '.foreman', showHidden: false,

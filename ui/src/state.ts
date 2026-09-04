@@ -169,6 +169,15 @@ function applyWire(s: RunView, e: WireEvent): RunView {
           title: 'steer', body: d.text, to: d.to, timing: d.timing,
         }],
       };
+    case 'budget_alert':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system',
+          kind: d.level === 'exceeded' ? 'error' : 'system',
+          title: 'budget', body: d.text,
+        }],
+      };
     case 'worker_started': {
       const rest = s.agents.filter((x) => x.id !== d.id);
       const prev = s.agents.find((x) => x.id === d.id);
