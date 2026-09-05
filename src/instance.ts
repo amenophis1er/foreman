@@ -1,15 +1,15 @@
 /**
- * Claude Code instance selection.
+ * Claude Code installs — discovery and description.
  *
- * A machine can host several Claude Code installs side by side: distinct
- * CLAUDE_CONFIG_DIRs (each with its own credentials, settings, and plugins) and
- * potentially distinct executables. Which one a mission runs under decides
- * whose subscription or key it bills and which settings it inherits, so it is a
- * per-mission fact worth recording, not an ambient property of the server.
+ * A machine can host several side by side: distinct CLAUDE_CONFIG_DIRs (each
+ * with its own credentials, settings and plugins) and potentially distinct
+ * executables. This module finds them and describes them.
  *
- * Resolution is project-over-server: a project may pin an instance, otherwise
- * the server default from the environment applies, otherwise the SDK inherits
- * this process's own environment (the previous behaviour).
+ * It deliberately does NOT decide what an agent authenticates as. That is one
+ * question with one answer, and it lives in provider.ts — a Claude Code
+ * install is only one of several things a provider can be, and having two
+ * modules able to build an agent's environment is how a credential ends up
+ * somewhere it should not.
  */
 import os from 'node:os';
 import { readdir, stat } from 'node:fs/promises';
@@ -20,12 +20,7 @@ export interface ClaudeInstance {
   configDir?: string;
   /** Claude Code executable; the SDK's bundled one is used when absent. */
   executable?: string;
-  /** `own-login` makes the pinned config dir's stored login pay. See types.ts. */
-  billing?: 'inherit' | 'own-login';
 }
-
-/** Credentials that outrank a stored login and so must be dropped for `own-login`. */
-const INHERITED_KEY_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const;
 
 /** Expands a leading `~` so config can be written the way people type it. */
 function expandHome(p: string): string {
@@ -45,45 +40,6 @@ export function defaultInstance(): ClaudeInstance {
     configDir: clean(process.env.FOREMAN_CLAUDE_CONFIG_DIR),
     executable: clean(process.env.FOREMAN_CLAUDE_EXECUTABLE),
   };
-}
-
-/**
- * Project override wins field by field, so a project can pin a config dir
- * while still inheriting the server's executable.
- */
-export function resolveInstance(override?: ClaudeInstance): ClaudeInstance {
-  const base = defaultInstance();
-  return {
-    configDir: clean(override?.configDir) ?? base.configDir,
-    executable: clean(override?.executable) ?? base.executable,
-    billing: override?.billing ?? 'inherit',
-  };
-}
-
-/**
- * The `query()` options fragment for an instance.
- *
- * `env` replaces the child's environment rather than extending it, so
- * process.env is spread first — dropping it would strip PATH, HOME, and the
- * ANTHROPIC_* credentials along with it.
- */
-export function instanceOptions(instance: ClaudeInstance): {
-  env?: Record<string, string | undefined>;
-  pathToClaudeCodeExecutable?: string;
-} {
-  const options: ReturnType<typeof instanceOptions> = {};
-  const ownLogin = instance.billing === 'own-login';
-
-  if (instance.configDir || ownLogin) {
-    const env: Record<string, string | undefined> = { ...process.env };
-    if (instance.configDir) env.CLAUDE_CONFIG_DIR = instance.configDir;
-    // Deleting is not enough on its own — `env` is spread from process.env, so
-    // an inherited key would otherwise reach the child and outrank the login.
-    if (ownLogin) for (const v of INHERITED_KEY_VARS) delete env[v];
-    options.env = env;
-  }
-  if (instance.executable) options.pathToClaudeCodeExecutable = instance.executable;
-  return options;
 }
 
 /**

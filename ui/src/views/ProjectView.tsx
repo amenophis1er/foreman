@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  api, useChat, useRunHistory, useRunView,
+  api, providerHome, useChat, useRunHistory, useRunView,
   type ProjectSummary, type RunSummary, type RunView as RunViewState,
 } from '../state';
 import { AppHeader } from '../ds/shell/AppHeader';
@@ -24,6 +24,20 @@ import { ProposalCard } from '../ds/mission/ProposalCard';
 import { Tabs } from '../ds/core/Tabs';
 import { SteerBar } from '../ds/mission/SteerBar';
 import type { ModelInfo } from '../ds/forms/ModelSelect';
+
+/**
+ * Where this project's spend actually lands. A pinned provider names itself;
+ * anything else is the server's own credential, and saying so is the point —
+ * this line sits wherever money is about to be committed.
+ */
+function billingSource(p: ProjectSummary, serverSource: string): string {
+  const home = providerHome(p.provider);
+  if (!p.provider || !home) return serverSource;
+  if (p.provider.kind === 'claude-code') {
+    return p.provider.ownLogin ? `${home} (this project's own login)` : home;
+  }
+  return `${p.provider.kind} · ${home}`;
+}
 
 export type TranscriptOrder = 'newest' | 'oldest';
 
@@ -308,9 +322,7 @@ export function ProjectView({
         theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {headerErr && <Banner tone="error" inline>{headerErr}</Banner>}
         <BillingBadge mode={p.billingMode ?? auth.mode} compact account={auth.account}
-          source={p.claudeInstance?.billing === 'own-login'
-            ? `${p.claudeInstance.configDir} (this project's own login)`
-            : auth.source} />
+          source={billingSource(p, auth.source)} />
         {selectedRunId && <StatusBadge status={run.runStatus} />}
         {selectedRunId && <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} />}
         {viewingLive && run.runStatus === 'running' && (
@@ -387,11 +399,9 @@ export function ProjectView({
                 fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
               }}>
                 <BillingBadge mode={p.billingMode ?? auth.mode} compact account={auth.account}
-                  source={p.claudeInstance?.billing === 'own-login'
-                    ? `${p.claudeInstance.configDir} (this project's own login)`
-                    : auth.source} />
+                  source={billingSource(p, auth.source)} />
                 <span style={{ fontFamily: 'var(--font-mono)' }}>
-                  runs on {p.claudeInstance?.configDir ?? 'the server default instance'}
+                  runs on {providerHome(p.provider) ?? 'the server default instance'}
                 </span>
               </div>
             </div>

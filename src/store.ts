@@ -24,7 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type {
-  ChatMeta, ClaudeInstanceRef, ForemanEvent, Project, RunMeta, RunSummary, SettingsFile,
+  ChatMeta, ForemanEvent, Project, ProviderRef, RunMeta, RunSummary, SettingsFile,
 } from './types.js';
 
 const RUN_ID_RE = /^[0-9]{13}-[0-9a-f]{8}$/;
@@ -84,13 +84,13 @@ export class RunStore {
   /** Links a folder as a project. Re-linking an already-linked folder returns
    *  the existing project instead of duplicating it. */
   /**
-   * Applies a partial change to one project. `claudeInstance: null` clears the
-   * pin (back to the server default) — distinct from `undefined`, which means
+   * Applies a partial change to one project. `provider: null` clears the pin
+   * (back to the server default) — distinct from `undefined`, which means
    * "leave it alone", so the settings form can express both.
    */
   updateProject(
     id: string,
-    patch: { name?: string; defaultBudgetUsd?: number; claudeInstance?: ClaudeInstanceRef | null },
+    patch: { name?: string; defaultBudgetUsd?: number; provider?: ProviderRef | null },
   ): Promise<Project | null> {
     return this.mutateProjects((projects) => {
       const i = projects.findIndex((p) => p.id === id);
@@ -101,8 +101,15 @@ export class RunStore {
       if (typeof patch.defaultBudgetUsd === 'number' && patch.defaultBudgetUsd > 0) {
         next.defaultBudgetUsd = patch.defaultBudgetUsd;
       }
-      if (patch.claudeInstance === null) delete next.claudeInstance;
-      else if (patch.claudeInstance) next.claudeInstance = patch.claudeInstance;
+      if (patch.provider === null) {
+        delete next.provider;
+        // Drop the pre-provider pin too, or clearing would silently fall back
+        // to it through providerOf().
+        delete next.claudeInstance;
+      } else if (patch.provider) {
+        next.provider = patch.provider;
+        delete next.claudeInstance;
+      }
 
       const updated = [...projects];
       updated[i] = next;
@@ -110,7 +117,7 @@ export class RunStore {
     });
   }
 
-  addProject(folder: string, name?: string, claudeInstance?: ClaudeInstanceRef): Promise<Project> {
+  addProject(folder: string, name?: string, provider?: ProviderRef): Promise<Project> {
     return this.mutateProjects((projects) => {
       const existing = projects.find((p) => p.folder === folder);
       if (existing) return { projects, result: existing };
@@ -120,7 +127,7 @@ export class RunStore {
         folder,
         createdAt: Date.now(),
         defaultBudgetUsd: 5,
-        ...(claudeInstance ? { claudeInstance } : {}),
+        ...(provider ? { provider } : {}),
       };
       return { projects: [...projects, project], result: project };
     });

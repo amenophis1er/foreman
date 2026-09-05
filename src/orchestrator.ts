@@ -83,7 +83,7 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
   }
 }
 import { makePolicy, type PendingPermission } from './policy.js';
-import { instanceOptions, resolveInstance } from './instance.js';
+import type { AgentEnv } from './provider.js';
 import { generateRunTitle } from './title.js';
 import type { RunMeta, WorkerMeta } from './types.js';
 
@@ -187,6 +187,12 @@ export class MissionRun {
     meta: RunMeta,
     private readonly emit: Emitter,
     private readonly saveMeta: MetaSink,
+    /**
+     * Credential + wire for every agent this run spawns, resolved once at
+     * dispatch. Passed in rather than derived here so exactly one module
+     * decides what an agent can authenticate as — see provider.ts.
+     */
+    private readonly agentEnv: AgentEnv,
   ) {
     this.meta = meta;
     // Rehydrate orchestrator state from persisted metadata so a resumed run
@@ -335,7 +341,7 @@ export class MissionRun {
           model: this.meta.directorModel,
           maxTurns: 150,
           systemPrompt: { type: 'preset', preset: 'claude_code', append: DIRECTOR_CHARTER },
-          ...instanceOptions(resolveInstance(this.meta.claudeInstance)),
+          ...this.agentEnv,
           mcpServers: { foreman: this.makeTools(), ...this.browserServers() },
           canUseTool: this.policyFor('director'),
         },
@@ -418,8 +424,7 @@ export class MissionRun {
    * than spent invisibly.
    */
   private async titleMission(): Promise<void> {
-    const named = await generateRunTitle(
-      this.meta.mission, resolveInstance(this.meta.claudeInstance));
+    const named = await generateRunTitle(this.meta.mission, this.agentEnv);
     if (!named || this.meta.title) return;
     this.meta.title = named.title;
     this.emit('run_titled', { title: named.title });
@@ -621,7 +626,7 @@ export class MissionRun {
         model: this.meta.workerModel,
         maxTurns: 60,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: WORKER_CHARTER },
-        ...instanceOptions(resolveInstance(this.meta.claudeInstance)),
+        ...this.agentEnv,
         mcpServers: this.browserServers(),
         canUseTool: this.policyFor(workerId),
       },

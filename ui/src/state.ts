@@ -38,14 +38,29 @@ export type AgentInfo = { id: string; status: Status; task?: string };
 /** '' inherits; otherwise an id from GET /models or a full claude-* id. */
 export type ModelChoice = string;
 
-/** Pins a project to one Claude Code install; server default when absent. */
 export type AuthMode = 'api-key' | 'subscription' | 'cloud' | 'none';
 
-export type ClaudeInstancePin = {
-  configDir?: string; executable?: string;
-  /** 'own-login' drops the server's API key so the pinned account pays. */
-  billing?: 'inherit' | 'own-login';
-};
+/**
+ * Who serves a project's models and who pays. One choice, not three settings —
+ * see src/provider.ts. The UI reads it; only `claude-code` is settable so far,
+ * so the settings form still speaks in config dirs.
+ */
+export type ProviderRef =
+  | { kind: 'claude-code'; configDir?: string; executable?: string; ownLogin?: boolean }
+  | { kind: 'anthropic-api'; id: string; apiKeyEnv: string; model?: string }
+  | { kind: 'codex'; id: string; codexHome?: string; upstreamUrl?: string; model?: string }
+  | { kind: 'openai-compatible'; id: string; baseUrl: string; apiKeyEnv?: string; label?: string; model?: string };
+
+/** Where this project's agents run, for the "via …" line and the billing source. */
+export function providerHome(p?: ProviderRef): string | undefined {
+  if (!p) return undefined;
+  switch (p.kind) {
+    case 'claude-code': return p.configDir;
+    case 'codex': return p.codexHome ?? '~/.codex';
+    case 'openai-compatible': return p.baseUrl;
+    case 'anthropic-api': return `$${p.apiKeyEnv}`;
+  }
+}
 
 export type RunSummary = {
   id: string; projectId?: string; folder: string; mission: string;
@@ -60,7 +75,7 @@ export type RunSummary = {
 
 export type ProjectSummary = {
   id: string; name: string; folder: string; createdAt: number;
-  claudeInstance?: ClaudeInstancePin;
+  provider?: ProviderRef;
   /** What this project will actually bill; can differ from the server's mode. */
   billingMode?: AuthMode;
   defaultBudgetUsd: number;
@@ -613,7 +628,10 @@ const post = (url: string, body: unknown) =>
   });
 
 export const api = {
-  linkProject: (folder: string, name?: string, instance?: ClaudeInstancePin) =>
+  // The HTTP shape still speaks "Claude Code install"; the server translates
+  // it into a provider. Widening this waits until more than one kind is
+  // settable from the UI.
+  linkProject: (folder: string, name?: string, instance?: { configDir?: string; executable?: string }) =>
     post('/projects', {
       folder, name,
       claudeConfigDir: instance?.configDir || undefined,

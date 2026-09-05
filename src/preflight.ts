@@ -8,8 +8,8 @@
  * who pays. The check reports the active mode and only blocks when there is no
  * credential at all. Set FOREMAN_AUTH_MODE=api-key|subscription to assert the
  * one you intend; startup then fails on a mismatch rather than quietly billing
- * the other. Which Claude Code instance supplies a subscription credential is a
- * separate axis — see resolveInstance() in instance.ts.
+ * the other. Which provider a given project actually bills is a separate axis
+ * — see provider.ts.
  */
 import net from 'node:net';
 import { execFile } from 'node:child_process';

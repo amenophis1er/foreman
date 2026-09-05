@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, type ProjectSummary } from '../state';
+import { api, providerHome, type ProjectSummary } from '../state';
 import { AppHeader } from '../ds/shell/AppHeader';
 import { BillingBadge, type BillingMode } from '../ds/status/BillingBadge';
 import { Button } from '../ds/core/Button';
@@ -145,7 +145,7 @@ export function FleetView({
       }}>
         {shown.map((p) => (
           <ProjectCard key={p.id} name={p.name} folder={p.folder}
-            instance={p.claudeInstance?.configDir}
+            instance={providerHome(p.provider)}
             run={p.activeRun ? {
               mission: p.activeRun.mission,
               title: p.activeRun.title,

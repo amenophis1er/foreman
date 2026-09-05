@@ -9,14 +9,14 @@
  * Three properties matter more than the title itself:
  *  - It is never load-bearing. The call is fire-and-forget and every failure
  *    path returns null, leaving the UI to fall back to the brief.
- *  - It bills the same install as the mission it names, so a project pinned to
+ *  - It bills the same provider as the mission it names, so a project pinned to
  *    its own login does not quietly charge someone else a fraction of a cent.
  *  - It costs what it costs, visibly: the caller folds the reported spend into
  *    the run's cost rather than hiding it.
  */
 import os from 'node:os';
 import { query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { instanceOptions, type ClaudeInstance } from './instance.js';
+import type { AgentEnv } from './provider.js';
 
 /** Cheapest model in the roster — the whole point of the exercise. */
 const TITLE_MODEL = 'haiku';
@@ -60,7 +60,7 @@ function cleanTitle(raw: string): string | null {
  */
 export async function generateRunTitle(
   mission: string,
-  instance: ClaudeInstance,
+  agentEnv: AgentEnv,
 ): Promise<RunTitle | null> {
   const brief = mission.trim().slice(0, 2000);
   if (!brief) return null;
@@ -100,7 +100,7 @@ export async function generateRunTitle(
         systemPrompt: SYSTEM_PROMPT,
         settingSources: [],
         cwd: os.tmpdir(),
-        ...instanceOptions(instance),
+        ...agentEnv,
       },
     });
 

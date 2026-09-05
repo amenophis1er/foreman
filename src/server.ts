@@ -45,12 +45,13 @@ import { runPlanningTurn } from './planner.js';
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
-import { defaultInstance, discoverInstances, effectiveConfigDir, resolveInstance } from './instance.js';
+import { defaultInstance, discoverInstances, effectiveConfigDir } from './instance.js';
+import { providerEnv, providerOf, providerProblem, resolveProvider } from './provider.js';
 import {
   dirHasCredentials, detectAuth, hasKeychainCredentials, readAccount, type AuthMode,
 } from './preflight.js';
 import type {
-  ChatMeta, ClaudeInstanceRef, ForemanEvent, ModelChoice, Project, RunMeta, ToolPolicy,
+  ChatMeta, ForemanEvent, ModelChoice, Project, ProviderRef, RunMeta, ToolPolicy,
 } from './types.js';
 
 /**
@@ -70,9 +71,13 @@ const MODELS = [
  * worth surfacing before a mission starts rather than after it fails.
  */
 async function projectBilling(p: Project, serverMode: AuthMode): Promise<AuthMode> {
-  const instance = resolveInstance(p.claudeInstance);
-  if (instance.billing !== 'own-login') return serverMode;
-  return (await dirHasCredentials(effectiveConfigDir(instance))) ? 'subscription' : 'none';
+  const resolved = await resolveProvider(providerOf(p), store.root);
+  // A gateway provider bills its own upstream, never the server's Anthropic
+  // credential — reporting the server's mode there would name the wrong payer.
+  if (resolved.wire !== 'anthropic-native') return resolved.apiKey ? 'api-key' : 'none';
+  if (resolved.kind === 'anthropic-api') return resolved.apiKey ? 'api-key' : 'none';
+  if (!resolved.ownLogin) return serverMode;
+  return (await dirHasCredentials(resolved.configDir)) ? 'subscription' : 'none';
 }
 
 /**
@@ -213,12 +218,19 @@ async function driveChatTurn(project: Project, text: string): Promise<void> {
   emit('chat_turn', { state: 'thinking' });
   try {
     const settings = await effectiveSettings(project.id);
+    const resolved = await resolveProvider(providerOf(project), store.root);
+    const problem = providerProblem(resolved);
+    if (problem) {
+      emit('chat_error', { error: `provider unavailable — ${problem}` });
+      return;
+    }
+    await mkdir(resolved.configDir, { recursive: true }).catch(() => {});
     const result = await runPlanningTurn({
       sessionId: meta.sessionId,
       folder: project.folder,
       text,
       model: settings.plannerModel,
-      instance: resolveInstance(project.claudeInstance),
+      agentEnv: providerEnv(resolved),
       emit,
     });
     const next: ChatMeta = {
@@ -277,7 +289,24 @@ async function driveRun(
   changes?: { directorChanged: boolean; workerChanged: boolean },
 ): Promise<void> {
   const emit = makeEmitter(meta.id, projectId);
-  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m));
+  // One resolution per run, from the provider frozen into the run's metadata.
+  // A run that cannot resolve a credential must not start: dispatching anyway
+  // would fall back to whatever the environment happens to hold.
+  const resolved = await resolveProvider(providerOf(meta), store.root);
+  const problem = providerProblem(resolved);
+  if (problem) {
+    meta.status = 'error';
+    meta.endedAt = Date.now();
+    await store.writeMeta(meta).catch(() => {});
+    emit('run_error', { error: `provider unavailable — ${problem}` });
+    emit('run_finished', { status: 'error', costUsd: meta.costUsd });
+    activeByProject.delete(projectId);
+    return;
+  }
+  // Foreman-owned config dirs are created on demand, so a provider that must
+  // not see a user install has somewhere isolated to keep its own state.
+  await mkdir(resolved.configDir, { recursive: true }).catch(() => {});
+  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), providerEnv(resolved));
   activeByProject.set(projectId, run);
   try {
     if (changes?.directorChanged || changes?.workerChanged) {
@@ -334,7 +363,7 @@ async function effectiveSettings(projectId: string): Promise<{
 async function startRun(
   projectId: string, folder: string, mission: string, budgetUsd: number,
   directorModel: ModelChoice, workerModel: ModelChoice, browserTools: boolean,
-  claudeInstance: ClaudeInstanceRef,
+  provider: ProviderRef,
 ): Promise<void> {
   const settings = await effectiveSettings(projectId);
   const meta: RunMeta = {
@@ -348,8 +377,9 @@ async function startRun(
     toolPolicy: settings.toolPolicy,
     autoAllowReadOnly: settings.autoAllowReadOnly,
     // Frozen at dispatch: a later change to the project or the server default
-    // must not silently move an in-flight or resumed run to another install.
-    claudeInstance,
+    // must not silently move an in-flight or resumed run to another provider,
+    // or another bill.
+    provider,
     status: 'running', costUsd: 0,
     createdAt: Date.now(), workers: [],
   };
@@ -534,9 +564,13 @@ const server = http.createServer(async (req, res) => {
       const st = await stat(folder).catch(() => null);
       if (st && !st.isDirectory()) return json(res, 400, { error: `not a directory: ${folder}` });
       if (!st) await mkdir(folder, { recursive: true });
-      const pin =
+      // The HTTP shape still speaks "Claude Code install"; storage speaks
+      // providers. Translating here keeps the UI working unchanged while the
+      // union becomes the only thing written to disk.
+      const pin: ProviderRef | undefined =
         typeof claudeConfigDir === 'string' || typeof claudeExecutable === 'string'
           ? {
+              kind: 'claude-code',
               ...(typeof claudeConfigDir === 'string' ? { configDir: claudeConfigDir } : {}),
               ...(typeof claudeExecutable === 'string' ? { executable: claudeExecutable } : {}),
             }
@@ -558,14 +592,15 @@ const server = http.createServer(async (req, res) => {
       const updated = await store.updateProject(projectMatch[1], {
         name: typeof name === 'string' ? name : undefined,
         defaultBudgetUsd: typeof defaultBudgetUsd === 'number' ? defaultBudgetUsd : undefined,
-        claudeInstance: !pinGiven
+        provider: !pinGiven
           ? undefined
           : cleared
             ? null
             : {
+                kind: 'claude-code' as const,
                 ...(toPath(claudeConfigDir) ? { configDir: toPath(claudeConfigDir)! } : {}),
                 ...(toPath(claudeExecutable) ? { executable: toPath(claudeExecutable)! } : {}),
-                ...(ownLogin ? { billing: 'own-login' as const } : {}),
+                ...(ownLogin ? { ownLogin: true } : {}),
               },
       });
       json(res, updated ? 200 : 404, updated ? { project: updated } : { error: 'unknown project' });
@@ -613,7 +648,7 @@ const server = http.createServer(async (req, res) => {
       const budget = Number(budgetUsd) > 0 ? Number(budgetUsd) : project.defaultBudgetUsd;
       void startRun(projectId, project.folder, mission, budget,
         modelChoice(directorModel), modelChoice(workerModel), browserTools === true,
-        resolveInstance(project.claudeInstance));
+        providerOf(project));
       json(res, 200, { ok: true });
 
     } else if (url.pathname === '/chat') {
