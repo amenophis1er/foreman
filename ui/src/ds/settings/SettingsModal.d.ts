@@ -7,6 +7,8 @@ export type SettingsSectionId = 'provider' | 'models' | 'budget' | 'approvals' |
 
 export interface Settings {
   directorModel?: string; workerModel?: string;
+  /** Provider serving each role, from the picked model's row. */
+  directorProviderId?: string; workerProviderId?: string;
   budgetCap?: number; budgetWarnAt?: number; budgetHardStop?: boolean;
   autoAllowReadOnly?: boolean; alwaysSurvivesResume?: boolean;
   toolPolicy?: Record<string, 'allow' | 'ask' | 'deny'>;

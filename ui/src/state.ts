@@ -676,13 +676,19 @@ export const api = {
     }),
   unlinkProject: (projectId: string) =>
     fetch(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
-  run: (projectId: string, mission: string, budgetUsd: number,
-    directorModel?: ModelChoice, workerModel?: ModelChoice, browserTools?: boolean) =>
+  run: (projectId: string, mission: string, budgetUsd: number, opts: {
+    directorModel?: ModelChoice; workerModel?: ModelChoice;
+    /** Where each role runs, from the picked model. Absent = the project's provider. */
+    directorProviderId?: string; workerProviderId?: string;
+    browserTools?: boolean;
+  } = {}) =>
     post('/run', {
       projectId, mission, budgetUsd,
-      directorModel: directorModel || undefined,
-      workerModel: workerModel || undefined,
-      browserTools: browserTools || undefined,
+      directorModel: opts.directorModel || undefined,
+      workerModel: opts.workerModel || undefined,
+      directorProviderId: opts.directorProviderId || undefined,
+      workerProviderId: opts.workerProviderId || undefined,
+      browserTools: opts.browserTools || undefined,
     }),
   resume: (runId: string) =>
     post(`/runs/${encodeURIComponent(runId)}/resume`, {}),

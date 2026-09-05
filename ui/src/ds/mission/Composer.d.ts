@@ -19,6 +19,10 @@ export interface ComposerResult {
   budget: number;
   directorModel: string;
   workerModel: string;
+  /** Provider serving each role, from the picked model's own row. Absent means
+   *  the project's provider — which is every Anthropic pick. */
+  directorProviderId?: string;
+  workerProviderId?: string;
   /** Files attached via the paperclip, drag-drop onto the editor, or pasting an image. Not persisted with the draft. */
   attachments: File[];
 }

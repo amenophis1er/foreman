@@ -12,7 +12,7 @@ function meta(over: Partial<RunMeta> = {}): RunMeta {
   };
 }
 
-const noopAgentEnv: AgentEnv = { env: {} };
+const noopAgentEnv = { director: {} as AgentEnv, worker: {} as AgentEnv };
 
 // accumulateUsage is exported precisely so this needs no SDK, no query()
 // mock, and no network — the shape it defends is the raw `usage` object off

@@ -53,9 +53,10 @@ import {
   normalizeOpenAiBaseUrl, providerEnv, providerOf, providerProblem, resolveProvider,
 } from './provider.js';
 import { ensureGateway, gatewayStatus, stopGateways } from './gateway.js';
-import { discoverOllama, ollamaHost } from './ollama.js';
+import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
 import { deleteSecret, hasSecret, putSecret } from './secrets.js';
-import { codexHome, readCodexAuth } from './codex.js';
+import { ANTHROPIC_MODELS } from './anthropic-models.js';
+import { codexHome, codexModels, readCodexAuth } from './codex.js';
 import { describeModel, discoverModels } from './models.js';
 import type { ResolvedProvider } from './provider.js';
 import {
@@ -69,12 +70,7 @@ import type {
  * Curated model list for the composer pickers (GET /models). `id` is exactly
  * what the SDK receives as `options.model`.
  */
-const MODELS = [
-  { id: 'fable', label: 'Fable', model: 'claude-fable-5', cost: 4, note: 'Frontier. Long-horizon planning and verification.' },
-  { id: 'opus', label: 'Opus', model: 'claude-opus-5', cost: 3, note: 'Deep reasoning for hard refactors.' },
-  { id: 'sonnet', label: 'Sonnet', model: 'claude-sonnet-5', cost: 2, note: 'Balanced. The usual worker.' },
-  { id: 'haiku', label: 'Haiku', model: 'claude-haiku-4-5', cost: 1, note: 'Fast and cheap for reads and mechanical edits.' },
-];
+const MODELS = ANTHROPIC_MODELS;
 
 /**
  * The billing mode one project will actually use. `own-login` means the pinned
@@ -189,6 +185,119 @@ function newProviderId(): string {
 /** Billing modes the UI understands; a superset of the server's own AuthMode. */
 type BillingMode = AuthMode | 'local' | 'provider';
 
+/** One selectable model, tagged with the provider that serves it. */
+interface ModelOption {
+  id: string;
+  label: string;
+  model: string;
+  /** Which provider serves it; absent means the project's own/server default. */
+  providerId?: string;
+  providerLabel: string;
+  cost?: number;
+  note?: string;
+  /** Whether spending on it is real money Foreman can price. */
+  metered: boolean;
+}
+
+/**
+ * Everything this machine can run a mission on.
+ *
+ * Deliberately generous: a provider that is merely *present* is offered, even
+ * if the current project does not use it, because the picker is where someone
+ * decides to use it. Anything unreachable is simply absent rather than listed
+ * and broken — a picker's job is to offer what will work.
+ */
+async function availableModels(project: Project | null): Promise<{
+  models: ModelOption[];
+  groups: Array<{ providerId?: string; label: string; count: number }>;
+  reachable: boolean;
+}> {
+  const out: ModelOption[] = [];
+
+  // Anthropic, via whichever Claude Code install or key the server resolves.
+  // Always offered: it is the default, and the shipped configuration.
+  for (const m of MODELS) {
+    out.push({ ...m, providerLabel: 'Anthropic', metered: true });
+  }
+
+  // The project's own provider, when it is an endpoint of its own. Asked
+  // first-hand, because a project pointed at another machine must be offered
+  // that machine's models rather than this one's.
+  const pinned = project ? providerOf(project) : null;
+  if (pinned?.kind === 'openai-compatible') {
+    const resolved = await resolveProvider(pinned, store.root);
+    const found = await discoverModels(resolved.upstreamUrl ?? pinned.baseUrl, {
+      apiKey: resolved.apiKey,
+    });
+    for (const m of found ?? []) {
+      out.push({
+        id: m.id, label: m.id, model: m.id,
+        providerId: pinned.id, providerLabel: pinned.label ?? 'Custom endpoint',
+        cost: m.remote ? 2 : 0, note: describeModel(m),
+        metered: !isLoopback(resolved.upstreamUrl),
+      });
+    }
+  }
+
+  // A running local Ollama, whether or not any project uses it yet.
+  const localOllama = pinned?.kind === 'openai-compatible'
+    && normalizeOpenAiBaseUrl(pinned.baseUrl) === normalizeOpenAiBaseUrl(ollamaHost());
+  if (!localOllama) {
+    const models = await discoverOllama();
+    for (const m of models ?? []) {
+      out.push({
+        id: m.id, label: m.id, model: m.id,
+        providerId: 'ollama-local', providerLabel: 'Ollama',
+        cost: m.remote ? 2 : 0, note: describeModel(m),
+        // A model served from this machine costs nothing per token; a :cloud
+        // one is real spend Foreman cannot price. Neither is a dollar figure.
+        metered: false,
+      });
+    }
+  }
+
+  // A signed-in Codex install.
+  const home = codexHome();
+  const codexAuth = await readCodexAuth(home).catch(() => null);
+  if (codexAuth) {
+    for (const id of await codexModels(home)) {
+      out.push({
+        id, label: id, model: id,
+        providerId: 'codex-local', providerLabel: 'Codex',
+        cost: 2, note: 'Runs on your ChatGPT subscription.',
+        metered: false,
+      });
+    }
+  }
+
+  const groups = [...new Map(out.map((m) => [m.providerLabel, m])).values()]
+    .map((m) => ({
+      providerId: m.providerId,
+      label: m.providerLabel,
+      count: out.filter((x) => x.providerLabel === m.providerLabel).length,
+    }));
+
+  return { models: out, groups, reachable: true };
+}
+
+/**
+ * The provider serving one role.
+ *
+ * A model carries the provider that serves it, so a run can put its director
+ * on one and its workers on another. An id that no longer resolves falls back
+ * to the run's own provider rather than failing: a provider removed between
+ * dispatch and resume should degrade to the project's, not strand the run.
+ */
+function providerForRole(meta: RunMeta, roleProviderId?: string): ProviderRef {
+  const own = providerOf(meta);
+  if (!roleProviderId) return own;
+  if ('id' in own && own.id === roleProviderId) return own;
+  // The two providers the machine offers without being configured for them.
+  if (roleProviderId === 'ollama-local') return ollamaProvider();
+  if (roleProviderId === 'codex-local') return { kind: 'codex', id: 'codex-local' };
+  return own;
+}
+
 /** Whether a project's provider has a key on file. Never the key itself. */
 async function providerHasKeyOf(p: Project): Promise<boolean> {
   const ref = providerOf(p);
@@ -212,10 +321,21 @@ function toPath(v: unknown): string | undefined {
 }
 
 /** Parses a model choice: a known alias or a full claude-* id; else inherit. */
+/**
+ * A model id from any provider.
+ *
+ * This used to accept only Anthropic aliases and `claude-*` ids, which meant a
+ * picked Ollama or Codex model was silently dropped and the run quietly fell
+ * back to the default — the failure looked like a successful mission on the
+ * wrong model. Now that a model carries the provider that serves it, the
+ * shapes are whatever those providers use (`glm-5.3-flash:cloud`,
+ * `gpt-5.6-sol`, `qwen3.8:27b-q8_0`), so this validates the *characters* a
+ * model id may contain rather than trying to recognise a vendor.
+ */
 function modelChoice(v: unknown): ModelChoice {
-  if (typeof v !== 'string' || !v) return undefined;
-  if (MODELS.some((m) => m.id === v)) return v;
-  return /^claude-[a-z0-9.-]{1,60}$/.test(v) ? v : undefined;
+  if (typeof v !== 'string' || !v.trim()) return undefined;
+  const id = v.trim();
+  return /^[A-Za-z0-9._:\/-]{1,120}$/.test(id) ? id : undefined;
 }
 
 /** Directory names never descended into by the drag-drop folder locator. */
@@ -420,7 +540,25 @@ async function driveRun(
   }
   let agentEnv;
   try {
-    agentEnv = await agentEnvFor(resolved);
+    // Resolved per role. Where both roles share a provider this resolves once
+    // and starts one gateway; where they differ, the supervisor already runs a
+    // process per provider.
+    const directorProvider = meta.directorProviderId
+      ? await resolveProvider(providerForRole(meta, meta.directorProviderId), store.root)
+      : resolved;
+    const workerProvider = meta.workerProviderId === meta.directorProviderId
+      ? directorProvider
+      : await resolveProvider(providerForRole(meta, meta.workerProviderId), store.root);
+    for (const p of new Set([directorProvider, workerProvider])) {
+      const roleProblem = providerProblem(p);
+      if (roleProblem) throw new Error(roleProblem);
+    }
+    agentEnv = {
+      director: await agentEnvFor(directorProvider),
+      worker: directorProvider === workerProvider
+        ? await agentEnvFor(directorProvider)
+        : await agentEnvFor(workerProvider),
+    };
   } catch (err) {
     meta.status = 'error';
     meta.endedAt = Date.now();
@@ -468,11 +606,15 @@ async function driveRun(
 async function effectiveSettings(projectId: string): Promise<{
   toolPolicy: ToolPolicy; autoAllowReadOnly: boolean;
   directorModel: ModelChoice; workerModel: ModelChoice; plannerModel: ModelChoice;
+  /** Provider serving each role, when Settings pinned one with the model. */
+  directorProviderId?: string; workerProviderId?: string;
 }> {
   const s = await store.readSettings()
     .catch(() => ({ global: {}, projects: {} as Record<string, object> }));
   const g = s.global as Record<string, unknown>;
   const p = (s.projects as Record<string, unknown>)[projectId] as Record<string, unknown> ?? {};
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() ? v.trim() : undefined;
   return {
     toolPolicy: {
       ...DEFAULT_TOOL_POLICY,
@@ -484,6 +626,8 @@ async function effectiveSettings(projectId: string): Promise<{
     directorModel: modelChoice(p.directorModel ?? g.directorModel),
     workerModel: modelChoice(p.workerModel ?? g.workerModel),
     plannerModel: modelChoice(p.plannerModel ?? g.plannerModel),
+    directorProviderId: str(p.directorProviderId ?? g.directorProviderId),
+    workerProviderId: str(p.workerProviderId ?? g.workerProviderId),
   };
 }
 
@@ -491,6 +635,7 @@ async function startRun(
   projectId: string, folder: string, mission: string, budgetUsd: number,
   directorModel: ModelChoice, workerModel: ModelChoice, browserTools: boolean,
   provider: ProviderRef,
+  roleProviders: { director?: string; worker?: string } = {},
 ): Promise<void> {
   const settings = await effectiveSettings(projectId);
   const meta: RunMeta = {
@@ -500,6 +645,10 @@ async function startRun(
     // An explicit composer choice wins; "Default" inherits from Settings.
     directorModel: directorModel ?? settings.directorModel,
     workerModel: workerModel ?? settings.workerModel,
+    // Which provider serves each role — from the model that was picked, so
+    // choosing a model chooses where that role runs.
+    directorProviderId: roleProviders.director ?? settings.directorProviderId,
+    workerProviderId: roleProviders.worker ?? settings.workerProviderId,
     browserTools: browserTools || undefined,
     toolPolicy: settings.toolPolicy,
     autoAllowReadOnly: settings.autoAllowReadOnly,
@@ -648,32 +797,16 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, { ok: true });
 
     } else if (req.method === 'GET' && url.pathname === '/models') {
-      // Model choice follows the provider: offering Opus for a project pinned
-      // to Ollama would be offering something that cannot run.
+      // Every model this machine can reach, not just the project's provider's.
+      //
+      // Scoping the list to one provider made the configuration most worth
+      // having unbuildable: a capable director with cheap local workers needs
+      // two providers in one run, and a caged picker could only offer one.
+      // A model now carries the provider that serves it, so choosing a model
+      // chooses a provider — which is how people actually think about it.
       const forProject = url.searchParams.get('projectId');
       const project = forProject ? await store.getProject(forProject) : null;
-      const provider = project ? providerOf(project) : null;
-      if (provider && provider.kind === 'openai-compatible') {
-        // Ask the project's OWN endpoint. A project pointed at a daemon on
-        // another machine must be offered that machine's models; asking the
-        // server's local Ollama would list things the run cannot reach.
-        const resolved = await resolveProvider(provider, store.root);
-        const found = await discoverModels(resolved.upstreamUrl ?? provider.baseUrl, {
-          apiKey: provider.apiKeyEnv ? resolved.apiKey : undefined,
-        });
-        return json(res, 200, {
-          provider: provider.kind,
-          endpoint: provider.baseUrl,
-          // null means unreachable, which is not the same as "has no models" —
-          // the picker should say so rather than showing an empty list.
-          reachable: found !== null,
-          models: (found ?? []).map((m) => ({
-            id: m.id, label: m.id, model: m.id, cost: m.remote ? 2 : 0,
-            note: describeModel(m),
-          })),
-        });
-      }
-      json(res, 200, { models: MODELS, provider: provider?.kind ?? 'claude-code', reachable: true });
+      json(res, 200, await availableModels(project));
 
     } else if (req.method === 'GET' && url.pathname === '/projects') {
       const [projects, allRuns, auth] = await Promise.all([
@@ -816,7 +949,10 @@ const server = http.createServer(async (req, res) => {
       json(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'unknown project' });
 
     } else if (req.method === 'POST' && url.pathname === '/run') {
-      const { projectId, mission, budgetUsd, directorModel, workerModel, browserTools } = await readBody(req);
+      const {
+        projectId, mission, budgetUsd, directorModel, workerModel, browserTools,
+        directorProviderId, workerProviderId,
+      } = await readBody(req);
       if (typeof projectId !== 'string' || typeof mission !== 'string' || !mission.trim()) {
         return json(res, 400, { error: 'projectId and mission are required' });
       }
@@ -830,7 +966,11 @@ const server = http.createServer(async (req, res) => {
       const budget = Number(budgetUsd) > 0 ? Number(budgetUsd) : project.defaultBudgetUsd;
       void startRun(projectId, project.folder, mission, budget,
         modelChoice(directorModel), modelChoice(workerModel), browserTools === true,
-        providerOf(project));
+        providerOf(project),
+        {
+          director: typeof directorProviderId === 'string' ? directorProviderId : undefined,
+          worker: typeof workerProviderId === 'string' ? workerProviderId : undefined,
+        });
       json(res, 200, { ok: true });
 
     } else if (providerKeyMatch) {

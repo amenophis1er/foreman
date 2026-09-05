@@ -225,11 +225,15 @@ export class MissionRun {
     private readonly emit: Emitter,
     private readonly saveMeta: MetaSink,
     /**
-     * Credential + wire for every agent this run spawns, resolved once at
-     * dispatch. Passed in rather than derived here so exactly one module
-     * decides what an agent can authenticate as — see provider.ts.
+     * Credential + wire per role, resolved once at dispatch.
+     *
+     * Two, not one, because a run may put its director on a capable provider
+     * and its workers on a cheap or local one — that is the point of the
+     * provider model, and it is decided by which model each role was given.
+     * Passed in rather than derived here so exactly one module decides what an
+     * agent can authenticate as; see provider.ts.
      */
-    private readonly agentEnv: AgentEnv,
+    private readonly agentEnv: { director: AgentEnv; worker: AgentEnv },
   ) {
     this.meta = meta;
     // Usage and turns are counted from zero on a fresh run, but a resumed one
@@ -383,7 +387,7 @@ export class MissionRun {
           model: this.meta.directorModel,
           maxTurns: 150,
           systemPrompt: { type: 'preset', preset: 'claude_code', append: DIRECTOR_CHARTER },
-          ...this.agentEnv,
+          ...this.agentEnv.director,
           mcpServers: { foreman: this.makeTools(), ...this.browserServers() },
           canUseTool: this.policyFor('director'),
         },
@@ -474,7 +478,8 @@ export class MissionRun {
    * than spent invisibly.
    */
   private async titleMission(): Promise<void> {
-    const named = await generateRunTitle(this.meta.mission, this.agentEnv);
+    // Titling rides with the director: same provider, same bill.
+    const named = await generateRunTitle(this.meta.mission, this.agentEnv.director);
     if (!named || this.meta.title) return;
     this.meta.title = named.title;
     this.emit('run_titled', { title: named.title });
@@ -724,7 +729,7 @@ export class MissionRun {
         model: this.meta.workerModel,
         maxTurns: 60,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: WORKER_CHARTER },
-        ...this.agentEnv,
+        ...this.agentEnv.worker,
         mcpServers: this.browserServers(),
         canUseTool: this.policyFor(workerId),
       },

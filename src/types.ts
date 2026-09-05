@@ -172,6 +172,16 @@ export interface RunMeta {
   /** Model override for worker sessions (cost lever). */
   workerModel?: ModelChoice;
   /**
+   * Provider serving each role, when it differs from the run's own.
+   *
+   * A model carries the provider that serves it, so a run can put a capable
+   * director on one and cheap workers on another — the configuration the
+   * whole provider model exists to make possible. Absent means "the run's
+   * provider", which is every run recorded before this existed.
+   */
+  directorProviderId?: string;
+  workerProviderId?: string;
+  /**
    * Provider frozen at dispatch, so history and resume agree — and so a later
    * settings change cannot move an in-flight or resumed run to another
    * provider, or another bill.

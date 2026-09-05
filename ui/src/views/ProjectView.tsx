@@ -303,12 +303,16 @@ export function ProjectView({
 
   const startMission = async (v: {
     mission: string; budget: number; directorModel?: string; workerModel?: string;
-    browserTools?: boolean;
+    directorProviderId?: string; workerProviderId?: string; browserTools?: boolean;
   }) => {
     setComposerErr('');
     setStarting(true);
     const r = await api
-      .run(p.id, v.mission, v.budget, v.directorModel, v.workerModel, Boolean(v.browserTools))
+      .run(p.id, v.mission, v.budget, {
+        directorModel: v.directorModel, workerModel: v.workerModel,
+        directorProviderId: v.directorProviderId, workerProviderId: v.workerProviderId,
+        browserTools: v.browserTools,
+      })
       .finally(() => setStarting(false));
     if (!r.ok) setComposerErr((await r.json()).error);
     else refreshFleet();

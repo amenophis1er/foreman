@@ -5,16 +5,23 @@ export interface ModelInfo {
   id: string;
   label: string;
   model: string;
-  /** 1–4 relative cost, drawn as a four-bar mark. */
-  cost?: 1 | 2 | 3 | 4;
-  /** One line of guidance shown under the label. */
+  /** Which provider serves it. Absent means Anthropic — the server default, and what FALLBACK_MODELS and the inherit row implicitly are. */
+  providerId?: string;
+  /** Display name for the group heading and the trigger's provider tag. Absent is treated as `'Anthropic'`. */
+  providerLabel?: string;
+  /** 0–4 relative cost, drawn as a four-bar mark. 0 or absent renders as "—". */
+  cost?: 0 | 1 | 2 | 3 | 4;
+  /** One line of guidance shown under the label — where it runs and what it costs. Never reconstructed client-side, so an unmetered row can't grow a dollar figure it doesn't have. */
   note?: string;
+  /** Whether spending on it is real money Foreman can price. Informational only here — the note already says so; ModelSelect never invents cost language from this flag. */
+  metered?: boolean;
 }
 
 /** Custom listbox picker for an agent role. `''` means "inherit your Claude Code default". */
 export interface ModelSelectProps {
   value?: string;
-  onChange?: (id: string) => void;
+  /** `model` is the full row that was clicked (or the inherit row), so a caller can persist `providerId` alongside `id`. Extra arg — callers that only read `id` keep working unchanged. */
+  onChange?: (id: string, model?: ModelInfo) => void;
   /** From `ModelSelect.useModels('/models')`. Omit to use `FALLBACK_MODELS` (fable/opus/sonnet/haiku). */
   models?: ModelInfo[] | null;
   /** Shows "Fetching models…" and disables the trigger. */
@@ -28,6 +35,7 @@ export interface ModelSelectProps {
   /** Include the leading "Default" (inherit) row. Default true. */
   allowDefault?: boolean;
   disabled?: boolean;
+  align?: 'left' | 'right';
   style?: CSSProperties;
 }
 
