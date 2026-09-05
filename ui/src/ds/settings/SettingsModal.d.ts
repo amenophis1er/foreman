@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react';
+import type { NotifyPanelProps } from './NotifyPanel';
 import type { ModelInfo } from '../forms/ModelSelect';
 import type { ProviderRef, DiscoveredInstance, OllamaInfo } from './ProviderPicker';
 
@@ -70,6 +71,8 @@ export interface SettingsModalProps {
   onClose?: () => void;
   /** Projects section, project scope only. */
   onUnlink?: () => void;
+  /** Settings → Notifications (global): channel status and actions from useNotify(). */
+  notify?: NotifyPanelProps;
   style?: CSSProperties;
 }
 

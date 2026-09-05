@@ -58,7 +58,9 @@ import {
 } from './provider.js';
 import { ensureGateway, gatewayStatus, gatewayUsage, releaseGateways, stopGateways } from './gateway.js';
 import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
-import { deleteSecret, hasSecret, putSecret } from './secrets.js';
+import { deleteSecret, getSecret, hasSecret, putSecret } from './secrets.js';
+import { NotifyHub } from './notify.js';
+import { getMe, linkByCode, linkCode, telegramTransport } from './notify/telegram.js';
 import { ANTHROPIC_MODELS } from './anthropic-models.js';
 import { codexHome, codexModels, readCodexAuth } from './codex.js';
 import { costRank, describeModel, discoverModels } from './models.js';
@@ -418,6 +420,19 @@ function makeEmitter(runId: string, projectId: string) {
       `event: ${event}\ndata: ${JSON.stringify({ runId, projectId, data })}\n\n`;
     for (const res of sseClients) res.write(frame);
     void store.append(runId, evt);
+    // The one place notifications hang off the mission stream. Labels are
+    // cached here from the events themselves so a message can name the run
+    // without a disk read on the emitter's path.
+    const d = (data ?? {}) as Record<string, unknown>;
+    if (event === 'run_started' || event === 'run_resumed') {
+      runLabelCache.set(runId, { ...runLabelCache.get(runId), mission: String(d.mission ?? '') });
+    } else if (event === 'run_titled') {
+      runLabelCache.set(runId, { ...runLabelCache.get(runId), title: String(d.title ?? '') });
+    }
+    if (!projectsCache.has(projectId)) {
+      void store.getProject(projectId).then((p) => { if (p) projectsCache.set(projectId, { name: p.name }); });
+    }
+    notifyHub.handle({ event, runId, projectId, data: d, ts: evt.ts });
   };
 }
 
@@ -467,6 +482,10 @@ function makeChatEmitter(projectId: string) {
       `event: ${event}\ndata: ${JSON.stringify({ runId: null, projectId, chat: true, data })}\n\n`;
     for (const res of sseClients) res.write(frame);
     void store.appendChat(projectId, evt);
+    if (!projectsCache.has(projectId)) {
+      void store.getProject(projectId).then((p) => { if (p) projectsCache.set(projectId, { name: p.name }); });
+    }
+    notifyHub.handle({ event, runId: null, projectId, chat: true, data: (data ?? {}) as Record<string, unknown>, ts: evt.ts });
   };
 }
 
@@ -476,6 +495,74 @@ function makeChatEmitter(projectId: string) {
  * session id, quietly forking the conversation.
  */
 const chatTurns = new Set<string>();
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+/** Global settings the channel reads: the same toggles the tab uses, plus where links point. */
+async function notifySettings(): Promise<{
+  prefs: { needsYou: boolean; done: boolean; budget: boolean };
+  publicUrl: string;
+  telegramChatId?: string; telegramChatLabel?: string; telegramBot?: string;
+}> {
+  const g = (await store.readSettings().catch(() => ({ global: {}, projects: {} }))).global as Record<string, unknown>;
+  const on = (k: string, dflt: boolean) => (typeof g[k] === 'boolean' ? (g[k] as boolean) : dflt);
+  const str = (k: string) => (typeof g[k] === 'string' && (g[k] as string).trim() ? (g[k] as string).trim() : undefined);
+  return {
+    prefs: { needsYou: on('notifyNeedsYou', true), done: on('notifyDone', true), budget: on('notifyBudget', true) },
+    publicUrl: (str('publicUrl') ?? `http://localhost:${PORT}`).replace(/\/+$/, ''),
+    telegramChatId: str('telegramChatId'),
+    telegramChatLabel: str('telegramChatLabel'),
+    telegramBot: str('telegramBot'),
+  };
+}
+
+/**
+ * The context the hub shapes messages with. Read per event rather than cached
+ * so a Settings change — a toggle, a new public URL — applies to the next
+ * message, and so the project and run names come from live state. Cheap: a
+ * small JSON file and two Map lookups, on events that happen a few times a
+ * mission.
+ */
+let notifyCtxCache: { at: number; value: Awaited<ReturnType<typeof notifySettings>> } | null = null;
+const notifyHub = new NotifyHub(() => {
+  const s = notifyCtxCache?.value ?? { prefs: { needsYou: true, done: true, budget: true }, publicUrl: `http://localhost:${PORT}` };
+  if (!notifyCtxCache || Date.now() - notifyCtxCache.at > 5_000) {
+    void notifySettings().then((v) => { notifyCtxCache = { at: Date.now(), value: v }; });
+  }
+  return {
+    prefs: s.prefs,
+    publicUrl: s.publicUrl,
+    projectName: (id) => projectsCache.get(id)?.name,
+    runLabel: (id) => { const r = runLabelCache.get(id); return r?.title || r?.mission; },
+  };
+});
+const projectsCache = new Map<string, { name: string }>();
+const runLabelCache = new Map<string, { title?: string; mission?: string }>();
+
+/** Attach (or replace) the Telegram transport from stored token + linked chat. */
+async function reattachTelegram(): Promise<boolean> {
+  notifyHub.detach('telegram');
+  const s = await notifySettings();
+  const token = await getSecret(store.root, 'telegram');
+  if (!token || !s.telegramChatId) return false;
+  notifyHub.attach(telegramTransport(token, s.telegramChatId));
+  return true;
+}
+
+/** One linking attempt at a time; a new code cancels the previous wait. */
+let telegramLink: { code: string; abort(): void; startedAt: number } | null = null;
+
+async function patchGlobalSettings(patch: Record<string, unknown>): Promise<void> {
+  const all = await store.readSettings().catch(() => ({ global: {}, projects: {} }));
+  const global = { ...(all.global as Record<string, unknown>) };
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) delete global[k]; else global[k] = v;
+  }
+  await store.writeSettings({ ...all, global });
+  notifyCtxCache = null;
+}
 
 /** Reads a project's chat meta, or the empty shape for one never started. */
 async function chatMetaOf(projectId: string): Promise<ChatMeta> {
@@ -1081,6 +1168,89 @@ const server = http.createServer(async (req, res) => {
         });
       json(res, 200, { ok: true });
 
+    } else if (url.pathname === '/notify' && req.method === 'GET') {
+      // Status, never the token. Mirrors the provider-key rule: the API says
+      // whether a token exists and who is linked, and cannot read either out.
+      const s = await notifySettings();
+      json(res, 200, {
+        publicUrl: s.publicUrl,
+        prefs: s.prefs,
+        active: notifyHub.active,
+        delivered: notifyHub.delivered,
+        failures: notifyHub.failures,
+        telegram: {
+          hasToken: await hasSecret(store.root, 'telegram'),
+          bot: s.telegramBot ?? null,
+          chatId: s.telegramChatId ? `…${s.telegramChatId.slice(-4)}` : null,
+          chatLabel: s.telegramChatLabel ?? null,
+          linking: telegramLink ? { code: telegramLink.code, startedAt: telegramLink.startedAt } : null,
+        },
+      });
+
+    } else if (url.pathname === '/notify/telegram/token') {
+      // Write-only, like a provider key. Validated with getMe so a typo is
+      // caught here rather than as a silently dead channel later.
+      if (req.method === 'PUT') {
+        const { token } = await readBody(req);
+        const value = typeof token === 'string' ? token.trim() : '';
+        if (!/^\d+:[A-Za-z0-9_-]{20,}$/.test(value)) return json(res, 400, { error: 'that does not look like a bot token' });
+        const me = await getMe(value);
+        if (!me) return json(res, 400, { error: 'Telegram rejected the token (or is unreachable)' });
+        await putSecret(store.root, 'telegram', value);
+        await patchGlobalSettings({ telegramBot: `@${me.username}` });
+        await reattachTelegram();
+        json(res, 200, { ok: true, bot: `@${me.username}` });
+      } else if (req.method === 'DELETE') {
+        telegramLink?.abort(); telegramLink = null;
+        await deleteSecret(store.root, 'telegram');
+        await patchGlobalSettings({ telegramBot: undefined, telegramChatId: undefined, telegramChatLabel: undefined });
+        notifyHub.detach('telegram');
+        json(res, 200, { ok: true });
+      } else {
+        json(res, 405, { error: 'method not allowed' });
+      }
+
+    } else if (url.pathname === '/notify/telegram/link') {
+      if (req.method === 'POST') {
+        const token = await getSecret(store.root, 'telegram');
+        if (!token) return json(res, 409, { error: 'store a bot token first' });
+        telegramLink?.abort();
+        const code = linkCode();
+        const link = linkByCode(token, code);
+        telegramLink = { code, abort: link.abort, startedAt: Date.now() };
+        // Resolves in the background; the UI polls GET /notify for the result.
+        void link.done.then(async (chat) => {
+          if (telegramLink?.code === code) telegramLink = null;
+          if (!chat) return;
+          await patchGlobalSettings({ telegramChatId: chat.chatId, telegramChatLabel: chat.label });
+          if (await reattachTelegram()) {
+            void notifyHub.say('<b>Foreman linked.</b> Approvals, questions and finished missions will arrive here.');
+          }
+        });
+        json(res, 200, { ok: true, code, command: `/start ${code}` });
+      } else if (req.method === 'DELETE') {
+        telegramLink?.abort(); telegramLink = null;
+        await patchGlobalSettings({ telegramChatId: undefined, telegramChatLabel: undefined });
+        notifyHub.detach('telegram');
+        json(res, 200, { ok: true });
+      } else {
+        json(res, 405, { error: 'method not allowed' });
+      }
+
+    } else if (url.pathname === '/notify/test' && req.method === 'POST') {
+      const ok = await notifyHub.say('<b>Test from Foreman.</b> This is where you will hear about approvals, stalls and finished missions.');
+      json(res, ok ? 200 : 409, ok ? { ok: true } : { error: 'no linked channel, or delivery failed' });
+
+    } else if (url.pathname === '/notify/settings' && req.method === 'PATCH') {
+      // The one setting that lives here rather than in the general Settings
+      // payload: where deep links point. A phone cannot open localhost.
+      const { publicUrl } = await readBody(req);
+      if (typeof publicUrl !== 'string') return json(res, 400, { error: 'publicUrl is required' });
+      const v = publicUrl.trim().replace(/\/+$/, '');
+      if (v && !/^https?:\/\/[^\s/]+/.test(v)) return json(res, 400, { error: 'publicUrl must be an http(s) URL' });
+      await patchGlobalSettings({ publicUrl: v || undefined });
+      json(res, 200, { ok: true, publicUrl: v || `http://localhost:${PORT}` });
+
     } else if (providerKeyMatch) {
       // Write-only by design: there is no GET. The API can say whether a key
       // exists — which Settings needs to render its state — and never what it
@@ -1346,6 +1516,10 @@ if (!reportPreflight(await preflight({ port: PORT, foremanHome: store.root, dist
 // Reconcile runs orphaned by a previous process before accepting traffic.
 const swept = await store.sweepOrphans();
 if (swept.length) console.log(`Marked ${swept.length} orphaned run(s) as interrupted:`, swept.join(', '));
+
+// A stored token and a linked chat survive restarts; the channel comes back
+// with the server, without anyone re-linking.
+void reattachTelegram();
 
 server.listen(PORT, () => {
   console.log(`Foreman listening on http://localhost:${PORT}`);

@@ -9,6 +9,7 @@ import { TextInput } from '../forms/TextInput';
 import { ModelSelect } from '../forms/ModelSelect';
 import { ProviderPicker } from './ProviderPicker';
 import { Empty } from '../core/Empty';
+import { NotifyPanel } from './NotifyPanel';
 
 export const SETTINGS_SECTIONS = [
   // Provider leads because it decides what every other section can offer: the
@@ -96,7 +97,7 @@ function ServerProviders({ instances = [], ollama, codex }) {
   );
 }
 
-export function SettingsModal({ global, project, projectName, models, modelsLoading, modelsNote, provider, providerInstances, providerOllama, providerCodex, providerHasKey, providerKeyBusy, providerKeyError, onStoreProviderKey, onClearProviderKey, scope: scopeProp, onScope, section: sectionProp, onSection, onSave, onClose, onUnlink, style }) {
+export function SettingsModal({ global, project, projectName, models, modelsLoading, modelsNote, provider, providerInstances, providerOllama, providerCodex, providerHasKey, providerKeyBusy, providerKeyError, onStoreProviderKey, onClearProviderKey, notify, scope: scopeProp, onScope, section: sectionProp, onSection, onSave, onClose, onUnlink, style }) {
   const [localScope, setLocalScope] = useState(scopeProp ?? 'global');
   const [localSection, setLocalSection] = useState(sectionProp ?? 'models');
   const scope = onScope ? scopeProp : localScope;
@@ -155,6 +156,9 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
       {row('notifyDone', 'Run finished', 'Done, errored or interrupted.', <Switch checked={get('notifyDone')} onChange={(v) => set('notifyDone', v)} />)}
       {row('notifyBudget', 'Budget warning', 'When spend crosses the warn threshold.', <Switch checked={get('notifyBudget')} onChange={(v) => set('notifyBudget', v)} />)}
       {row('sound', 'Sound', null, <Switch checked={get('sound')} onChange={(v) => set('sound', v)} />)}
+      {/* The channel obeys the toggles above; it is global because a bot
+          and a chat belong to the operator, not to a project. */}
+      {!isProject && notify && <NotifyPanel {...notify} />}
     </>,
     provider: isProject ? (
       <Row label="Provider"

@@ -946,6 +946,80 @@ export function useChat(projectId: string | null): ChatView & {
   return { ...state, send, answer, clear, dismissProposal };
 }
 
+/** `GET /notify` — status only; the token is never part of it. Mirrors NotifyPanel.d.ts. */
+export type NotifyStatus = {
+  publicUrl: string;
+  prefs: { needsYou: boolean; done: boolean; budget: boolean };
+  active: string[];
+  delivered: number;
+  failures: number;
+  telegram: {
+    hasToken: boolean; bot: string | null; chatId: string | null; chatLabel: string | null;
+    linking: { code: string; startedAt: number } | null;
+  };
+};
+
+/**
+ * Settings → Notifications: the channel's status and the handful of actions
+ * on it. Polls while a linking attempt is open, because the answer arrives
+ * out of band — the human sends a code to their bot from a phone, and the
+ * server notices; nothing in this tab is told directly.
+ */
+export function useNotify(): {
+  status: NotifyStatus | null; busy: boolean; error: string;
+  refresh: () => Promise<void>;
+  onSaveToken: (token: string) => void; onClearToken: () => void;
+  onLink: () => void; onUnlink: () => void; onTest: () => void;
+  onSavePublicUrl: (url: string) => void;
+} {
+  const [status, setStatus] = useState<NotifyStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const refresh = useCallback(async () => {
+    const r = await fetch('/notify').catch(() => null);
+    if (r?.ok) setStatus(await r.json() as NotifyStatus);
+  }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  // Linking resolves on the server when the phone message arrives; poll
+  // until it does, then stop — the tab has no other way to learn it.
+  useEffect(() => {
+    if (!status?.telegram.linking) return;
+    const t = setInterval(() => void refresh(), 3000);
+    return () => clearInterval(t);
+  }, [status?.telegram.linking, refresh]);
+
+  const act = useCallback(async (req: () => Promise<Response>) => {
+    setBusy(true); setError('');
+    try {
+      const r = await req();
+      if (!r.ok) setError((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      await refresh();
+    }
+  }, [refresh]);
+
+  const send = (method: string, url: string, body?: unknown) => fetch(url, {
+    method, headers: body ? { 'content-type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  return {
+    status, busy, error, refresh,
+    onSaveToken: (token) => void act(() => send('PUT', '/notify/telegram/token', { token })),
+    onClearToken: () => void act(() => send('DELETE', '/notify/telegram/token')),
+    onLink: () => void act(() => send('POST', '/notify/telegram/link')),
+    onUnlink: () => void act(() => send('DELETE', '/notify/telegram/link')),
+    onTest: () => void act(() => send('POST', '/notify/test')),
+    onSavePublicUrl: (publicUrl) => void act(() => send('PATCH', '/notify/settings', { publicUrl })),
+  };
+}
+
 /** Hash router: '#/' → fleet, '#/p/<projectId>' → project view,
  *  '#/p/<projectId>/r/<runId>' → a specific run (survives refresh). */
 export function useRoute(): {

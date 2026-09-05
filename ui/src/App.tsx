@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, useFleet, useRoute } from './state';
+import { api, useFleet, useRoute, useNotify } from './state';
 import { FleetView } from './views/FleetView';
 import { ProjectView } from './views/ProjectView';
 import { SettingsModal, type Settings } from './ds/settings/SettingsModal';
@@ -225,6 +225,7 @@ export default function App() {
     auth,
   };
 
+  const notify = useNotify();
   return (
     <div style={{ height: '100%' }}>
       {project ? (
@@ -250,6 +251,7 @@ export default function App() {
           providerKeyBusy={keyBusy} providerKeyError={keyError}
           onStoreProviderKey={(id, k) => void writeKey(id, k)}
           onClearProviderKey={(id) => void writeKey(id, null)}
+          notify={notify}
           onSave={(v) => void saveSettings(v)}
           onClose={() => setSettingsOpen(false)} />
       )}
