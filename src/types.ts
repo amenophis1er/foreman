@@ -89,8 +89,19 @@ export type ProviderRef =
       kind: 'openai-compatible';
       id: string;
       baseUrl: string;
-      /** Omit for an endpoint that needs no credential, e.g. a local Ollama. */
+      /**
+       * Name of a server environment variable holding the key. The fallback
+       * when nothing is stored for this provider; omit it entirely to use a
+       * stored key alone.
+       */
       apiKeyEnv?: string;
+      /**
+       * This endpoint requires a credential. Distinguishes "a key is stored
+       * for it" from "it needs none at all" — a local Ollama is the latter,
+       * and inferring from the absence of `apiKeyEnv` would make every stored
+       * key look like no key.
+       */
+      needsKey?: boolean;
       /** Short name for badges — "Ollama", "OpenRouter". */
       label?: string;
       model?: string;

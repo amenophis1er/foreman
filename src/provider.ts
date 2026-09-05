@@ -26,6 +26,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { defaultInstance } from './instance.js';
 import { codexHome, isStale, readCodexAuth, refreshCodexAuth } from './codex.js';
+import { getSecret } from './secrets.js';
 import type { ProviderRef, ClaudeInstanceRef } from './types.js';
 
 /**
@@ -200,7 +201,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
     }
 
     case 'anthropic-api': {
-      const apiKey = clean(process.env[ref.apiKeyEnv]);
+      const apiKey = await providerKey(root, ref.id, ref.apiKeyEnv);
       return {
         kind: ref.kind,
         wire: 'anthropic-native',
@@ -211,7 +212,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
         configDir: ownedConfigDir(root, ref.id),
         apiKey,
         model: ref.model,
-        problem: apiKey ? undefined : `$${ref.apiKeyEnv} is not set in the server environment`,
+        problem: apiKey ? undefined : missingKey(ref.apiKeyEnv),
       };
     }
 
@@ -244,7 +245,9 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       // A local Ollama needs no credential at all; the gateway still requires
       // a non-empty key downstream (see GATEWAY_INVARIANT), so a placeholder
       // stands in. It is never sent as a real secret — the upstream ignores it.
-      const key = ref.apiKeyEnv ? clean(process.env[ref.apiKeyEnv]) : 'no-key-required';
+      const key = ref.apiKeyEnv || ref.needsKey
+        ? await providerKey(root, ref.id, ref.apiKeyEnv)
+        : 'no-key-required';
       return {
         kind: ref.kind,
         wire: 'gateway-openai',
@@ -254,12 +257,34 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
         upstreamUrl: normalizeOpenAiBaseUrl(ref.baseUrl),
         apiKey: key,
         model: ref.model,
-        problem: key
-          ? undefined
-          : `$${ref.apiKeyEnv} is not set in the server environment`,
+        problem: key ? undefined : missingKey(ref.apiKeyEnv),
       };
     }
   }
+}
+
+/**
+ * A provider's credential: the key stored for it, else the named environment
+ * variable.
+ *
+ * Stored wins because it is the deliberate choice — someone pasted it into
+ * Settings for this provider. An env var is the escape hatch for a server
+ * started with one already exported, and for anyone who would rather Foreman
+ * held nothing.
+ */
+async function providerKey(
+  root: string, id: string, apiKeyEnv?: string,
+): Promise<string | undefined> {
+  const stored = await getSecret(root, id).catch(() => null);
+  if (stored) return stored;
+  return apiKeyEnv ? clean(process.env[apiKeyEnv]) : undefined;
+}
+
+/** Says what to do about a missing key without naming a value. */
+function missingKey(apiKeyEnv?: string): string {
+  return apiKeyEnv
+    ? `no key stored for this provider, and $${apiKeyEnv} is not set in the server environment`
+    : 'this endpoint needs a key — add one in Settings';
 }
 
 /**

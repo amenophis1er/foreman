@@ -34,6 +34,8 @@
  *   GET    /chat?projectId=      A project's planning conversation (log + meta)
  *   POST   /chat                 Send a message to the planner {projectId, text}
  *   DELETE /chat?projectId=      Forget the conversation and its session
+ *   PUT    /providers/{id}/key   Store a provider's key {key}
+ *   DELETE /providers/{id}/key   Forget it
  */
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -52,6 +54,7 @@ import {
 } from './provider.js';
 import { ensureGateway, gatewayStatus, stopGateways } from './gateway.js';
 import { discoverOllama, ollamaHost } from './ollama.js';
+import { deleteSecret, hasSecret, putSecret } from './secrets.js';
 import { describeModel, discoverModels } from './models.js';
 import type { ResolvedProvider } from './provider.js';
 import {
@@ -169,6 +172,7 @@ function parseProvider(v: unknown): ProviderRef | null | string {
         kind: 'openai-compatible', id: str('id') ?? newProviderId(),
         baseUrl: normalizeOpenAiBaseUrl(baseUrl),
         apiKeyEnv: str('apiKeyEnv'), label: str('label'), model: str('model'),
+        ...(p.needsKey === true ? { needsKey: true } : {}),
       };
     }
     default:
@@ -183,6 +187,12 @@ function newProviderId(): string {
 
 /** Billing modes the UI understands; a superset of the server's own AuthMode. */
 type BillingMode = AuthMode | 'local' | 'provider';
+
+/** Whether a project's provider has a key on file. Never the key itself. */
+async function providerHasKeyOf(p: Project): Promise<boolean> {
+  const ref = providerOf(p);
+  return 'id' in ref && ref.id ? hasSecret(store.root, ref.id) : false;
+}
 
 /** Is this endpoint on this machine? Decides "free" from "somebody's meter". */
 function isLoopback(url: string | undefined): boolean {
@@ -596,6 +606,7 @@ const server = http.createServer(async (req, res) => {
   const runEventsMatch = url.pathname.match(/^\/runs\/([^/]+)\/events$/);
   const runResumeMatch = url.pathname.match(/^\/runs\/([^/]+)\/resume$/);
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
+  const providerKeyMatch = url.pathname.match(/^\/providers\/([A-Za-z0-9_-]{1,64})\/key$/);
 
   try {
     if (req.method === 'GET' && (url.pathname === '/'
@@ -676,6 +687,9 @@ const server = http.createServer(async (req, res) => {
           // What THIS project will actually bill, which can differ from the
           // server's mode when the pin opts out of the inherited key.
           billingMode: await projectBilling(p, auth.mode),
+          // Whether a key is on file, never the key. Settings renders
+          // "stored / not stored" from this and nothing more.
+          providerHasKey: await providerHasKeyOf(p),
           activeRun: run ? { ...run.meta } : null,
           lastRun: lastRun && {
             mission: lastRun.mission, title: lastRun.title, status: lastRun.status,
@@ -809,6 +823,25 @@ const server = http.createServer(async (req, res) => {
         modelChoice(directorModel), modelChoice(workerModel), browserTools === true,
         providerOf(project));
       json(res, 200, { ok: true });
+
+    } else if (providerKeyMatch) {
+      // Write-only by design: there is no GET. The API can say whether a key
+      // exists — which Settings needs to render its state — and never what it
+      // is, so a compromised browser session can replace a key but not read
+      // one out.
+      const providerId = providerKeyMatch[1];
+      if (req.method === 'PUT') {
+        const { key } = await readBody(req);
+        const value = typeof key === 'string' ? key.trim() : '';
+        if (!value) return json(res, 400, { error: 'key is required' });
+        await putSecret(store.root, providerId, value);
+        json(res, 200, { ok: true, hasKey: true });
+      } else if (req.method === 'DELETE') {
+        await deleteSecret(store.root, providerId);
+        json(res, 200, { ok: true, hasKey: false });
+      } else {
+        json(res, 405, { error: 'method not allowed' });
+      }
 
     } else if (url.pathname === '/chat') {
       const projectId = req.method === 'POST'
