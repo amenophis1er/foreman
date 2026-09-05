@@ -326,12 +326,55 @@ but the choice of tool matters:
 
 ---
 
-## 11. Non-goals (at least at first)
+## 11. Non-goals
 
-- Not a hosted/multi-tenant service (API-key + local only to start).
-- Not a replacement for golden-eye — the observer plugin stays its own thing.
-- Not blanket `bypassPermissions`. Autonomy comes from good `canUseTool`
+**What Foreman is:** a governance layer — goal doc + budget + policy +
+escalation — around autonomous work, on your own machine, in your own folders.
+Coding was the first capability plugged in; the browser was the second.
+
+The boundaries below exist because the alternative to each is a real, working
+product that already occupies that ground. Every one of them is a bet, and
+crossing it does not make Foreman more capable — it makes Foreman a lesser
+copy of something else. They are permanent, not "at least at first".
+
+### The mission is the unit of work
+
+- **Conversation produces missions; it never does the work.** The planner is
+  read-only — Read, Grep, Glob, and nothing else — permanently. Not "read-only
+  until a small edit would be convenient". If it needs doing, it becomes a
+  mission the human starts, with a budget and DONE WHEN criteria. The day the
+  planner writes a file, Foreman is a chat client with a cost meter.
+- **Not chat-first.** The project view's centre of gravity is the mission and
+  its verification, not the transcript. Talking is the cheap step before
+  committing, not the product.
+- **No unverified completion.** The director reads the files and runs the
+  checks itself. A worker's "done" is evidence, never a result.
+
+### The desk shows the work; it is not a workstation
+
+- **No terminal in the UI.** Foreman runs on your machine and you already have
+  one. An unrestricted shell in the panel is a hole straight through
+  `canUseTool`, which is the entire safety floor.
+- **The deck is diff and artifacts**, not a file manager and not an editor.
+  Its job is to show what this mission changed, which is something your editor
+  cannot tell you and Foreman can.
+
+### It runs in your real folders, as you
+
+- **No containers, no isolation layer.** The agent edits the actual repository.
+  That is the bet: policy plus budgets plus an audit trail, rather than a
+  sandbox you then have to sync back.
+- **Never mint credentials.** Foreman reads what a first-party CLI already put
+  there (`~/.claude`, `~/.codex`); it does not reimplement anyone's OAuth flow
+  to obtain tokens itself. See [docs/provider-model.md](docs/provider-model.md).
+- **Not blanket `bypassPermissions`.** Autonomy comes from good `canUseTool`
   policy + budgets, never from removing the floor.
+
+### Single-user, single-purpose
+
+- Not a hosted or multi-tenant service.
+- No embeddable widget, no plugin marketplace, no agent-as-a-product surface.
+- Not a replacement for golden-eye — the observer plugin stays its own thing.
 
 ---
 
