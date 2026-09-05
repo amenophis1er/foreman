@@ -14,6 +14,20 @@ export const BILLING_META = {
     color: 'var(--ink-2)', icon: 'budget', label: 'cloud provider',
     hint: 'Missions bill a cloud provider (Bedrock/Vertex).',
   },
+  // A model served from this machine costs nothing per token. Calling that
+  // "API key billing" would be a lie in the one place Foreman promises not to
+  // tell one, and it is also the reason the meter shows turns and time here.
+  local: {
+    color: 'var(--ink-2)', icon: 'model', label: 'local model',
+    hint: 'Missions run on a model served from this machine. No per-token cost, so budgets are capped by turns and time.',
+  },
+  // Somebody else's meter — an OpenAI-compatible endpoint or a Codex login.
+  // Named rather than priced, because Foreman does not know that endpoint's
+  // rates and will not invent them.
+  provider: {
+    color: 'var(--status-warning)', icon: 'budget', label: 'external provider',
+    hint: 'Missions bill an endpoint Foreman does not price. Spend is real but its dollar figure is not shown.',
+  },
   none: {
     color: 'var(--status-critical)', icon: 'error', label: 'no credentials',
     hint: 'No credentials found — missions cannot run.',
@@ -37,7 +51,7 @@ export function BillingBadge({ mode, source, account, compact, style }) {
   const label = who ?? m.label;
   const title = [m.hint, who && account.org ? `Account: ${who} (${account.org})` : who && `Account: ${who}`,
     source && `Source: ${source}`].filter(Boolean).join('\n');
-  const loud = mode === 'api-key' || mode === 'none';
+  const loud = mode === 'api-key' || mode === 'none' || mode === 'provider';
   return (
     <span title={title} style={{
       display: 'inline-flex', alignItems: 'center', gap: 5,

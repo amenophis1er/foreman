@@ -74,11 +74,16 @@ const MODELS = [
  * config dir's stored login pays, so a dir without one is a misconfiguration
  * worth surfacing before a mission starts rather than after it fails.
  */
-async function projectBilling(p: Project, serverMode: AuthMode): Promise<AuthMode> {
+async function projectBilling(p: Project, serverMode: AuthMode): Promise<BillingMode> {
   const resolved = await resolveProvider(providerOf(p), store.root);
   // A gateway provider bills its own upstream, never the server's Anthropic
   // credential — reporting the server's mode there would name the wrong payer.
-  if (resolved.wire !== 'anthropic-native') return resolved.apiKey ? 'api-key' : 'none';
+  if (resolved.wire !== 'anthropic-native') {
+    if (!resolved.apiKey) return 'none';
+    // Loopback means the model is served from this machine: no per-token cost,
+    // which is why this run's budget caps on turns and time instead.
+    return isLoopback(resolved.upstreamUrl) ? 'local' : 'provider';
+  }
   if (resolved.kind === 'anthropic-api') return resolved.apiKey ? 'api-key' : 'none';
   if (!resolved.ownLogin) return serverMode;
   return (await dirHasCredentials(resolved.configDir)) ? 'subscription' : 'none';
@@ -106,6 +111,20 @@ function fleetOrder(
   b: { pendingPermissions: number; pendingQuestions: number; activeRun: unknown; lastActivityAt: number },
 ): number {
   return fleetTier(a) - fleetTier(b) || b.lastActivityAt - a.lastActivityAt;
+}
+
+/** Billing modes the UI understands; a superset of the server's own AuthMode. */
+type BillingMode = AuthMode | 'local' | 'provider';
+
+/** Is this endpoint on this machine? Decides "free" from "somebody's meter". */
+function isLoopback(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname;
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  } catch {
+    return false;
+  }
 }
 
 /** Trims an optional path field from a request body; '' means "cleared". */

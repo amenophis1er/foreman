@@ -40,6 +40,8 @@ export interface ComposerProps {
   /** From `ModelSelect.useModels('/models')`; both pickers share it. Omit for the built-in fallback list. */
   models?: ModelInfo[] | null;
   modelsLoading?: boolean;
+  /** Passed to both pickers — why the list is short or empty. */
+  modelsNote?: string;
   onStart?: (v: ComposerResult) => void;
   style?: CSSProperties;
 }

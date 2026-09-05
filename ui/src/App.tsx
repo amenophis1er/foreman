@@ -53,16 +53,49 @@ function useTheme(): [Theme, () => void, (t: Theme | 'system') => void] {
   return [theme, () => setTheme((t) => (t === 'dark' ? 'light' : 'dark')), apply];
 }
 
-/** The composer's model list, from GET /models (design-system fallback inside). */
-function useModels(): ModelInfo[] | null {
-  const [models, setModels] = useState<ModelInfo[] | null>(null);
+type ModelList = {
+  models: ModelInfo[] | null;
+  loading: boolean;
+  /** Why the list is short or empty; passed to the pickers. */
+  note?: string;
+};
+
+/**
+ * The model list for the open project.
+ *
+ * Scoped to a project rather than fetched once globally, because the answer
+ * belongs to that project's provider: a project pinned to an Ollama on another
+ * machine must be offered that machine's models, and a global list would offer
+ * it models its runs cannot reach.
+ */
+function useModels(projectId: string | null): ModelList {
+  const [state, setState] = useState<ModelList>({ models: null, loading: true });
   useEffect(() => {
-    void fetch('/models')
+    let live = true;
+    setState((s) => ({ ...s, loading: true }));
+    const url = projectId ? `/models?projectId=${encodeURIComponent(projectId)}` : '/models';
+    void fetch(url)
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => d && setModels(d.models))
-      .catch(() => {});
-  }, []);
-  return models;
+      .then((d) => {
+        if (!live) return;
+        if (!d) return setState({ models: null, loading: false });
+        setState({
+          models: d.models,
+          loading: false,
+          // An unreachable endpoint and an endpoint with nothing installed
+          // both yield an empty picker; only one of them is the operator's
+          // fault, so say which.
+          note: d.reachable === false
+            ? `Cannot reach ${d.endpoint ?? 'this project’s endpoint'}.`
+            : d.models?.length === 0
+              ? 'This endpoint has no models installed.'
+              : undefined,
+        });
+      })
+      .catch(() => live && setState({ models: null, loading: false }));
+    return () => { live = false; };
+  }, [projectId]);
+  return state;
 }
 
 type SettingsFile = { global: Settings; projects: Record<string, Settings> };
@@ -72,7 +105,9 @@ export default function App() {
   const { projectId, runId, go, goRun } = useRoute();
   const [theme, toggleTheme, applyTheme] = useTheme();
   const applyTextSize = useTextSize();
-  const models = useModels();
+  // Settings can be opened over a project, so both surfaces want the same
+  // provider-scoped list.
+  const models = useModels(projectId);
   const [settings, setSettings] = useState<SettingsFile>({ global: {}, projects: {} });
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -118,7 +153,8 @@ export default function App() {
   return (
     <div style={{ height: '100%' }}>
       {project ? (
-        <ProjectView p={project} models={models} routeRunId={runId}
+        <ProjectView p={project} models={models.models} modelsLoading={models.loading}
+          modelsNote={models.note} routeRunId={runId}
           onSelectRun={(id) => goRun(project.id, id)}
           onBack={() => go(null)} refreshFleet={refresh} {...shared} />
       ) : (
@@ -130,6 +166,7 @@ export default function App() {
           global={settings.global}
           project={project ? settings.projects[project.id] : undefined}
           projectName={project?.name}
+          models={models.models} modelsLoading={models.loading} modelsNote={models.note}
           onSave={(v) => void saveSettings(v)}
           onClose={() => setSettingsOpen(false)} />
       )}

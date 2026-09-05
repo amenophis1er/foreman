@@ -43,7 +43,7 @@ function CostMark({ cost }) {
  * Model picker for a role. Trigger shows the label; the menu lists label, exact model id, a 4-bar cost mark and one line of guidance.
  * `models` normally comes from `GET /models` via `ModelSelect.useModels`; falls back to `FALLBACK_MODELS`.
  */
-export function ModelSelect({ align = 'left', value = '', onChange, models, loading, allowDefault = true, disabled, style }) {
+export function ModelSelect({ align = 'left', value = '', onChange, models, loading, note, allowDefault = true, disabled, style }) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(null);
   const root = useRef(null);
@@ -81,6 +81,15 @@ export function ModelSelect({ align = 'left', value = '', onChange, models, load
           background: 'var(--bg-panel)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)',
           boxShadow: '0 8px 24px rgba(0,0,0,0.28)', padding: 4, display: 'flex', flexDirection: 'column',
         }}>
+          {note && (
+            // An empty list has a reason — an unreachable endpoint reads very
+            // differently from one with nothing installed, and a picker that
+            // shows neither leaves the operator guessing.
+            <div style={{
+              padding: '6px 10px', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
+              borderBottom: list.length ? '1px solid var(--line)' : 'none',
+            }}>{note}</div>
+          )}
           {list.map((m) => {
             const selected = m.id === current.id;
             return (

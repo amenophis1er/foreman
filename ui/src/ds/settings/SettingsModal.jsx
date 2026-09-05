@@ -36,7 +36,7 @@ const GUARDED = ['Bash', 'Write', 'Edit', 'WebFetch', 'spawn_worker'];
  * Global settings with an optional per-project overlay. In project scope every row shows whether it inherits or overrides;
  * overrides can be reset to global. Nothing persists until Save.
  */
-export function SettingsModal({ global, project, projectName, scope: scopeProp, onScope, section: sectionProp, onSection, onSave, onClose, onUnlink, style }) {
+export function SettingsModal({ global, project, projectName, models, modelsLoading, modelsNote, scope: scopeProp, onScope, section: sectionProp, onSection, onSave, onClose, onUnlink, style }) {
   const [localScope, setLocalScope] = useState(scopeProp ?? 'global');
   const [localSection, setLocalSection] = useState(sectionProp ?? 'models');
   const scope = onScope ? scopeProp : localScope;
@@ -56,8 +56,8 @@ export function SettingsModal({ global, project, projectName, scope: scopeProp, 
 
   const body = {
     models: <>
-      {row('directorModel', 'Director', 'Plans, delegates, verifies. Opus by default; Fable for long-horizon work.', <ModelSelect align="right" allowDefault={false} value={get('directorModel')} onChange={(v) => set('directorModel', v)} />)}
-      {row('workerModel', 'Workers', 'Implement scoped tasks. Cheaper models cut cost sharply.', <ModelSelect align="right" allowDefault={false} value={get('workerModel')} onChange={(v) => set('workerModel', v)} />)}
+      {row('directorModel', 'Director', 'Plans, delegates, verifies. Opus by default; Fable for long-horizon work.', <ModelSelect align="right" allowDefault={false} models={models} loading={modelsLoading} note={modelsNote} value={get('directorModel')} onChange={(v) => set('directorModel', v)} />)}
+      {row('workerModel', 'Workers', 'Implement scoped tasks. Cheaper models cut cost sharply.', <ModelSelect align="right" allowDefault={false} models={models} loading={modelsLoading} note={modelsNote} value={get('workerModel')} onChange={(v) => set('workerModel', v)} />)}
     </>,
     budget: <>
       {row('budgetCap', 'Default cap per run', 'The composer starts here; you can change it per mission.', <TextInput type="number" prefix="$" min={0} step={1} width={110} value={get('budgetCap')} onChange={(v) => set('budgetCap', v)} />)}

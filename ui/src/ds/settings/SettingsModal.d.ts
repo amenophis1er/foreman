@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react';
+import type { ModelInfo } from '../forms/ModelSelect';
 
 export type SettingsScope = 'global' | 'project';
 export type SettingsSectionId = 'models' | 'budget' | 'approvals' | 'appearance' | 'notifications' | 'projects';
@@ -27,6 +28,12 @@ export interface SettingsModalProps {
   project?: Settings;
   /** Enables the project scope tab. Omit when opened from the fleet page. */
   projectName?: string;
+  /** Model list for the two pickers. Scoped to the open project's provider —
+   *  without it they fall back to the built-in Anthropic list, which is wrong
+   *  for a project pinned to anything else. */
+  models?: ModelInfo[] | null;
+  modelsLoading?: boolean;
+  modelsNote?: string;
   scope?: SettingsScope;
   /** Pass with `scope` to control it; without it `scope` is the initial value. */
   onScope?: (s: SettingsScope) => void;

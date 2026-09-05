@@ -76,7 +76,7 @@ function ModeTab({ icon, label, active, onClick }) {
  * The mission composer: templates, an editor frame (Write / Preview, formatting, attachments), a parameter tray, one primary action.
  * Drafts persist per folder (text and settings; attachments are not persisted).
  */
-export function Composer({ folder, defaultBudgetUsd = 5, error, busy, templates = MISSION_TEMPLATES, models, modelsLoading, onStart, style }) {
+export function Composer({ folder, defaultBudgetUsd = 5, error, busy, templates = MISSION_TEMPLATES, models, modelsLoading, modelsNote, onStart, style }) {
   const stored = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(draftKey(folder)) || 'null'); } catch { return null; }
   }, [folder]);
@@ -198,10 +198,10 @@ export function Composer({ folder, defaultBudgetUsd = 5, error, busy, templates 
           <TextInput type="number" min={1} step={1} width={96} prefix="$" value={budget} onChange={setBudget} />
         </Field>
         <Field layout="stacked" label="Director" hint="Plans, delegates, verifies.">
-          <ModelSelect value={directorModel} onChange={setDirectorModel} models={models} loading={modelsLoading} />
+          <ModelSelect value={directorModel} onChange={setDirectorModel} models={models} loading={modelsLoading} note={modelsNote} />
         </Field>
         <Field layout="stacked" label="Workers" hint="Implement. Cheaper models cut cost.">
-          <ModelSelect value={workerModel} onChange={setWorkerModel} models={models} loading={modelsLoading} />
+          <ModelSelect value={workerModel} onChange={setWorkerModel} models={models} loading={modelsLoading} note={modelsNote} />
         </Field>
         <Field label="Browser" hint="Headless Playwright for the agents — navigate, click, screenshot. Non-local URLs still ask you.">
           <Switch checked={browserTools} onChange={setBrowserTools} label={browserTools ? 'on' : 'off'} />

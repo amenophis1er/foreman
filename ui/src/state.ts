@@ -38,7 +38,12 @@ export type AgentInfo = { id: string; status: Status; task?: string };
 /** '' inherits; otherwise an id from GET /models or a full claude-* id. */
 export type ModelChoice = string;
 
-export type AuthMode = 'api-key' | 'subscription' | 'cloud' | 'none';
+export type AuthMode =
+  | 'api-key' | 'subscription' | 'cloud' | 'none'
+  /** Served from this machine — free per token; budgets cap on turns and time. */
+  | 'local'
+  /** An endpoint Foreman does not price. */
+  | 'provider';
 
 /**
  * Who serves a project's models and who pays. One choice, not three settings —

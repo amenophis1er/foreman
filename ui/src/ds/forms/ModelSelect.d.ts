@@ -19,6 +19,9 @@ export interface ModelSelectProps {
   models?: ModelInfo[] | null;
   /** Shows "Fetching models…" and disables the trigger. */
   loading?: boolean;
+  /** Line shown at the top of the listbox — why the list is short or empty
+   *  (an unreachable endpoint reads differently from one with nothing pulled). */
+  note?: string;
   /** Include the leading "Default" (inherit) row. Default true. */
   allowDefault?: boolean;
   disabled?: boolean;
