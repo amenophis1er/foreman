@@ -300,6 +300,21 @@ export interface RunMeta {
   resumes?: number;
   /** Tools the human granted "always allow" for this run (survives resume). */
   allowedTools?: string[];
+  /**
+   * Absolute directories the human opened for this run by approving "always"
+   * on a folder-boundary card (see `PendingPermission.escapedPath`). Paths
+   * under them count as inside the mission folder. Persisted beside
+   * `allowedTools` for the same reason: a resume must not re-ask what the
+   * human already answered.
+   */
+  allowedRoots?: string[];
+  /**
+   * How long an approval card or director question may wait for the human
+   * before it is resolved with its unattended default (deny / "decide
+   * yourself"). Absent means the orchestrator's default; 0 disables the timer
+   * for a run someone intends to babysit.
+   */
+  askTimeoutMs?: number;
   /** Give agents a headless Playwright browser (navigate, click, screenshot). */
   browserTools?: boolean;
   folder: string;

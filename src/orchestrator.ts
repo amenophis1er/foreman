@@ -89,7 +89,7 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
     };
   }
 }
-import { makePolicy, type PendingPermission } from './policy.js';
+import { WORK_DIR, makePolicy, type PendingPermission } from './policy.js';
 import type { AgentEnv } from './provider.js';
 import { generateRunTitle } from './title.js';
 import { costBasisOf, isPriced } from './types.js';
@@ -151,19 +151,72 @@ export function normalizeUsage(raw: unknown): TokenUsage {
 const LOCAL_IGNORE_LINES = ['settings.local.json', '.gitignore'];
 
 /**
- * The sanctioned scratch space inside a mission folder, relative to it.
- *
- * A director that wants a verification script, a screenshot, a helper's
- * node_modules or some temp output has a correct instinct — keep the project
- * root clean — and, before this existed, no in-workspace place to act on it.
- * So it reached for /tmp, which the policy now prompts on. A prompt stops the
- * act; it does not change the habit. This directory is the habit's outlet:
- * inside the folder (so no prompt, no stall), gitignored (so the root stays
- * clean), and named by path in both charters (so the model has a place, not
- * a principle). Created at every run start so "it does not exist yet" is
- * never the reason to go elsewhere.
+ * The sanctioned scratch space inside a mission folder — see the definition
+ * in policy.ts for why it exists and why it lives there. Re-exported because
+ * this module is where callers already look for it.
  */
-export const WORK_DIR = '.foreman/work';
+export { WORK_DIR };
+
+/**
+ * How long an approval card or a director question waits for the human
+ * before it is answered with its unattended default.
+ *
+ * An orchestrator must survive its human being away. A planned mission once
+ * sat most of an hour on a scratch-file write, and had the human been asleep
+ * it would have died on a question whose answer was knowable in advance. Ten
+ * minutes is long enough that an attended human — one who is watching the
+ * run, or has the badge in a tab — will have answered, and short enough that
+ * an unattended run loses a fraction of its wall clock to the wait rather than
+ * all of it. The default on expiry is the SAFE answer, never the permissive
+ * one: a permission is denied with a redirect to the workspace, a question is
+ * answered "decide yourself and record it". Per-run override: `askTimeoutMs`
+ * (0 disables, for a run someone intends to babysit).
+ */
+export const DEFAULT_ASK_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Arms a one-shot timer for an ask, or nothing at all when `ms` is 0.
+ *
+ * Trivial on purpose, and exported for the same reason `watchSilence` is: the
+ * rule — fire once, never after cancel, `0` means never — is the part that
+ * matters, and a rule this small is exactly the kind that gets re-inlined
+ * slightly wrong. Unref'd so a pending ask never keeps the process alive.
+ */
+export function armAskTimeout(ms: number, onTimeout: () => void): { cancel(): void } {
+  if (!(ms > 0)) return { cancel() {} };
+  let fired = false;
+  const timer = setTimeout(() => { fired = true; onTimeout(); }, ms);
+  timer.unref?.();
+  return { cancel() { if (!fired) clearTimeout(timer); fired = true; } };
+}
+
+function unattendedMinutes(ms: number): number {
+  return Math.max(1, Math.round(ms / 60_000));
+}
+
+/**
+ * What a tool gets back when its approval card expired unanswered. Denies,
+ * and says where to redo the work — the same redirect the temp-dir rule
+ * gives, because the answer to "may I write outside?" from an absent human
+ * is the answer the charter already gave.
+ */
+export function unattendedDenyMessage(afterMs: number): string {
+  return `Auto-denied after ${unattendedMinutes(afterMs)} minutes unattended — Foreman does not ` +
+    `block a mission on a human who is away. Redo this inside the workspace (${WORK_DIR}/) or ` +
+    'record in MISSION.md why the outside is needed.';
+}
+
+/**
+ * What the director gets back when its `ask_human` expired unanswered. Not a
+ * refusal — the mission continues — but a decision handed back with the two
+ * conditions that make an unsupervised decision acceptable: write it down,
+ * and do not ask the same thing again.
+ */
+export function unattendedAnswer(afterMs: number): string {
+  return `No answer after ${unattendedMinutes(afterMs)} minutes — the human is away. Decide ` +
+    'yourself, record the decision and its reasoning in MISSION.md, and continue; do not ask ' +
+    'again unless the mission cannot proceed at all.';
+}
 
 /**
  * Ensures every rule in `lines` appears in the gitignore at `file`, appending
@@ -558,12 +611,14 @@ directing worker agents. Non-negotiable rules, in priority order:
    verification scripts, screenshots, scratch tooling, node_modules for a
    helper, temp output — goes under ${WORK_DIR}/ inside the mission folder,
    never /tmp or anywhere outside it. It is gitignored, so it keeps the
-   project root clean without leaving the project. Anything written outside
-   the folder prompts the human and stalls the run until they answer; a
-   mission that needs the outside should say so in MISSION.md and ask via
-   mcp__foreman__ask_human, not discover it mid-run. If you are prompted for
-   a path outside the folder, the answer is almost always to redo it under
-   ${WORK_DIR}/, not to wait for approval.
+   project root clean without leaving the project. A write to /tmp or any
+   other temp directory is DENIED outright, no question asked — the denial
+   names ${WORK_DIR}/ and you redo it there. Any other path outside the folder
+   asks the human, and an ask nobody answers within ${DEFAULT_ASK_TIMEOUT_MS / 60_000}
+   minutes is denied the same way; a mission that needs the outside should
+   say so in MISSION.md and ask via mcp__foreman__ask_human, not discover it
+   mid-run. If you are prompted for a path outside the folder, the answer is
+   almost always to redo it under ${WORK_DIR}/, not to wait for approval.
 4. REPORT WHAT YOU SEE. Judge the work as a competent professional would, not
    only against the letter of the acceptance criteria. If you observe a defect
    the criteria did not name — tap targets too small to use, unreadable
@@ -571,8 +626,13 @@ directing worker agents. Non-negotiable rules, in priority order:
    when it is clearly in scope, and otherwise say so plainly in your final
    summary and in MISSION.md. Staying silent about a problem you could see is
    a failed mission even when every listed box is ticked.
-5. ESCALATE, DON'T POWER THROUGH. Anything irreversible, out of scope, or
-   surprising: ask the human via mcp__foreman__ask_human and wait for the answer.
+5. DECIDE AND RECORD, DON'T ASK. You are running unattended more often than
+   not. Make the reasonable call, write it and the reasoning into MISSION.md,
+   and continue. Reserve mcp__foreman__ask_human for decisions that are
+   irreversible or that spend money the mission was not given — those you ask
+   and wait for. A question left unanswered for ${DEFAULT_ASK_TIMEOUT_MS / 60_000}
+   minutes is auto-answered "decide yourself"; treat that answer as the
+   human's, record what you decided, and do not ask it again.
 6. NEVER modify Foreman itself, its server, or any oversight tooling. Tooling
    failure is an escalation, never a self-repair.
 7. When DONE WHEN is verified, update MISSION.md (all boxes ticked, final log
@@ -591,8 +651,10 @@ is never a substitute for finishing.
 WORK INSIDE THE WORKSPACE. Anything you create that is not part of the task's
 deliverable — scripts, screenshots, helper installs, temp output — goes under
 ${WORK_DIR}/ inside the working directory, never /tmp or anywhere outside it.
-Writing outside the folder prompts the human and stalls you; if prompted, redo
-it under ${WORK_DIR}/ instead.
+A write to /tmp or another temp directory is denied outright; any other path
+outside the folder asks the human and is denied if nobody answers within
+${DEFAULT_ASK_TIMEOUT_MS / 60_000} minutes. Either way, redo it under ${WORK_DIR}/
+instead of waiting.
 When finished, end with a concise report of what you did and how you checked it.
 `;
 
@@ -630,10 +692,22 @@ export class MissionRun {
   private readonly workers = new Map<string, WorkerRuntime>();
   private workerSeq = 0;
   private readonly runAllowed = new Set<string>();
+  /**
+   * Directories the human opened with "always" on a folder-boundary card.
+   * Consulted by the policy on every call, so a grant covers the very next
+   * sibling command — which is the loop it exists to break.
+   */
+  private readonly allowedRoots = new Set<string>();
   /** Set once the cap is passed; the wind-down turn is allowed, then the loop ends. */
   private budgetStopped = false;
-  private readonly pendingPermissions = new Map<string, PendingPermission>();
+  private readonly pendingPermissions = new Map<string, PendingPermission & { agent: string }>();
   private readonly pendingQuestions = new Map<string, (answer: string) => void>();
+  /**
+   * The unattended-default timer per pending ask (permission or question),
+   * keyed by the ask's id. Cancelled on any normal resolution and swept in
+   * the run's `finally`, so a timer never fires into a run that is over.
+   */
+  private readonly askTimers = new Map<string, { cancel(): void }>();
   /** The director's streaming prompt; steering pushes into it. */
   private directorInput?: MessageStream;
   /** Director cost is cumulative per query; track the last figure for deltas. */
@@ -723,6 +797,39 @@ export class MissionRun {
       if (n > this.workerSeq) this.workerSeq = n;
     }
     for (const t of meta.allowedTools ?? []) this.runAllowed.add(t);
+    for (const r of meta.allowedRoots ?? []) this.allowedRoots.add(r);
+  }
+
+  /** Writes both grant sets back to meta and persists — one place, so they cannot drift. */
+  private syncAllowed(): void {
+    this.meta.allowedTools = [...this.runAllowed];
+    this.meta.allowedRoots = [...this.allowedRoots];
+    this.saveMeta(this.meta);
+  }
+
+  // -- unattended defaults ----------------------------------------------------
+
+  /**
+   * Arms the unattended-default timer for one ask. `onTimeout` runs only if
+   * the ask is still pending when the clock expires; it receives the wait so
+   * the message and the event can say how long the human was given.
+   */
+  private armAsk(id: string, onTimeout: (afterMs: number) => void): void {
+    const ms = this.meta.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
+    this.askTimers.set(id, armAskTimeout(ms, () => {
+      this.askTimers.delete(id);
+      onTimeout(ms);
+    }));
+  }
+
+  private cancelAsk(id: string): void {
+    this.askTimers.get(id)?.cancel();
+    this.askTimers.delete(id);
+  }
+
+  private cancelAllAsks(): void {
+    for (const t of this.askTimers.values()) t.cancel();
+    this.askTimers.clear();
   }
 
   // -- public control surface (called by the HTTP layer) --------------------
@@ -739,11 +846,22 @@ export class MissionRun {
     const pending = this.pendingPermissions.get(id);
     if (!pending) return false;
     this.pendingPermissions.delete(id);
+    this.cancelAsk(id);
     let result: PermissionResult;
-    if (decision === 'allow_always') {
+    if (decision === 'allow_always' && pending.escapedPath) {
+      // The card was about a PATH, so that is what "always" grants — see the
+      // contract on `PendingPermission.escapedPath`. Adding the tool instead
+      // would be ignored by the boundary (by design) and the next sibling
+      // command would prompt again: "Always" looked broken while doing
+      // exactly what it said. Not `updatedPermissions`: the SDK's grant is a
+      // tool rule, and there is none to give here.
+      this.allowedRoots.add(pending.escapedPath);
+      this.syncAllowed();
+      this.emit('root_allowed', { path: pending.escapedPath, agent: pending.agent, toolName: pending.toolName });
+      result = { behavior: 'allow' };
+    } else if (decision === 'allow_always') {
       this.runAllowed.add(pending.toolName);
-      this.meta.allowedTools = [...this.runAllowed];
-      this.saveMeta(this.meta);
+      this.syncAllowed();
       result = { behavior: 'allow', updatedPermissions: pending.suggestions };
     } else if (decision === 'allow') {
       result = { behavior: 'allow' };
@@ -759,6 +877,7 @@ export class MissionRun {
     const resolve = this.pendingQuestions.get(id);
     if (!resolve) return false;
     this.pendingQuestions.delete(id);
+    this.cancelAsk(id);
     resolve(text);
     return true;
   }
@@ -836,6 +955,11 @@ export class MissionRun {
 
   async interrupt(): Promise<void> {
     this.wasInterrupted = true;
+    // Pending asks are settled by the SDK's abort (permissions) or die with
+    // the query (questions); a timer firing after that would auto-deny into
+    // a run that is already stopping and stamp the transcript with a wait
+    // that was never going to be answered.
+    this.cancelAllAsks();
     this.directorInput?.close(); // no further turns; let the session wind down
     for (const w of this.workers.values()) {
       if (w.q) await w.q.interrupt().catch(() => {});
@@ -1042,6 +1166,7 @@ export class MissionRun {
       // one number here that is not backed by anything.
       if (this.ledgerTimer) clearInterval(this.ledgerTimer);
       if (this.capTimer) clearInterval(this.capTimer);
+      this.cancelAllAsks();
       this.interimUsage = emptyUsage();
       // "Always allow" makes the SDK write .claude/settings.local.json into the
       // mission folder, which appears only once a grant happens — so this runs
@@ -1152,12 +1277,26 @@ export class MissionRun {
   }
 
   private policyFor(agent: string) {
-    return makePolicy(agent, this.meta.folder, this.runAllowed, {
+    return makePolicy(agent, this.meta.folder, this.runAllowed, this.allowedRoots, {
       onAutoAllow: (a, toolName, reason) => this.emit('auto_allowed', { agent: a, toolName, reason }),
+      onAutoDeny: (a, toolName, reason) => this.emit('auto_denied', { agent: a, toolName, reason }),
       onAsk: (a, id, req) => this.emit('permission_request', { id, agent: a, ...req }),
-      register: (id, pending) => void this.pendingPermissions.set(id, pending),
+      register: (id, pending) => {
+        // `pending` carries `escapedPath` through untouched: resolvePermission
+        // reads it to decide whether "always" grants the path or the tool.
+        this.pendingPermissions.set(id, { ...pending, agent });
+        // The unattended default. Resolved here rather than through
+        // resolvePermission so the transcript gets `permission_timeout`, not
+        // a `permission_resolved` that looks like a human clicked Deny.
+        this.armAsk(id, (afterMs) => {
+          if (!this.pendingPermissions.delete(id)) return;
+          pending.resolve({ behavior: 'deny', message: unattendedDenyMessage(afterMs) });
+          this.emit('permission_timeout', { id, agent, toolName: pending.toolName, afterMs });
+        });
+      },
       unregister: (id) => {
         const existed = this.pendingPermissions.delete(id);
+        this.cancelAsk(id);
         if (existed) this.emit('permission_resolved', { id, behavior: 'aborted' });
         return existed;
       },
@@ -1905,7 +2044,20 @@ export class MissionRun {
       async ({ question }) => {
         const id = `q-${Date.now()}-${this.pendingQuestions.size}`;
         this.emit('question', { id, question });
-        const answer = await new Promise<string>((resolve) => this.pendingQuestions.set(id, resolve));
+        // Same unattended default as a permission card, with the opposite
+        // polarity: a question is not refused, it is handed back. The
+        // director keeps its context and is told to decide and record.
+        let timedOut = false;
+        const answer = await new Promise<string>((resolve) => {
+          this.pendingQuestions.set(id, resolve);
+          this.armAsk(id, (afterMs) => {
+            if (!this.pendingQuestions.delete(id)) return;
+            timedOut = true;
+            this.emit('question_timeout', { id, afterMs });
+            resolve(unattendedAnswer(afterMs));
+          });
+        });
+        if (timedOut) return text(answer);
         this.emit('question_answered', { id });
         return text(`Human answered: ${answer}`);
       },

@@ -8,7 +8,9 @@ import {
   activityHint, ensureIgnoreLines, loopingWorkerReport,
   stalledWorkerReport, workerStatusBlock,
   watchRepeats, watchSilence,
+  DEFAULT_ASK_TIMEOUT_MS, armAskTimeout, unattendedAnswer, unattendedDenyMessage,
 } from './orchestrator.js';
+import { makePolicy, type PendingPermission } from './policy.js';
 import type { AgentEnv } from './provider.js';
 import type { RunMeta } from './types.js';
 
@@ -808,4 +810,149 @@ test('both charters name the scratch space by path', () => {
   assert.ok(DIRECTOR_CHARTER.includes(`${WORK_DIR}/`));
   assert.ok(WORKER_CHARTER.includes(`${WORK_DIR}/`));
   assert.ok(!DIRECTOR_CHARTER.includes('${'), 'WORK_DIR was not interpolated');
+});
+
+// ---------------------------------------------------------------------------
+// Blocking prompts vs. an autonomous orchestrator (crew-resilience item 8)
+// ---------------------------------------------------------------------------
+
+type Pending = PendingPermission & { agent: string };
+type Internals = {
+  pendingPermissions: Map<string, Pending>;
+  allowedRoots: Set<string>;
+  runAllowed: Set<string>;
+  askTimers: Map<string, unknown>;
+  policyFor(agent: string): ReturnType<typeof makePolicy>;
+};
+const internals = (run: MissionRun) => run as unknown as Internals;
+const policyOpts = (signal: AbortSignal, id: string) =>
+  ({ signal, toolUseID: id }) as unknown as Parameters<ReturnType<typeof makePolicy>>[2];
+
+test('resolvePermission allow_always on a pending WITH escapedPath grants the path, not the tool, and persists it', () => {
+  const events: Array<{ event: string; data: unknown }> = [];
+  let saved: RunMeta | undefined;
+  const run = new MissionRun(meta(), (event, data) => events.push({ event, data }), (m) => { saved = structuredClone(m); }, noopAgentEnv);
+  let result: unknown;
+  internals(run).pendingPermissions.set('p1', {
+    resolve: (r) => { result = r; }, toolName: 'Bash', escapedPath: '/Users/x/other', agent: 'worker-1',
+  });
+
+  assert.equal(run.resolvePermission('p1', 'allow_always'), true);
+  assert.deepEqual([...internals(run).allowedRoots], ['/Users/x/other']);
+  assert.equal(internals(run).runAllowed.size, 0, 'the tool is NOT granted — that is the re-prompt loop');
+  assert.deepEqual(saved?.allowedRoots, ['/Users/x/other'], 'persisted for resume');
+  assert.deepEqual(saved?.allowedTools, []);
+  assert.deepEqual(result, { behavior: 'allow' }, 'no SDK tool rule rides along with a path grant');
+  const rootAllowed = events.find((e) => e.event === 'root_allowed');
+  assert.deepEqual(rootAllowed?.data, { path: '/Users/x/other', agent: 'worker-1', toolName: 'Bash' });
+  assert.ok(events.some((e) => e.event === 'permission_resolved'));
+});
+
+test('resolvePermission allow_always on a pending WITHOUT escapedPath keeps the old meaning: a tool grant', () => {
+  const events: Array<{ event: string; data: unknown }> = [];
+  let saved: RunMeta | undefined;
+  const run = new MissionRun(meta(), (event, data) => events.push({ event, data }), (m) => { saved = structuredClone(m); }, noopAgentEnv);
+  let result: unknown;
+  internals(run).pendingPermissions.set('p2', { resolve: (r) => { result = r; }, toolName: 'WebFetch', agent: 'director' });
+
+  run.resolvePermission('p2', 'allow_always');
+  assert.deepEqual([...internals(run).runAllowed], ['WebFetch']);
+  assert.equal(internals(run).allowedRoots.size, 0);
+  assert.deepEqual(saved?.allowedTools, ['WebFetch']);
+  assert.equal((result as { behavior: string }).behavior, 'allow');
+  assert.ok(!events.some((e) => e.event === 'root_allowed'));
+});
+
+test('a resumed run rehydrates allowedRoots from meta, and the policy honours them', async () => {
+  const run = new MissionRun(meta({ allowedRoots: ['/Users/x/other'], allowedTools: ['WebFetch'] }), () => {}, () => {}, noopAgentEnv);
+  assert.deepEqual([...internals(run).allowedRoots], ['/Users/x/other']);
+  assert.deepEqual([...internals(run).runAllowed], ['WebFetch']);
+  const policy = internals(run).policyFor('director');
+  const ac = new AbortController();
+  const r = await policy('Write', { file_path: '/Users/x/other/f.txt', content: '' }, policyOpts(ac.signal, 'tu_r'));
+  assert.equal(r!.behavior, 'allow', 'a root granted before the restart is not re-asked');
+});
+
+test('armAskTimeout fires once after the delay; cancel prevents it; 0 never arms', async () => {
+  let fired = 0;
+  const a = armAskTimeout(20, () => { fired++; });
+  await sleep(60);
+  assert.equal(fired, 1);
+  a.cancel(); // after firing: harmless
+  assert.equal(fired, 1);
+
+  const b = armAskTimeout(20, () => { fired++; });
+  b.cancel();
+  await sleep(60);
+  assert.equal(fired, 1, 'cancelled before firing');
+
+  const c = armAskTimeout(0, () => { fired++; });
+  await sleep(30);
+  assert.equal(fired, 1, '0 disables');
+  c.cancel();
+});
+
+test('a pending permission unanswered past the timeout is denied with the unattended message and permission_timeout is emitted', async () => {
+  const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+  const run = new MissionRun(meta({ askTimeoutMs: 30 }), (event, data) => events.push({ event, data: data as Record<string, unknown> }), () => {}, noopAgentEnv);
+  const policy = internals(run).policyFor('worker-2');
+  const ac = new AbortController();
+  // Outside the folder (/tmp/x) and NOT a temp dir, so it reaches the ask path.
+  const pending = policy('Write', { file_path: '/Users/x/other-repo/f', content: '' }, policyOpts(ac.signal, 'tu_t1'));
+  assert.deepEqual(run.pendingPermissionIds, ['tu_t1']);
+  assert.equal(internals(run).askTimers.size, 1);
+
+  const r = await pending;
+  assert.equal(r!.behavior, 'deny');
+  assert.equal((r as { message: string }).message, unattendedDenyMessage(30));
+  assert.equal((r as { message: string }).message,
+    'Auto-denied after 1 minutes unattended — Foreman does not block a mission on a human who is away. ' +
+    'Redo this inside the workspace (.foreman/work/) or record in MISSION.md why the outside is needed.');
+  const timeout = events.find((e) => e.event === 'permission_timeout');
+  assert.deepEqual(timeout?.data, { id: 'tu_t1', agent: 'worker-2', toolName: 'Write', afterMs: 30 });
+  assert.ok(!events.some((e) => e.event === 'permission_resolved'), 'a timeout is not a human decision');
+  assert.deepEqual(run.pendingPermissionIds, []);
+  assert.equal(internals(run).askTimers.size, 0);
+  // Late answers find nothing to answer.
+  assert.equal(run.resolvePermission('tu_t1', 'allow'), false);
+});
+
+test('a pending permission answered in time is not timed out, and its timer is cleared', async () => {
+  const events: Array<{ event: string; data: unknown }> = [];
+  const run = new MissionRun(meta({ askTimeoutMs: 40 }), (event, data) => events.push({ event, data }), () => {}, noopAgentEnv);
+  const policy = internals(run).policyFor('director');
+  const ac = new AbortController();
+  const pending = policy('Write', { file_path: '/Users/x/other-repo/f', content: '' }, policyOpts(ac.signal, 'tu_t2'));
+  assert.equal(run.resolvePermission('tu_t2', 'allow'), true);
+  assert.equal((await pending)!.behavior, 'allow');
+  assert.equal(internals(run).askTimers.size, 0);
+  await sleep(80);
+  assert.ok(!events.some((e) => e.event === 'permission_timeout'));
+});
+
+test('askTimeoutMs: 0 leaves a pending permission waiting (a babysat run); an abort still settles it', async () => {
+  const run = new MissionRun(meta({ askTimeoutMs: 0 }), () => {}, () => {}, noopAgentEnv);
+  const policy = internals(run).policyFor('director');
+  const ac = new AbortController();
+  const pending = policy('Write', { file_path: '/Users/x/other-repo/f', content: '' }, policyOpts(ac.signal, 'tu_t3'));
+  await sleep(30);
+  assert.deepEqual(run.pendingPermissionIds, ['tu_t3'], 'still waiting');
+  ac.abort();
+  assert.equal((await pending)!.behavior, 'deny');
+  assert.equal(internals(run).askTimers.size, 0);
+});
+
+test('the unattended messages and the temp-dir denial say where to go, and the charter carries the rule', () => {
+  assert.equal(DEFAULT_ASK_TIMEOUT_MS, 10 * 60_000);
+  assert.equal(unattendedAnswer(DEFAULT_ASK_TIMEOUT_MS),
+    'No answer after 10 minutes — the human is away. Decide yourself, record the decision and its ' +
+    'reasoning in MISSION.md, and continue; do not ask again unless the mission cannot proceed at all.');
+  assert.match(unattendedDenyMessage(DEFAULT_ASK_TIMEOUT_MS), /after 10 minutes/);
+  assert.ok(DIRECTOR_CHARTER.includes('DECIDE AND RECORD, DON\'T ASK'));
+  assert.ok(DIRECTOR_CHARTER.includes('10\n   minutes is auto-answered "decide yourself"') ||
+    DIRECTOR_CHARTER.includes('10 minutes is auto-answered "decide yourself"'));
+  assert.ok(DIRECTOR_CHARTER.includes('DENIED outright'));
+  assert.ok(WORKER_CHARTER.includes('denied outright'));
+  assert.ok(!DIRECTOR_CHARTER.includes('prompts the human and stalls'), 'the old sentence is gone');
+  assert.ok(!WORKER_CHARTER.includes('prompts the human and stalls'));
 });

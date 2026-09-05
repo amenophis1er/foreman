@@ -20,14 +20,22 @@
  *  6. The per-run tool policy (Settings, snapshotted at run start) applies:
  *     'allow' runs silently, 'deny' blocks with guidance, 'ask' prompts.
  *     Defaults are autonomy-first (Bash/Write/Edit/WebFetch allowed).
- *  7. Write/Edit outside the mission folder ALWAYS prompts, whatever the
+ *  7. A write into a TEMP directory (/tmp, $TMPDIR, os.tmpdir()) is denied
+ *     outright with a redirect to `WORK_DIR` — never asked. See
+ *     `tempDirDenial` for why this is the one outside location whose right
+ *     answer is always known in advance.
+ *  8. Write/Edit outside the mission folder ALWAYS prompts, whatever the
  *     policy says — grants never bypass the job-site boundary. The same
  *     boundary applies to Bash: a command that would WRITE outside the
  *     folder (`cd /tmp && npm install`, `mkdir -p /tmp/x`, `> ~/.zshrc`)
  *     prompts even under a blanket 'allow'; reads of outside paths
  *     (`cat /etc/hosts`, `which node`) stay silent. Shell cannot be analysed
  *     exactly, so this is the conservative heuristic in `bashEscapesFolder`.
- *  8. Everything else prompts.
+ *     The one way past the boundary is a PATH grant, not a tool grant: the
+ *     human approves "always" on an escape card and the caller adds that
+ *     card's `escapedPath` to `allowedRoots`, after which paths under it
+ *     count as inside. "Always allow Bash" alone never opens the filesystem.
+ *  9. Everything else prompts.
  */
 import os from 'node:os';
 import path from 'node:path';
@@ -41,6 +49,24 @@ import type { ToolPolicy } from './types.js';
 export const DEFAULT_TOOL_POLICY: ToolPolicy = {
   Bash: 'allow', Write: 'allow', Edit: 'allow', WebFetch: 'allow',
 };
+
+/**
+ * The sanctioned scratch space inside a mission folder, relative to it.
+ *
+ * A director that wants a verification script, a screenshot, a helper's
+ * node_modules or some temp output has a correct instinct — keep the project
+ * root clean — and, before this existed, no in-workspace place to act on it.
+ * So it reached for /tmp. This directory is the habit's outlet: inside the
+ * folder (so no prompt, no stall), gitignored (so the root stays clean), and
+ * named by path in both charters and in every denial (so the model has a
+ * place, not a principle). The orchestrator creates it at every run start so
+ * "it does not exist yet" is never the reason to go elsewhere.
+ *
+ * Defined here rather than in the orchestrator because the policy's temp-dir
+ * denial names it and the orchestrator imports the policy — one constant, no
+ * import cycle. The orchestrator re-exports it for its callers.
+ */
+export const WORK_DIR = '.foreman/work';
 
 export const AUTO_ALLOW_TOOLS: ReadonlySet<string> = new Set([
   'Read', 'Glob', 'Grep', 'TodoWrite', 'Task',
@@ -87,13 +113,19 @@ export function browserToolDecision(
  *  'opts'   only the value of a directory/output option is (`npm --prefix`,
  *           `tar -C`, `unzip -d`, `curl -o`); positional args are packages,
  *           URLs or archive members, not write targets
+ *
+ * `dirs` marks verbs whose targets ARE directories (or whole subtrees), so the
+ * path itself is the natural grant root — see `BashEscape.grant`. Verbs left
+ * unmarked write files, whose parent directory is the grant.
  */
 type ArgMode = 'all' | 'last' | 'opts';
-const WRITE_VERBS: Record<string, { mode: ArgMode; opts?: string[]; does: string }> = {
-  mkdir:    { mode: 'all',  does: 'creates a path' },
+const WRITE_VERBS: Record<string, { mode: ArgMode; opts?: string[]; does: string; dirs?: boolean }> = {
+  mkdir:    { mode: 'all',  does: 'creates a path', dirs: true },
   touch:    { mode: 'all',  does: 'creates a path' },
-  rm:       { mode: 'all',  does: 'deletes a path' },
-  rmdir:    { mode: 'all',  does: 'deletes a path' },
+  // rm's target is the whole thing being removed; granting its PARENT after a
+  // `rm -rf /opt/homebrew` would be far wider than what the human approved.
+  rm:       { mode: 'all',  does: 'deletes a path', dirs: true },
+  rmdir:    { mode: 'all',  does: 'deletes a path', dirs: true },
   chmod:    { mode: 'all',  does: 'changes a path' },
   chown:    { mode: 'all',  does: 'changes a path' },
   truncate: { mode: 'all',  does: 'writes to a path' },
@@ -113,6 +145,12 @@ const WRITE_VERBS: Record<string, { mode: ArgMode; opts?: string[]; does: string
   curl:     { mode: 'opts', opts: ['-o', '--output', '--output-dir'], does: 'downloads into a path' },
   wget:     { mode: 'opts', opts: ['-O', '-P', '--output-document', '--directory-prefix'], does: 'downloads into a path' },
 };
+/**
+ * Among the 'opts' options above, the ones whose value is a FILE rather than
+ * a directory (`curl -o f`, `wget -O f`). Every other option in the table
+ * (`--prefix`, `-C`, `-d`, `-P`, `--target`, …) names a directory.
+ */
+const FILE_OPTS = new Set(['-o', '--output', '-O', '--output-document']);
 /** Prefixes that merely wrap the real verb (`sudo rm`, `env FOO=1 mkdir`). */
 const WRAPPERS = new Set(['sudo', 'env', 'command', 'exec', 'nohup', 'time', 'nice', 'builtin']);
 /** Pseudo-devices: writing to them touches nothing on disk. */
@@ -151,9 +189,44 @@ function asPath(token: string, cwd: string): string | null {
 }
 
 /**
- * Conservative check: would this shell command WRITE outside `folder`?
- * Returns a one-line human-readable reason, or null when nothing in the
- * command looks like an outside write.
+ * True when `p` is one of `roots` or lies beneath one. Trailing-separator
+ * prefix comparison, so `/Users/x/proj-backup` is NOT under `/Users/x/proj`.
+ * Roots are resolved here so callers can hand over raw strings (the human's
+ * grants arrive as whatever the card showed).
+ */
+export function underAnyRoot(p: string, roots: Iterable<string>): boolean {
+  for (const r of roots) {
+    const root = path.resolve(r);
+    if (p === root || p.startsWith(root + path.sep)) return true;
+  }
+  return false;
+}
+
+/** What `bashEscape` found: the reason for the card plus the path behind it. */
+export interface BashEscape {
+  /** One-line human-readable reason, e.g. `cd /tmp — writes after this land outside the mission folder`. */
+  reason: string;
+  /** The resolved outside path that triggered the escape (`/tmp/x/y` for `mkdir -p /tmp/x/y`). */
+  path: string;
+  /**
+   * The DIRECTORY a human would grant to stop being asked about this command
+   * and the siblings that follow it. When `path` is itself a directory target
+   * (`cd X`, `mkdir X`, `tar -C X`, `npm --prefix X`, `git clone … X`) it is
+   * `path`; when it is a file (`> X/out.txt`, `touch X/a`, `sed -i X/f`,
+   * `curl -o X/f`) it is `dirname(path)`. Granting the bare file would make
+   * the very next `touch X/b` prompt again, which is exactly the loop this
+   * exists to break; granting the directory covers the work the human just
+   * looked at without widening to its parent.
+   */
+  grant: string;
+}
+
+/**
+ * Conservative check: would this shell command WRITE outside `folder` (and
+ * outside every directory in `extraRoots`, the human's per-run path grants)?
+ * Returns the reason plus the offending path, or null when nothing in the
+ * command looks like an outside write. `bashEscapesFolder` is the same check
+ * reduced to the reason string.
  *
  * Shell is not statically analysable, so this deliberately errs towards
  * prompting: the cost of a false positive is one approval card, the cost of
@@ -185,12 +258,20 @@ function asPath(token: string, cwd: string): string | null {
  * -c`), `cd -`, paths with spaces (the tokenizer splits on whitespace),
  * `git -C <outside> commit`, and any tool not in `WRITE_VERBS`.
  */
-export function bashEscapesFolder(command: string, folder: string): string | null {
+export function bashEscape(
+  command: string, folder: string, extraRoots: Iterable<string> = [],
+): BashEscape | null {
   const root = path.resolve(folder);
-  const rootDir = root + path.sep;
-  const outside = (p: string): boolean =>
-    p !== root && !p.startsWith(rootDir) && !DEV_SINKS.has(p);
+  // Snapshot the grants once per call: the caller's set is mutable and may be
+  // appended to while we walk, and one command must see one consistent view.
+  const roots = [root, ...extraRoots];
+  const outside = (p: string): boolean => !DEV_SINKS.has(p) && !underAnyRoot(p, roots);
   const label = (seg: string): string => (seg.length > 80 ? seg.slice(0, 77) + '…' : seg);
+  const hit = (segment: string, does: string, p: string, isDir: boolean): BashEscape => ({
+    reason: `${label(segment)} — ${does} outside the mission folder`,
+    path: p,
+    grant: isDir ? p : path.dirname(p),
+  });
 
   let cwd = root; // virtual cwd, so `cd sub && rm -rf ../../x` resolves correctly
 
@@ -203,9 +284,7 @@ export function bashEscapesFolder(command: string, folder: string): string | nul
     // Redirections first — they apply whatever the verb is (`echo x > ~/.zshrc`).
     for (const m of segment.matchAll(REDIRECT_RE)) {
       const p = asPath(m[1], cwd);
-      if (p !== null && outside(p)) {
-        return `${label(segment)} — redirects output outside the mission folder`;
-      }
+      if (p !== null && outside(p)) return hit(segment, 'redirects output', p, false);
     }
     const words = segment.replace(REDIRECT_RE, ' ').split(/\s+/).filter(Boolean).map(bare);
     // Peel wrappers and leading VAR=value assignments to reach the real verb.
@@ -222,55 +301,147 @@ export function bashEscapesFolder(command: string, folder: string): string | nul
       cwd = p;
       // Enough on its own: whatever follows (relative writes, `npm install`,
       // `git init`) lands there, so we need not look at later segments.
-      if (outside(p)) return `${label(segment)} — writes after this land outside the mission folder`;
+      if (outside(p)) return hit(segment, 'writes after this land', p, true);
       continue;
     }
 
-    // Which arguments are write targets for this verb?
-    let targets: string[] = [];
+    // Which arguments are write targets for this verb, and is each a
+    // directory (grant it as-is) or a file (grant its parent)?
+    let targets: Array<{ tok: string; dir: boolean }> = [];
     let does = 'writes to a path';
     const spec = WRITE_VERBS[verb];
     if (spec) {
       does = spec.does;
-      if (spec.mode === 'all') targets = args;
-      else if (spec.mode === 'last') targets = flagless.slice(-1);
+      if (spec.mode === 'all') targets = args.map((tok) => ({ tok, dir: spec.dirs === true }));
+      // A destination is a directory only when spelled as one (`cp a /tmp/x/`);
+      // otherwise assume a file, so the grant is its parent — the human is
+      // about to be asked about more copies into the same place.
+      else if (spec.mode === 'last') targets = flagless.slice(-1).map((tok) => ({ tok, dir: tok.endsWith('/') }));
       else {
         for (let k = 0; k < args.length; k++) {
           const opt = spec.opts!.find((o) => args[k] === o || args[k].startsWith(o + '='));
           if (!opt) continue;
-          targets.push(args[k].includes('=') ? args[k] : (args[k + 1] ?? ''));
+          targets.push({ tok: args[k].includes('=') ? args[k] : (args[k + 1] ?? ''), dir: !FILE_OPTS.has(opt) });
         }
       }
     } else if (verb === 'sed' && args.some((a) => /^-[a-zA-Z]*i|^--in-place/.test(a))) {
-      does = 'edits a file'; targets = flagless;
+      does = 'edits a file'; targets = flagless.map((tok) => ({ tok, dir: false }));
     } else if (verb === 'find' && (args.includes('-delete') ||
       args.some((a, k) => /^-(exec|execdir|ok)$/.test(a) && WRITE_VERBS[path.basename(args[k + 1] ?? '')]))) {
-      does = 'modifies paths'; targets = flagless;
+      does = 'modifies paths'; targets = flagless.map((tok) => ({ tok, dir: true })); // find's start path is a tree
     } else if (verb === 'git' && /^(clone|init|worktree)$/.test(flagless[0] ?? '')) {
-      does = 'creates a repository'; targets = flagless.slice(1);
+      does = 'creates a repository'; targets = flagless.slice(1).map((tok) => ({ tok, dir: true }));
     } else if (verb === 'dd') {
-      does = 'writes to a path'; targets = args.filter((a) => a.startsWith('of='));
+      does = 'writes to a path'; targets = args.filter((a) => a.startsWith('of=')).map((tok) => ({ tok, dir: false }));
     }
 
     for (const t of targets) {
-      const p = asPath(t, cwd);
-      if (p !== null && outside(p)) return `${label(segment)} — ${does} outside the mission folder`;
+      const p = asPath(t.tok, cwd);
+      if (p !== null && outside(p)) return hit(segment, does, p, t.dir);
     }
   }
   return null;
 }
+
+/**
+ * `bashEscape` reduced to its reason string — the original shape, kept so
+ * existing callers and tests read unchanged. `extraRoots` are directories the
+ * human has already granted for this run (see `escapedPath`).
+ */
+export function bashEscapesFolder(
+  command: string, folder: string, extraRoots?: Iterable<string>,
+): string | null {
+  return bashEscape(command, folder, extraRoots)?.reason ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Temp directories: deny with a redirect, never ask
+// ---------------------------------------------------------------------------
+
+/**
+ * The temp directories a write is refused into without a card.
+ *
+ * `/tmp`, `/private/tmp`, `$TMPDIR` and `os.tmpdir()` — the places a model
+ * reaches for when it wants scratch space and has not been told where scratch
+ * goes. On macOS `/tmp` and `/var` are symlinks into `/private`, and a command
+ * may spell either form (`cd /tmp/x`, `Write /private/tmp/x/f`); the policy
+ * resolves paths lexically, not through the filesystem, so both spellings of
+ * every root are listed rather than trusting realpath on a path that may not
+ * exist yet. Computed once: the environment does not change under a run.
+ */
+export function tempRoots(env: NodeJS.ProcessEnv = process.env): string[] {
+  const raw = ['/tmp', '/private/tmp', env.TMPDIR, os.tmpdir()].filter((r): r is string => Boolean(r));
+  const out = new Set<string>();
+  for (const r of raw) {
+    const p = path.resolve(r);
+    out.add(p);
+    if (p.startsWith('/private/')) out.add(p.slice('/private'.length));
+    else out.add('/private' + p);
+  }
+  return [...out];
+}
+const TEMP_ROOTS = tempRoots();
+
+/** True when `p` is a temp directory or lies under one — see `tempRoots`. */
+export function isTempPath(p: string): boolean {
+  return underAnyRoot(path.resolve(p), TEMP_ROOTS);
+}
+
+/**
+ * The message a temp-dir write is denied with. Names the outside path, the
+ * in-workspace place to redo it, and why that place exists — the deny is only
+ * useful if the model's next attempt lands inside, so the redirect is the
+ * substance and the refusal is the packaging.
+ */
+export function tempDirDenial(p: string, folder: string): string {
+  return `Denied: ${p} is outside the mission folder. Scratch work belongs under ` +
+    `${folder}/${WORK_DIR}/ — it is gitignored and keeps the project root clean without ` +
+    'leaving the project. Redo this there.';
+}
+
+/**
+ * The sentence every escape card ends with, so the meaning of the "Always"
+ * button is stated where the human reads it — it grants THIS PATH, not the
+ * tool. Exported for the UI/tests to match on rather than retype.
+ */
+export const ESCAPE_GRANT_HINT =
+  'Approve "always" to allow this path for the rest of the run; other paths outside the folder will still ask.';
 
 /** A pending approval routed to the UI; resolved by the human's decision. */
 export interface PendingPermission {
   resolve: (r: PermissionResult) => void;
   toolName: string;
   suggestions?: PermissionUpdate[];
+  /**
+   * Present only when the ask was raised by the folder boundary (an outside
+   * Write/Edit, or a Bash command `bashEscape` flagged). It is the absolute
+   * DIRECTORY to grant — for a file tool, `dirname(file_path)`; for Bash,
+   * `BashEscape.grant` (the target itself when it is a directory, its parent
+   * when it is a file), chosen so the grant covers the sibling commands the
+   * human is about to be asked about, not just the one path on this card.
+   *
+   * CONTRACT with the orchestrator: on an `allow_always` decision for a
+   * pending permission that HAS `escapedPath`, add `escapedPath` to the run's
+   * `allowedRoots` set INSTEAD OF adding `toolName` to `runAllowed`. The human
+   * clicked "always" on a card about a path, so that is what they granted;
+   * a tool grant would be ignored by the boundary check anyway (by design —
+   * "always allow Bash" must not open the filesystem) and the next sibling
+   * command would prompt again, which is the loop this field breaks. When
+   * `escapedPath` is absent, `allow_always` keeps its old meaning (tool grant).
+   */
+  escapedPath?: string;
 }
 
 export interface PolicyHooks {
   /** Announce a silent allow (for the transcript). `reason` is the SDK's
    *  decision reason when one was present but overridden by a grant. */
   onAutoAllow(agent: string, toolName: string, reason?: string): void;
+  /**
+   * Announce a silent deny (for the transcript) — today only the temp-dir
+   * redirect. Optional so existing callers and tests keep their shape; a
+   * caller that does not listen still gets the deny, just not the line.
+   */
+  onAutoDeny?(agent: string, toolName: string, reason: string): void;
   /** Present an approval card; the returned promise resolves on decision. */
   onAsk(agent: string, id: string, request: {
     toolName: string;
@@ -278,6 +449,8 @@ export interface PolicyHooks {
     title?: string;
     description?: string;
     decisionReason?: string;
+    /** Same value as `PendingPermission.escapedPath`, so the card can show what "always" will grant. */
+    escapedPath?: string;
   }): void;
   /** Register/unregister the pending resolution for HTTP lookup. */
   register(id: string, pending: PendingPermission): void;
@@ -287,19 +460,26 @@ export interface PolicyHooks {
 /**
  * Builds the `canUseTool` callback for one agent (director or worker).
  *
- * @param agent      Label shown on cards and transcript entries.
- * @param folder     The mission's working directory (absolute).
- * @param runAllowed Mutable per-run set of tools the human granted "always".
+ * @param agent        Label shown on cards and transcript entries.
+ * @param folder       The mission's working directory (absolute).
+ * @param runAllowed   Mutable per-run set of tools the human granted "always".
+ *                     Never consulted for a path that leaves the folder.
+ * @param allowedRoots Mutable per-run set of absolute directories the human
+ *                     granted "always" on an escape card (see
+ *                     `PendingPermission.escapedPath`). Paths under any of
+ *                     them count as inside the folder for both file tools and
+ *                     Bash. Owned by the caller, like `runAllowed`; read on
+ *                     every call so a grant takes effect on the next command.
  */
 export function makePolicy(
   agent: string,
   folder: string,
   runAllowed: Set<string>,
+  allowedRoots: Set<string>,
   hooks: PolicyHooks,
   settings?: { toolPolicy?: ToolPolicy; autoAllowReadOnly?: boolean },
 ): CanUseTool {
   const foremanDir = path.join(folder, '.foreman') + path.sep;
-  const folderDir = path.resolve(folder) + path.sep;
   const toolPolicy = { ...DEFAULT_TOOL_POLICY, ...settings?.toolPolicy };
   const autoReadOnly = settings?.autoAllowReadOnly !== false;
 
@@ -312,25 +492,31 @@ export function makePolicy(
     // instruction rather than a heuristic, so it still forces a prompt, as
     // does the folder boundary checked below.
     const routine = !opts.matchedAskRule;
-    const filePath = typeof input.file_path === 'string' ? input.file_path : null;
+    const filePath = typeof input.file_path === 'string' ? path.resolve(input.file_path) : null;
     const isMissionDocWrite =
       (toolName === 'Write' || toolName === 'Edit') &&
       filePath !== null &&
-      path.resolve(filePath).startsWith(foremanDir);
-    // A file edit outside the job site always prompts, whatever the policy
-    // says — blanket grants must not bypass the folder boundary.
+      filePath.startsWith(foremanDir);
+    // A file edit outside the job site always prompts, whatever the TOOL
+    // policy says — blanket grants must not bypass the folder boundary. Only
+    // a PATH grant (`allowedRoots`) widens it, and only for that subtree.
     const outsideFolder =
       (toolName === 'Write' || toolName === 'Edit' || toolName === 'NotebookEdit') &&
       filePath !== null &&
-      !path.resolve(filePath).startsWith(folderDir);
+      !underAnyRoot(filePath, [folder, ...allowedRoots]);
     // The shell is the other door out of the job site: a command that would
     // write outside the folder prompts under the same rule, so a blanket
     // `Bash: allow` (or an "Always" click) cannot quietly `cd /tmp && npm i`.
-    const bashEscape =
+    const escape =
       toolName === 'Bash' && typeof input.command === 'string'
-        ? bashEscapesFolder(input.command, folder)
+        ? bashEscape(input.command, folder, allowedRoots)
         : null;
-    const leavesFolder = outsideFolder || bashEscape !== null;
+    const leavesFolder = outsideFolder || escape !== null;
+    // What "always" on this card grants — see `PendingPermission.escapedPath`.
+    // For a file tool the parent directory: the worker that wrote
+    // `/tmp/x/a.ts` is about to write `/tmp/x/b.ts`, and a grant of the
+    // single file would re-prompt on it.
+    const escapedPath = escape?.grant ?? (outsideFolder ? path.dirname(filePath!) : undefined);
 
     const granted = toolPolicy[toolName] === 'allow' || runAllowed.has(toolName);
 
@@ -357,18 +543,52 @@ export function makePolicy(
       return { behavior: 'allow' };
     }
 
+    // A write into a temp directory is the one outside location whose right
+    // answer is always known in advance: the model wanted scratch space, and
+    // scratch space exists inside the folder at WORK_DIR. Asking is therefore
+    // pure cost — a planned mission once sat most of an hour on a /tmp write
+    // waiting for a human to say what this line says in a millisecond, and
+    // would have died on it had the human been asleep. So it is denied with
+    // the redirect and never reaches a card. Everything ELSE outside the
+    // folder (a sibling repo, a deploy dir, ~/.config) might be legitimate
+    // and stays a human call below — with allowed roots so one "always"
+    // covers the siblings, and the orchestrator's unattended timeout so an
+    // unanswered card does not hold the run open indefinitely.
+    const outsidePath = escape?.path ?? (outsideFolder ? filePath : null);
+    if (
+      leavesFolder && outsidePath !== null && isTempPath(outsidePath) &&
+      (toolName === 'Bash' || toolName === 'Write' || toolName === 'Edit' || toolName === 'NotebookEdit')
+    ) {
+      const message = tempDirDenial(outsidePath, folder);
+      hooks.onAutoDeny?.(agent, toolName, message);
+      return { behavior: 'deny', message };
+    }
+
     const id = opts.toolUseID ?? opts.requestId;
+    // On an escape card the description names the path "always" will grant
+    // and ends with `ESCAPE_GRANT_HINT`, because the button's label alone
+    // ("Always (run)") reads as a tool grant — which it is not, here.
+    let title = opts.title;
+    let description = opts.description;
+    if (escape !== null) {
+      title = 'Shell command leaves the mission folder';
+      description = `${escape.reason}. Path: ${escapedPath}. ${ESCAPE_GRANT_HINT}`;
+    } else if (outsideFolder) {
+      title = 'File edit leaves the mission folder';
+      description = `${filePath} is outside the mission folder. Path: ${escapedPath}. ${ESCAPE_GRANT_HINT}`;
+    }
     hooks.onAsk(agent, id, {
       toolName,
       input,
-      title: bashEscape !== null ? 'Shell command leaves the mission folder' : opts.title,
-      description: bashEscape ?? opts.description,
+      title,
+      description,
       decisionReason: opts.decisionReason ??
         (leavesFolder ? `Path is outside the mission folder (${folder})` : undefined),
+      escapedPath,
     });
 
     return new Promise<PermissionResult>((resolve) => {
-      hooks.register(id, { resolve, toolName, suggestions: opts.suggestions });
+      hooks.register(id, { resolve, toolName, suggestions: opts.suggestions, escapedPath });
       opts.signal.addEventListener('abort', () => {
         if (hooks.unregister(id)) {
           resolve({ behavior: 'deny', message: 'Run was interrupted.' });

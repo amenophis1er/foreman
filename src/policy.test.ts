@@ -7,9 +7,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { bashEscapesFolder, makePolicy, type PolicyHooks } from './policy.js';
+import {
+  bashEscape, bashEscapesFolder, makePolicy, ESCAPE_GRANT_HINT, WORK_DIR, isTempPath, tempDirDenial, tempRoots,
+  type PendingPermission, type PolicyHooks,
+} from './policy.js';
 
 const FOLDER = '/Users/x/proj';
+const ROOT = '/tmp/foreman-verify'; // the path from the live bug report
 const escapes = (cmd: string) => bashEscapesFolder(cmd, FOLDER);
 
 // ---------------------------------------------------------------------------
@@ -121,35 +125,109 @@ test('the folder itself counts as inside; a sibling with a shared prefix does no
 });
 
 // ---------------------------------------------------------------------------
+// allowed extra roots — the human's per-run path grants
+// ---------------------------------------------------------------------------
+
+test('a command under an allowed root does not escape', () => {
+  assert.equal(bashEscapesFolder(`cd ${ROOT} && ls`, FOLDER, [ROOT]), null);
+  assert.equal(bashEscapesFolder(`mkdir -p ${ROOT}/node_modules && cd ${ROOT} && npm install playwright`, FOLDER, [ROOT]), null);
+  assert.equal(bashEscapesFolder(`cd ${ROOT} && mkdir sub && cd sub && touch a`, FOLDER, [ROOT]), null, 'virtual cwd inside the root stays inside');
+  assert.equal(bashEscapesFolder(`mkdir ${ROOT}`, FOLDER, new Set([ROOT])), null, 'the root itself counts; any Iterable works');
+});
+
+test('a sibling outside path still escapes despite the root', () => {
+  assert.ok(bashEscapesFolder('cd /tmp/other', FOLDER, [ROOT]));
+  assert.ok(bashEscapesFolder(`mkdir ${ROOT}-2`, FOLDER, [ROOT]), 'shared prefix is not containment');
+  assert.ok(bashEscapesFolder('cd /tmp', FOLDER, [ROOT]), 'the PARENT of a root is not granted');
+  assert.ok(bashEscapesFolder(`cd ${ROOT} && cd .. && touch x`, FOLDER, [ROOT]), 'walking back out of the root escapes');
+});
+
+test('a file write under the root does not escape', () => {
+  assert.equal(bashEscapesFolder(`echo hi > ${ROOT}/out.txt`, FOLDER, [ROOT]), null);
+  assert.equal(bashEscapesFolder(`npm test 2>> ${ROOT}/err.log`, FOLDER, [ROOT]), null);
+  assert.equal(bashEscapesFolder(`sed -i "s/a/b/" ${ROOT}/f`, FOLDER, [ROOT]), null);
+  assert.ok(bashEscapesFolder('echo hi > /tmp/out.txt', FOLDER, [ROOT]), 'outside the root still prompts');
+});
+
+test('bashEscape carries the offending path and the directory to grant', () => {
+  // Directory-ish targets: the path itself is the grant.
+  assert.deepEqual(bashEscape('cd /tmp/x && ls', FOLDER), {
+    reason: 'cd /tmp/x — writes after this land outside the mission folder', path: '/tmp/x', grant: '/tmp/x',
+  });
+  assert.deepEqual(bashEscape('mkdir -p /tmp/x/y', FOLDER), {
+    reason: 'mkdir -p /tmp/x/y — creates a path outside the mission folder', path: '/tmp/x/y', grant: '/tmp/x/y',
+  });
+  assert.deepEqual(bashEscape('tar -xzf a.tgz -C /tmp/out', FOLDER), {
+    reason: 'tar -xzf a.tgz -C /tmp/out — extracts into a path outside the mission folder', path: '/tmp/out', grant: '/tmp/out',
+  });
+  assert.equal(bashEscape('npm install --prefix=/tmp/x playwright', FOLDER)!.grant, '/tmp/x');
+  assert.equal(bashEscape('git clone https://github.com/a/b /tmp/b', FOLDER)!.grant, '/tmp/b');
+  assert.equal(bashEscape('rm -rf /opt/homebrew', FOLDER)!.grant, '/opt/homebrew', 'rm grants the removed tree, not its parent');
+  // File targets: the parent directory is the grant.
+  assert.deepEqual(bashEscape('echo hi > /tmp/x/out.txt', FOLDER), {
+    reason: 'echo hi > /tmp/x/out.txt — redirects output outside the mission folder', path: '/tmp/x/out.txt', grant: '/tmp/x',
+  });
+  assert.equal(bashEscape('touch /tmp/x/a', FOLDER)!.grant, '/tmp/x');
+  assert.equal(bashEscape('sed -i "s/a/b/" /tmp/x/f', FOLDER)!.grant, '/tmp/x');
+  assert.equal(bashEscape('curl -o /tmp/x/f https://example.com/f', FOLDER)!.grant, '/tmp/x');
+  assert.equal(bashEscape('cp a /tmp/x/f', FOLDER)!.grant, '/tmp/x', 'a destination without a trailing slash is a file');
+  assert.equal(bashEscape('cp a /tmp/x/', FOLDER)!.grant, '/tmp/x', 'a destination spelled as a directory is one');
+  assert.equal(bashEscape('cd sub && mkdir ../../x', FOLDER)!.path, '/Users/x/x', 'path is resolved against the virtual cwd');
+  assert.equal(bashEscape('cat /etc/hosts', FOLDER), null);
+});
+
+// ---------------------------------------------------------------------------
 // makePolicy wiring
 // ---------------------------------------------------------------------------
 
+// An outside path that is NOT a temp directory. The wiring tests below need a
+// path that reaches the ask path; anything under /tmp (the live bug's
+// /tmp/foreman-verify included) is now denied with a redirect before it can
+// ask, and has its own tests at the end of this section.
+const OUTSIDE = '/Users/x/foreman-verify';
+
 function recordingHooks() {
-  const asks: Array<{ toolName: string; title?: string; description?: string }> = [];
+  const asks: Array<{ toolName: string; title?: string; description?: string; escapedPath?: string }> = [];
+  const registered: PendingPermission[] = [];
   const allows: string[] = [];
+  const denies: Array<{ toolName: string; reason: string }> = [];
   const hooks: PolicyHooks = {
     onAutoAllow: (_agent, toolName) => { allows.push(toolName); },
-    onAsk: (_agent, _id, req) => { asks.push({ toolName: req.toolName, title: req.title, description: req.description }); },
-    register: () => {},
+    onAutoDeny: (_agent, toolName, reason) => { denies.push({ toolName, reason }); },
+    onAsk: (_agent, _id, req) => {
+      asks.push({ toolName: req.toolName, title: req.title, description: req.description, escapedPath: req.escapedPath });
+    },
+    register: (_id, pending) => { registered.push(pending); },
     unregister: () => true,
   };
-  return { hooks, asks, allows };
+  return { hooks, asks, allows, denies, registered };
 }
 
 function opts(signal: AbortSignal) {
   return { signal, toolUseID: 'tu_1' } as unknown as Parameters<ReturnType<typeof makePolicy>>[2];
 }
 
+/** Raise an ask through the policy, then settle it via abort (no human here). */
+async function askAndAbort(policy: ReturnType<typeof makePolicy>, toolName: string, input: Record<string, unknown>) {
+  const ac = new AbortController();
+  const pending = policy(toolName, input, opts(ac.signal));
+  ac.abort();
+  return (await pending)!;
+}
+
 test('makePolicy: an escaping Bash command reaches onAsk even when Bash is allowed by policy AND granted for the run', async () => {
   const { hooks, asks, allows } = recordingHooks();
-  const policy = makePolicy('director', FOLDER, new Set(['Bash']), hooks, { toolPolicy: { Bash: 'allow' } });
+  const policy = makePolicy('director', FOLDER, new Set(['Bash']), new Set(), hooks, { toolPolicy: { Bash: 'allow' } });
   const ac = new AbortController();
 
-  const pending = policy('Bash', { command: 'cd /tmp && npm install playwright' }, opts(ac.signal));
+  const pending = policy('Bash', { command: `cd ${OUTSIDE} && npm install playwright` }, opts(ac.signal));
   assert.equal(asks.length, 1);
   assert.equal(asks[0].toolName, 'Bash');
   assert.equal(asks[0].title, 'Shell command leaves the mission folder');
-  assert.equal(asks[0].description, 'cd /tmp — writes after this land outside the mission folder');
+  assert.equal(asks[0].description,
+    `cd ${OUTSIDE} — writes after this land outside the mission folder. Path: ${OUTSIDE}. ${ESCAPE_GRANT_HINT}`);
+  assert.ok(asks[0].description!.endsWith(
+    'Approve "always" to allow this path for the rest of the run; other paths outside the folder will still ask.'));
   assert.equal(allows.length, 0);
 
   ac.abort(); // no human here; the abort path settles the promise
@@ -159,7 +237,7 @@ test('makePolicy: an escaping Bash command reaches onAsk even when Bash is allow
 
 test('makePolicy: a read-only Bash command on an outside path is still auto-allowed', async () => {
   const { hooks, asks, allows } = recordingHooks();
-  const policy = makePolicy('director', FOLDER, new Set(), hooks);
+  const policy = makePolicy('director', FOLDER, new Set(), new Set(), hooks);
   const ac = new AbortController();
   const result = (await policy('Bash', { command: 'cat /etc/hosts && ls ~/.foreman' }, opts(ac.signal)))!;
   assert.equal(result.behavior, 'allow');
@@ -169,10 +247,165 @@ test('makePolicy: a read-only Bash command on an outside path is still auto-allo
 
 test('makePolicy: Write outside the folder prompts regardless of grants (the rule Bash now mirrors)', async () => {
   const { hooks, asks } = recordingHooks();
-  const policy = makePolicy('worker', FOLDER, new Set(['Write']), hooks, { toolPolicy: { Write: 'allow' } });
-  const ac = new AbortController();
-  const pending = policy('Write', { file_path: '/tmp/out.txt', content: '' }, opts(ac.signal));
+  const policy = makePolicy('worker', FOLDER, new Set(['Write']), new Set(), hooks, { toolPolicy: { Write: 'allow' } });
+  const result = await askAndAbort(policy, 'Write', { file_path: `${OUTSIDE}/out.txt`, content: '' });
   assert.equal(asks.length, 1);
-  ac.abort();
-  assert.equal((await pending)!.behavior, 'deny');
+  assert.equal(result.behavior, 'deny');
+});
+
+test('makePolicy: escapedPath reaches onAsk and the registered pending for an escaping Bash command', async () => {
+  const { hooks, asks, registered } = recordingHooks();
+  const policy = makePolicy('director', FOLDER, new Set(), new Set(), hooks);
+  await askAndAbort(policy, 'Bash', { command: `cd ${OUTSIDE} && npm install playwright` });
+  assert.equal(asks[0].escapedPath, OUTSIDE);
+  assert.equal(registered[0].escapedPath, OUTSIDE);
+  assert.equal(registered[0].toolName, 'Bash');
+
+  await askAndAbort(policy, 'Bash', { command: `echo hi > ${OUTSIDE}/out.txt` });
+  assert.equal(asks[1].escapedPath, OUTSIDE, 'a file target grants its directory');
+});
+
+test('makePolicy: escapedPath for an outside Write is the directory, not the file', async () => {
+  const { hooks, asks, registered } = recordingHooks();
+  const policy = makePolicy('worker', FOLDER, new Set(), new Set(), hooks);
+  await askAndAbort(policy, 'Write', { file_path: `${OUTSIDE}/out.txt`, content: '' });
+  assert.equal(asks[0].escapedPath, OUTSIDE);
+  assert.equal(registered[0].escapedPath, OUTSIDE);
+  assert.equal(asks[0].title, 'File edit leaves the mission folder');
+  assert.ok(asks[0].description!.endsWith(ESCAPE_GRANT_HINT));
+
+  await askAndAbort(policy, 'Edit', { file_path: `${OUTSIDE}/sub/../a.ts`, old_string: '', new_string: '' });
+  assert.equal(asks[1].escapedPath, OUTSIDE, 'resolved before dirname');
+});
+
+test('makePolicy: escapedPath is absent on an ordinary (non-escape) ask', async () => {
+  const { hooks, asks, registered } = recordingHooks();
+  const policy = makePolicy('director', FOLDER, new Set(), new Set(), hooks, { toolPolicy: { Bash: 'ask' } });
+  await askAndAbort(policy, 'Bash', { command: 'npm test' });
+  assert.equal(asks.length, 1);
+  assert.equal(asks[0].escapedPath, undefined);
+  assert.equal(registered[0].escapedPath, undefined);
+});
+
+test('makePolicy: granting the escapedPath auto-allows the same command next time; a different outside path still asks', async () => {
+  const { hooks, asks, allows, registered } = recordingHooks();
+  const runAllowed = new Set<string>();
+  const allowedRoots = new Set<string>();
+  const policy = makePolicy('director', FOLDER, runAllowed, allowedRoots, hooks);
+  const command = `cd ${OUTSIDE} && npm install playwright`;
+
+  // First time: the card is raised and names the directory to grant.
+  await askAndAbort(policy, 'Bash', { command });
+  assert.equal(asks.length, 1);
+  // The orchestrator's side of the contract: allow_always on a pending WITH
+  // escapedPath adds the path, not the tool.
+  allowedRoots.add(registered[0].escapedPath!);
+  assert.equal(runAllowed.size, 0);
+
+  // Second time: the same command, and its siblings under the root, run silently.
+  const ac = new AbortController();
+  assert.equal((await policy('Bash', { command }, opts(ac.signal)))!.behavior, 'allow');
+  assert.equal((await policy('Bash', { command: `mkdir -p ${OUTSIDE}/dist && echo x > ${OUTSIDE}/dist/out.txt` }, opts(ac.signal)))!.behavior, 'allow');
+  assert.equal((await policy('Write', { file_path: `${OUTSIDE}/index.js`, content: '' }, opts(ac.signal)))!.behavior, 'allow',
+    'file tools honour the same root');
+  assert.deepEqual(allows, ['Bash', 'Bash', 'Write']);
+  assert.equal(asks.length, 1);
+
+  // A different outside path is not covered by the grant.
+  await askAndAbort(policy, 'Bash', { command: 'cd /Users/x/other && npm install' });
+  assert.equal(asks.length, 2);
+  assert.equal(asks[1].escapedPath, '/Users/x/other');
+  await askAndAbort(policy, 'Write', { file_path: '/Users/x/other/x.txt', content: '' });
+  assert.equal(asks.length, 3);
+  assert.equal(asks[2].escapedPath, '/Users/x/other');
+});
+
+test('makePolicy: runAllowed.has("Bash") alone still does NOT bypass an escape', async () => {
+  const { hooks, asks, allows } = recordingHooks();
+  const allowedRoots = new Set<string>();
+  const policy = makePolicy('director', FOLDER, new Set(['Bash', 'Write']), allowedRoots, hooks);
+  await askAndAbort(policy, 'Bash', { command: `cd ${OUTSIDE} && npm install playwright` });
+  await askAndAbort(policy, 'Write', { file_path: `${OUTSIDE}/a.txt`, content: '' });
+  assert.equal(asks.length, 2, 'a tool grant is not a path grant');
+  assert.equal(allows.length, 0);
+  assert.equal(allowedRoots.size, 0, 'the policy never mutates the caller\'s set');
+});
+
+// ---------------------------------------------------------------------------
+// Temp directories: denied with a redirect, never asked
+// ---------------------------------------------------------------------------
+
+test('tempRoots covers /tmp, /private/tmp, $TMPDIR and os.tmpdir() in both macOS spellings', () => {
+  const roots = tempRoots({ TMPDIR: '/var/folders/ab/T/' });
+  for (const r of ['/tmp', '/private/tmp', '/var/folders/ab/T', '/private/var/folders/ab/T', os.tmpdir()]) {
+    assert.ok(roots.includes(path.resolve(r)), `${r} missing from ${roots.join(', ')}`);
+  }
+  assert.ok(isTempPath('/tmp/foreman-verify/out.txt'));
+  assert.ok(isTempPath('/private/tmp/x'));
+  assert.ok(isTempPath(path.join(os.tmpdir(), 'x')));
+  assert.equal(isTempPath('/tmpfoo/x'), false, 'shared prefix is not containment');
+  assert.equal(isTempPath('/Users/x/other-repo/f'), false);
+});
+
+test('makePolicy: a Bash write into /tmp is denied with a redirect and never reaches onAsk', async () => {
+  const { hooks, asks, denies, registered } = recordingHooks();
+  const policy = makePolicy('director', FOLDER, new Set(['Bash']), new Set(), hooks, { toolPolicy: { Bash: 'allow' } });
+  const ac = new AbortController();
+  // The real-world shape: the playwright install that started all this.
+  const result = (await policy('Bash', { command: 'mkdir -p /tmp/foreman-verify && cd /tmp/foreman-verify && npm install playwright' }, opts(ac.signal)))!;
+  assert.equal(result.behavior, 'deny');
+  assert.equal((result as { message: string }).message,
+    `Denied: /tmp/foreman-verify is outside the mission folder. Scratch work belongs under ${FOLDER}/${WORK_DIR}/ — ` +
+    'it is gitignored and keeps the project root clean without leaving the project. Redo this there.');
+  assert.equal(asks.length, 0, 'no card');
+  assert.equal(registered.length, 0, 'nothing pending for a human');
+  assert.equal(denies.length, 1);
+  assert.equal(denies[0].toolName, 'Bash');
+  assert.match(denies[0].reason, /\.foreman\/work\//);
+
+  assert.equal((await policy('Bash', { command: 'cd /tmp/x' }, opts(ac.signal)))!.behavior, 'deny');
+  assert.equal((await policy('Bash', { command: `echo hi > ${path.join(os.tmpdir(), 'out.txt')}` }, opts(ac.signal)))!.behavior, 'deny');
+  assert.equal(denies.length, 3);
+});
+
+test('makePolicy: Write/Edit into /private/tmp are denied with the redirect; a non-temp outside path still asks', async () => {
+  const { hooks, asks, denies } = recordingHooks();
+  const policy = makePolicy('worker', FOLDER, new Set(), new Set(), hooks);
+  const ac = new AbortController();
+  const w = (await policy('Write', { file_path: '/private/tmp/x/f', content: '' }, opts(ac.signal)))!;
+  assert.equal(w.behavior, 'deny');
+  assert.equal((w as { message: string }).message, tempDirDenial('/private/tmp/x/f', FOLDER));
+  const e = (await policy('Edit', { file_path: '/tmp/x/f', old_string: '', new_string: '' }, opts(ac.signal)))!;
+  assert.equal(e.behavior, 'deny');
+  assert.equal(asks.length, 0);
+  assert.deepEqual(denies.map((d) => d.toolName), ['Write', 'Edit']);
+
+  // Everything outside that is not a temp dir keeps the ask path — a sibling
+  // repo might be exactly where the mission needs to go.
+  await askAndAbort(policy, 'Write', { file_path: '/Users/x/other-repo/f', content: '' });
+  assert.equal(asks.length, 1);
+  assert.equal(asks[0].escapedPath, '/Users/x/other-repo');
+  assert.equal(denies.length, 2);
+});
+
+test('makePolicy: reads of temp paths are untouched, and a temp path the human already granted is inside', async () => {
+  const { hooks, asks, allows, denies } = recordingHooks();
+  const policy = makePolicy('director', FOLDER, new Set(), new Set(['/tmp/granted']), hooks);
+  const ac = new AbortController();
+  assert.equal((await policy('Bash', { command: 'ls /tmp && cat /tmp/x/log' }, opts(ac.signal)))!.behavior, 'allow');
+  // A root granted before this rule landed (or on a resumed run) is a
+  // decision the human already made; the deny class never overrides a grant.
+  assert.equal((await policy('Bash', { command: 'touch /tmp/granted/a' }, opts(ac.signal)))!.behavior, 'allow');
+  assert.equal((await policy('Write', { file_path: '/tmp/granted/b', content: '' }, opts(ac.signal)))!.behavior, 'allow');
+  assert.equal(asks.length, 0);
+  assert.equal(denies.length, 0);
+  assert.deepEqual(allows, ['Bash', 'Bash', 'Write']);
+});
+
+test('makePolicy: onAutoDeny is optional — the deny still happens without a listener', async () => {
+  const { hooks } = recordingHooks();
+  delete hooks.onAutoDeny;
+  const policy = makePolicy('director', FOLDER, new Set(), new Set(), hooks);
+  const ac = new AbortController();
+  assert.equal((await policy('Write', { file_path: '/tmp/f', content: '' }, opts(ac.signal)))!.behavior, 'deny');
 });

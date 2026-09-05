@@ -58,6 +58,12 @@ export type Entry = {
 export type Approval = {
   id: string; agent: string; toolName: string; input: unknown;
   title?: string; description?: string; decisionReason?: string;
+  /**
+   * Present when the ask was raised by the folder boundary: the directory
+   * "always" will open for the run. The card relabels its middle button on
+   * it, because there "Always" grants a path, not the tool.
+   */
+  escapedPath?: string;
   /** Envelope ts of the request — the panel shows "waiting 12m" from it. */
   since?: number;
 };
@@ -462,6 +468,51 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         }],
       };
     }
+    case 'root_allowed':
+      // The human opened a directory for the run. Recorded because it is a
+      // widening of the job site, and the run log is where "who let the
+      // mission out of its folder, and to where" must be answerable.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.agent ?? 'director'), kind: 'system',
+          title: 'path allowed for run', body: String(d.path ?? ''),
+        }],
+      };
+    case 'auto_denied':
+      // A temp-dir write refused without a card. Quiet (system, not error):
+      // the agent was told where to go and the next call usually lands there.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.agent ?? 'director'), kind: 'system',
+          title: 'redirected to workspace', body: String(d.reason ?? ''),
+        }],
+      };
+    case 'permission_timeout':
+    case 'question_timeout': {
+      // The unattended default fired. Rendered as `error` — the loud kind —
+      // not because anything broke but because a human returning to the run
+      // must find, without scrolling for it, that a decision was made in
+      // their absence and what it was. Removed from the rail like a normal
+      // resolution; guarded by id like one too.
+      const isPerm = e.event === 'permission_timeout';
+      const pending = isPerm ? s.approvals.find((x) => x.id === d.id) : s.questions.find((x) => x.id === d.id);
+      if (!pending) return s;
+      const mins = Math.max(1, Math.round(Number(d.afterMs ?? 0) / 60_000));
+      return {
+        ...s,
+        approvals: isPerm ? s.approvals.filter((x) => x.id !== d.id) : s.approvals,
+        questions: isPerm ? s.questions : s.questions.filter((x) => x.id !== d.id),
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.agent ?? 'director'), kind: 'error',
+          title: isPerm ? 'auto-denied (unattended)' : 'auto-answered (unattended)',
+          body: isPerm
+            ? `${String(d.toolName ?? 'tool')} waited ${mins} min with no answer and was denied; the agent was told to redo the work inside .foreman/work/.`
+            : `The director's question waited ${mins} min with no answer; it was told to decide itself and record the decision in MISSION.md.`,
+        }],
+      };
+    }
     default:
       return s;
   }
@@ -586,7 +637,8 @@ export function useFleet() {
       // stream but must never light up an idle card's ticker.
       if (env.chat) return;
       if (['run_started', 'run_resumed', 'run_finished', 'permission_request',
-        'permission_resolved', 'question', 'question_answered'].includes(event)) void refresh();
+        'permission_resolved', 'permission_timeout', 'question', 'question_answered',
+        'question_timeout'].includes(event)) void refresh();
       if (env.projectId) {
         if (event === 'run_finished') {
           setActivity((a) => {

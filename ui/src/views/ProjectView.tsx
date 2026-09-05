@@ -618,6 +618,7 @@ export function ProjectView({
                   <WaitingSince since={a.since} now={now} />
                   <ApprovalCard agent={a.agent} title={a.title}
                     toolName={a.toolName} decisionReason={a.decisionReason} input={a.input}
+                    escapedPath={a.escapedPath}
                     onAllow={() => void api.permission(a.id, 'allow')}
                     onAlways={() => void api.permission(a.id, 'allow_always')}
                     onDeny={() => void api.permission(a.id, 'deny')} />
