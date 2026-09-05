@@ -94,7 +94,10 @@ export function ProjectCard({ name, folder, instance, run, mission, title, costU
               fontSize: 'var(--fs-md)', color: 'var(--ink-0)', display: '-webkit-box',
               WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
             }}>{active.title || active.mission}</div>
-            <BudgetMeter spent={active.costUsd} budget={active.budgetUsd} />
+            {/* Same rule as the project header: a run whose spend cannot be
+                priced shows turns and tokens, never a dollar figure. */}
+            <BudgetMeter spent={active.costUsd} budget={active.budgetUsd}
+              metered={active.metered} usage={active.usage} turns={active.turns} />
             {activity && (
               <div key={activity} className="ticker" title={activity} style={{
                 fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)',

@@ -180,6 +180,11 @@ function applyWire(s: RunView, e: WireEvent): RunView {
       return {
         ...emptyRun, missionDoc: s.missionDoc,
         runStatus: 'running', mission: d.mission, budgetUsd: d.budgetUsd,
+        // Read here rather than waiting for a `cost` event: a run that spends
+        // no priceable dollars may never emit one, and the meter would show
+        // the previous run's units until it did.
+        metered: d.metered !== false,
+        usage: d.usage ?? null,
         agents: [{ id: 'director', status: 'running' }],
       };
     case 'run_resumed': {
@@ -195,6 +200,10 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         mission: d.mission ?? s.mission,
         budgetUsd: d.budgetUsd ?? s.budgetUsd,
         costUsd: d.costUsd ?? s.costUsd,
+        // A resume can legitimately change this: the flag is recomputed at
+        // dispatch, so a run wrongly marked metered by older code heals here.
+        metered: d.metered !== undefined ? d.metered !== false : s.metered,
+        usage: d.usage ?? s.usage,
         agents: [{ id: 'director', status: 'running' as Status }, ...others],
         entries: [...s.entries, {
           id: ++seq, ts, agent: 'system', kind: 'system',

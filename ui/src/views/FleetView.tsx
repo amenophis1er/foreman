@@ -151,6 +151,9 @@ export function FleetView({
               title: p.activeRun.title,
               costUsd: p.activeRun.costUsd,
               budgetUsd: p.activeRun.budgetUsd,
+              metered: p.activeRun.metered,
+              usage: p.activeRun.usage,
+              turns: p.activeRun.turns,
             } : undefined}
             lastRun={!p.activeRun && p.lastRun && p.lastRun.status !== 'idle' && p.lastRun.status !== 'running'
               ? { ...p.lastRun, status: p.lastRun.status } : undefined}

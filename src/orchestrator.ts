@@ -341,6 +341,11 @@ export class MissionRun {
       mission: this.meta.mission,
       budgetUsd: this.meta.budgetUsd,
       costUsd: this.meta.costUsd,
+      // Carried here, not only on `cost`, because a run that spends no
+      // priceable dollars may never emit a cost event at all — and the UI
+      // would then keep replaying an older run's meteredness forever.
+      metered: this.meta.metered !== false,
+      usage: this.meta.usage,
     });
 
     // Name the mission in parallel with running it: the title is display-only,
@@ -577,15 +582,7 @@ export class MissionRun {
     if (typeof usd !== 'number') return;
     this.meta.costUsd += usd;
     this.saveMeta(this.meta);
-    // usage/metered ride along so a client can render turns and tokens
-    // instead of a dollar figure that is notional (subscription) or
-    // fictional (gateway) on an unmetered run — see enforceBudget().
-    this.emit('cost', {
-      costUsd: this.meta.costUsd,
-      budgetUsd: this.meta.budgetUsd,
-      usage: this.meta.usage,
-      metered: this.meta.metered,
-    });
+    this.emitEconomics();
     this.enforceBudget();
   }
 
@@ -595,10 +592,27 @@ export class MissionRun {
    * loop, runWorker) so usage and cost are always in step — the honest
    * counterpart to a dollar figure that is not honest on every provider.
    */
+  /**
+   * The one event that carries a run's economics. Emitted whenever either half
+   * changes — dollars OR tokens — because through a gateway the SDK often
+   * reports no cost at all, and a UI told only about dollars would never learn
+   * that this run has none to report.
+   */
+  private emitEconomics(): void {
+    this.emit('cost', {
+      costUsd: this.meta.costUsd,
+      budgetUsd: this.meta.budgetUsd,
+      usage: this.meta.usage,
+      metered: this.meta.metered,
+      turns: this.turns,
+    });
+  }
+
   private addUsage(raw: unknown): void {
     this.meta.usage = accumulateUsage(this.meta.usage ?? emptyUsage(), raw);
     this.meta.turns = this.turns;
     this.saveMeta(this.meta);
+    this.emitEconomics();
   }
 
   /**
