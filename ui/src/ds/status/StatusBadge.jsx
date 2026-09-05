@@ -7,6 +7,10 @@ export const STATUS_META = {
   done: { color: 'var(--status-good)', icon: 'done', label: 'done' },
   error: { color: 'var(--status-critical)', icon: 'error', label: 'error' },
   interrupted: { color: 'var(--status-serious)', icon: 'interrupted', label: 'interrupted' },
+  // The process is running; the work is not — it is blocked on the human.
+  // Same token and glyph as NeedsYouStrip so the fleet card and the project
+  // header agree. Only the project header may substitute this for `running`.
+  'needs-you': { color: 'var(--status-warning)', icon: 'needsYou', label: 'needs you' },
 };
 
 /** Status pill — icon carries the color, label carries the meaning. Never color alone. */

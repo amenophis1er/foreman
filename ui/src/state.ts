@@ -58,9 +58,11 @@ export type Entry = {
 export type Approval = {
   id: string; agent: string; toolName: string; input: unknown;
   title?: string; description?: string; decisionReason?: string;
+  /** Envelope ts of the request — the panel shows "waiting 12m" from it. */
+  since?: number;
 };
 
-export type Question = { id: string; question: string };
+export type Question = { id: string; question: string; since?: number };
 export type AgentInfo = { id: string; status: Status; task?: string };
 
 /** '' inherits; otherwise an id from GET /models or a full claude-* id. */
@@ -405,14 +407,61 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         ...s,
         agents: s.agents.map((x) => x.id === d.id ? { ...x, status: d.status as Status } : x),
       };
-    case 'permission_request':
-      return { ...s, approvals: [...s.approvals, d] };
-    case 'permission_resolved':
-      return { ...s, approvals: s.approvals.filter((x) => x.id !== d.id) };
-    case 'question':
-      return { ...s, questions: [...s.questions, d] };
-    case 'question_answered':
-      return { ...s, questions: s.questions.filter((x) => x.id !== d.id) };
+    case 'permission_request': {
+      // Marked in the transcript, not only queued in the side panel. A run
+      // once sat twelve minutes on an unanswered Write approval while the
+      // header read `running` and the transcript simply stopped — the ask
+      // was on screen, in a rail the human was not watching. "Waiting on a
+      // human" is a state of the run and belongs where the eyes are. Guarded
+      // by id so a replayed stream does not stamp the same wait twice.
+      if (s.approvals.some((x) => x.id === d.id)) return s;
+      return {
+        ...s,
+        approvals: [...s.approvals, { ...d, since: ts }],
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.agent ?? 'director'), kind: 'system',
+          title: 'waiting on you',
+          body: `${String(d.toolName ?? 'tool')}: ${String(d.description ?? d.decisionReason ?? d.title ?? 'needs your approval')}`,
+        }],
+      };
+    }
+    case 'permission_resolved': {
+      // Only a pending request earns a "resolved" line; a stray or replayed
+      // resolution for an id we never showed would otherwise invent a wait.
+      const pending = s.approvals.find((x) => x.id === d.id);
+      if (!pending) return s;
+      return {
+        ...s,
+        approvals: s.approvals.filter((x) => x.id !== d.id),
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(pending.agent ?? 'director'), kind: 'system',
+          title: 'resolved', body: String(d.behavior ?? 'resolved'),
+        }],
+      };
+    }
+    case 'question': {
+      // Same rule as permission_request: a blocked director is a blocked run.
+      if (s.questions.some((x) => x.id === d.id)) return s;
+      return {
+        ...s,
+        questions: [...s.questions, { ...d, since: ts }],
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'director', kind: 'system',
+          title: 'waiting on you', body: `question: ${String(d.question ?? '')}`,
+        }],
+      };
+    }
+    case 'question_answered': {
+      const pending = s.questions.find((x) => x.id === d.id);
+      if (!pending) return s;
+      return {
+        ...s,
+        questions: s.questions.filter((x) => x.id !== d.id),
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'director', kind: 'system', title: 'resolved', body: 'answered',
+        }],
+      };
+    }
     default:
       return s;
   }

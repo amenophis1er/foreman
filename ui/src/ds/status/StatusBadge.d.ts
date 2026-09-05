@@ -5,8 +5,11 @@ import type { CSSProperties } from 'react';
  * Status is NEVER communicated by color alone anywhere in Foreman — this component is the reason why.
  */
 export interface StatusBadgeProps {
-  /** idle (Circle) · running (Activity) · done (Check) · error (X) · interrupted (Pause) */
-  status: 'idle' | 'running' | 'done' | 'error' | 'interrupted';
+  /**
+   * idle (Circle) · running (Activity) · done (Check) · error (X) · interrupted (Pause)
+   * · needs-you (Bell, `--status-warning`) — a running run blocked on an approval or question.
+   */
+  status: 'idle' | 'running' | 'done' | 'error' | 'interrupted' | 'needs-you';
   style?: CSSProperties;
 }
 

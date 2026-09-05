@@ -31,6 +31,27 @@ import type { ModelInfo } from '../ds/forms/ModelSelect';
  * anything else is the server's own credential, and saying so is the point —
  * this line sits wherever money is about to be committed.
  */
+/** "12m", "3h", "45s" — how long a pending ask has been on the human's desk. */
+function fmtAge(since: number | undefined, now: number): string {
+  if (!since) return '';
+  const s = Math.max(0, Math.round((now - since) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+/** A pending ask's age line, rendered above its card so the wait is legible without reading the card. */
+function WaitingSince({ since, now }: { since?: number; now: number }) {
+  const age = fmtAge(since, now);
+  if (!age) return null;
+  return (
+    <div style={{
+      fontSize: 'var(--fs-xs)', color: 'var(--status-warning)',
+      fontWeight: 'var(--fw-semibold)', marginBottom: 4,
+    }}>waiting {age}</div>
+  );
+}
+
 function billingSource(p: ProjectSummary, serverSource: string): string {
   const home = providerHome(p.provider);
   if (!p.provider || !home) return serverSource;
@@ -342,6 +363,18 @@ export function ProjectView({
   // order. Writing one directly stays one click away.
   const [idleMode, setIdleMode] = useState<'plan' | 'compose'>('plan');
 
+  // The "waiting 12m" ages only move if something re-renders; nothing else
+  // does while the run is blocked (that is the whole problem). Tick every 30s
+  // while an ask is pending, and stop the moment none is.
+  const pendingCount = run.approvals.length + run.questions.length;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (pendingCount === 0) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, [pendingCount]);
+
   const doResume = async () => {
     if (!selectedRunId) return;
     setHeaderErr('');
@@ -390,7 +423,16 @@ export function ProjectView({
         {headerErr && <Banner tone="error" inline>{headerErr}</Banner>}
         <BillingBadge mode={p.billingMode ?? auth.mode} compact account={auth.account}
           source={billingSource(p, auth.source)} />
-        {selectedRunId && <StatusBadge status={run.runStatus} />}
+        {selectedRunId && (
+          // A run blocked on an approval or question is not "running" in any
+          // sense the human cares about. The badge must say so — the ask
+          // alone, in the right rail, went unseen for twelve minutes once.
+          run.runStatus === 'running' && pendingCount > 0
+            ? <span title={`Waiting on you: ${run.approvals.length} approval(s), ${run.questions.length} question(s)`}>
+                <StatusBadge status="needs-you" />
+              </span>
+            : <StatusBadge status={run.runStatus} />
+        )}
         {selectedRunId && (
           <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} detail
             costBasis={run.costBasis} usage={run.usage} turns={selectedRun?.turns} />
@@ -572,21 +614,25 @@ export function ProjectView({
               <SectionTitle>Approvals</SectionTitle>
               {run.approvals.length === 0 && <Empty>No pending approvals.</Empty>}
               {run.approvals.map((a) => (
-                <ApprovalCard key={a.id} agent={a.agent} title={a.title}
-                  toolName={a.toolName} decisionReason={a.decisionReason} input={a.input}
-                  onAllow={() => void api.permission(a.id, 'allow')}
-                  onAlways={() => void api.permission(a.id, 'allow_always')}
-                  onDeny={() => void api.permission(a.id, 'deny')}
-                  style={{ marginBottom: 'var(--sp-2)' }} />
+                <div key={a.id} style={{ marginBottom: 'var(--sp-2)' }}>
+                  <WaitingSince since={a.since} now={now} />
+                  <ApprovalCard agent={a.agent} title={a.title}
+                    toolName={a.toolName} decisionReason={a.decisionReason} input={a.input}
+                    onAllow={() => void api.permission(a.id, 'allow')}
+                    onAlways={() => void api.permission(a.id, 'allow_always')}
+                    onDeny={() => void api.permission(a.id, 'deny')} />
+                </div>
               ))}
             </section>
             <section>
               <SectionTitle>Questions</SectionTitle>
               {run.questions.length === 0 && <Empty>No questions from the director.</Empty>}
               {run.questions.map((q) => (
-                <QuestionCard key={q.id} question={q.question}
-                  onAnswer={(answer) => void api.answer(q.id, answer)}
-                  style={{ marginBottom: 'var(--sp-2)' }} />
+                <div key={q.id} style={{ marginBottom: 'var(--sp-2)' }}>
+                  <WaitingSince since={q.since} now={now} />
+                  <QuestionCard question={q.question}
+                    onAnswer={(answer) => void api.answer(q.id, answer)} />
+                </div>
               ))}
             </section>
             <PlanBoard doc={run.missionDoc ?? undefined} />
