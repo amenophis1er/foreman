@@ -513,6 +513,16 @@ export function ProjectView({
   const [showDoc, setShowDoc] = useState(false);
   const [showDoneWhen, setShowDoneWhen] = useState(false);
   const [headerErr, setHeaderErr] = useState('');
+  const [forking, setForking] = useState(false);
+  const forkPlan = async (runId: string) => {
+    setHeaderErr('');
+    setForking(true);
+    try {
+      const r = await api.forkPlan(p.id, runId);
+      if (!r.ok) { setHeaderErr((await r.json()).error); return; }
+      setSelectedRunId(null); // to planning, where the seeded conversation is opening
+    } finally { setForking(false); }
+  };
   const [composerErr, setComposerErr] = useState('');
   const [starting, setStarting] = useState(false);
   const chat = useChat(activeRunId ? null : p.id);
@@ -677,6 +687,17 @@ export function ProjectView({
             title="Restore the director's session and continue this mission"
             onClick={() => void doResume()}>
             {resuming ? 'Resuming…' : 'Resume'}
+          </Button>
+        )}
+        {/* A finished run is a starting point, not a dead end: the planner
+            opens with its brief, mission doc and final report already read,
+            and drafts a separate mission from there. Not a "continue" — a run
+            is one mission, and done stays done. */}
+        {!activeRunId && selectedRunId && selectedRun && selectedRun.status !== 'running' && (
+          <Button variant="good" icon="write" disabled={forking}
+            title="Start a new planning conversation that builds on what this mission did"
+            onClick={() => void forkPlan(selectedRunId)}>
+            {forking ? 'Opening…' : 'Plan the next step'}
           </Button>
         )}
         {!activeRunId && selectedRunId && (

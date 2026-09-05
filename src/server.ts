@@ -47,6 +47,7 @@ import { fileURLToPath } from 'node:url';
 import { MissionRun } from './orchestrator.js';
 import {
   DEFAULT_PLANNER_MODEL, answerChatQuestion, pendingChatQuestion, runPlanningTurn,
+  forkSeed,
 } from './planner.js';
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { RunStore, newRunId } from './store.js';
@@ -617,10 +618,11 @@ async function chatMetaOf(projectId: string): Promise<ChatMeta> {
  * reload mid-turn still shows what was asked), then the planner's reply
  * streams out through the same envelope machinery as a mission.
  */
-async function driveChatTurn(project: Project, text: string): Promise<void> {
+/** `shown` is what the transcript records as the human's message when it differs from what the planner is sent (a fork's seed). */
+async function driveChatTurn(project: Project, text: string, shown: string = text): Promise<void> {
   const emit = makeChatEmitter(project.id);
   const meta = await chatMetaOf(project.id);
-  emit('chat_message', { text });
+  emit('chat_message', { text: shown });
   try {
     const settings = await effectiveSettings(project.id);
     const resolved = await resolveProvider(providerOf(project), store.root);
@@ -1442,6 +1444,47 @@ const server = http.createServer(async (req, res) => {
       } else {
         json(res, 405, { error: 'method not allowed' });
       }
+
+    } else if (req.method === 'POST' && url.pathname === '/chat/fork') {
+      // "Plan the next step": a new planning conversation seeded with a
+      // finished run — its brief, its mission doc, the director's report.
+      // A fork, not a continuation: the old run stays what it was, and what
+      // comes out is a fresh mission with its own budget and baseline.
+      const { projectId: id, runId } = await readBody(req);
+      if (typeof id !== 'string' || typeof runId !== 'string') {
+        return json(res, 400, { error: 'projectId and runId are required' });
+      }
+      const project = await store.getProject(id);
+      if (!project) return json(res, 404, { error: 'unknown project' });
+      const meta = await store.readMeta(runId);
+      if (!meta || meta.folder !== project.folder) return json(res, 404, { error: 'unknown run for this project' });
+      if (meta.status === 'running' || activeByProject.has(id)) {
+        return json(res, 409, { error: 'that mission is still running — plan its next step once it has ended' });
+      }
+      if (chatTurns.has(id)) return json(res, 409, { error: 'the planner is mid-reply — wait for it to finish' });
+      const [missionDoc, events] = await Promise.all([
+        readFile(path.join(meta.folder, '.foreman', 'MISSION.md'), 'utf8').catch(() => null),
+        store.readEvents(runId).catch(() => []),
+      ]);
+      // The director's closing words: the last SDK result message it produced.
+      let report: string | null = null;
+      for (const e of events) {
+        const d = e.data as { agent?: string; msg?: { type?: string; result?: unknown } } | undefined;
+        if (e.event === 'message' && d?.agent === 'director' && d.msg?.type === 'result' && typeof d.msg.result === 'string') {
+          report = d.msg.result;
+        }
+      }
+      const seed = forkSeed({
+        title: meta.title, mission: meta.mission, status: meta.status, endedAt: meta.endedAt,
+        missionDoc, report,
+      });
+      // The seed opens a new conversation. Folding it into an old session
+      // would hand the planner two contexts at once; the transcript keeps
+      // the fork's own opening line as the human's message.
+      chatTurns.add(id);
+      await store.clearChat(id).catch(() => {});
+      void driveChatTurn(project, seed.prompt, seed.shown);
+      json(res, 200, { ok: true });
 
     } else if (req.method === 'POST' && url.pathname === '/chat/answer') {
       // The picker's answer to a planner ask_user. Resolves the tool call that

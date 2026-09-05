@@ -1116,6 +1116,8 @@ export const api = {
   permission: (id: string, behavior: 'allow' | 'allow_always' | 'deny', message?: string) =>
     post('/permission', { id, behavior, message }),
   answer: (id: string, text: string) => post('/answer', { id, text }),
+  /** Opens a new planning conversation seeded with a finished run. */
+  forkPlan: (projectId: string, runId: string) => post('/chat/fork', { projectId, runId }),
   steer: (runId: string, text: string) => post('/steer', { runId, text }),
   interrupt: (runId: string) => post('/interrupt', { runId }),
   /**

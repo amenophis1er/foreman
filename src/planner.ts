@@ -436,3 +436,63 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
       .catch(() => {});
   }
 }
+
+// ---------------------------------------------------------------------------
+// Forking a finished mission
+// ---------------------------------------------------------------------------
+
+/** What the planner is handed when the human asks for the next step after a run. */
+export interface ForkSource {
+  title?: string;
+  mission: string;
+  status: string;
+  endedAt?: number;
+  /** `.foreman/MISSION.md` as the run left it; null when it is gone. */
+  missionDoc?: string | null;
+  /** The director's closing message; null when the run has none. */
+  report?: string | null;
+}
+
+const clip = (text: string, max: number): string =>
+  text.length <= max ? text : `${text.slice(0, max).trimEnd()}\n\n[… ${text.length - max} more characters not shown]`;
+
+/** The run's short name for a sentence: its title, else the brief's first line. */
+export function forkLabel(src: Pick<ForkSource, 'title' | 'mission'>): string {
+  const t = (src.title || src.mission.split('\n').find((l) => l.trim()) || 'the previous mission').trim();
+  return t.length > 80 ? `${t.slice(0, 79).trimEnd()}…` : t;
+}
+
+/**
+ * The first turn of a planning conversation that builds on a finished run.
+ *
+ * `shown` is the one line the transcript shows as the human's message — it
+ * is what the click meant. `prompt` is what the planner actually receives:
+ * the previous brief, its mission doc and the director's report, so the
+ * conversation starts from what was built instead of from an empty folder
+ * and a guess. A fork is a new mission with its own budget, title and deck
+ * baseline; the seed says so, so the planner does not "continue" the old one.
+ */
+export function forkSeed(src: ForkSource): { shown: string; prompt: string } {
+  const label = forkLabel(src);
+  const when = src.endedAt
+    ? new Date(src.endedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : undefined;
+  const parts = [
+    'We are planning the NEXT step for this project, building on a mission that already ran. ' +
+    'Read what follows before you read the folder. Do not re-propose or redo that mission; ' +
+    'the new one will be a separate run with its own brief, DONE WHEN and budget, and it ' +
+    'starts from what that run left in place.',
+    `## Previous mission — ${label} (${src.status}${when ? `, ${when}` : ''})\n\n${clip(src.mission.trim(), 4000)}`,
+  ];
+  if (src.missionDoc?.trim()) {
+    parts.push(`## Its mission doc (.foreman/MISSION.md as the run left it)\n\n${clip(src.missionDoc.trim(), 6000)}`);
+  }
+  if (src.report?.trim()) {
+    parts.push(`## The director's final report\n\n${clip(src.report.trim(), 4000)}`);
+  }
+  parts.push(
+    'Start with three lines on what that mission left in place and what it did not do. ' +
+    'Then ask me what comes next — with ask_user and concrete options where the previous ' +
+    'work suggests obvious candidates. Propose a mission only once we agree.');
+  return { shown: `Plan the next step after “${label}”.`, prompt: parts.join('\n\n') };
+}
