@@ -282,6 +282,12 @@ export interface RunMeta {
   maxTurns?: number;
   /** Wall-clock cap. Matters most exactly where dollars matter least. */
   maxSeconds?: number;
+  /**
+   * How long a worker may produce nothing before it is treated as stalled and
+   * stopped. Absent means the orchestrator's default. Raise it for slow local
+   * models whose first token legitimately takes minutes.
+   */
+  workerSilenceMs?: number;
   status: RunStatus;
   costUsd: number;
   /**

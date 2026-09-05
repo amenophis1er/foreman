@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { MissionRun, accumulateUsage } from './orchestrator.js';
+import {
+  MissionRun, accumulateUsage, stalledWorkerReport, watchSilence,
+} from './orchestrator.js';
 import type { AgentEnv } from './provider.js';
 import type { RunMeta } from './types.js';
 
@@ -254,4 +256,73 @@ test('a priced gateway run still arms the budget cap', () => {
   run.addUsage({ output_tokens: 2000 }); // 0.02 — past 125% of a $0.01 cap
   assert.ok(events.some((e) => e.event === 'budget_alert' && e.data.level === 'exceeded'),
     'a real overrun on real rates must still stop the run');
+});
+
+// ---------------------------------------------------------------------------
+// A worker that goes quiet must not hold the mission open
+// ---------------------------------------------------------------------------
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+test('silence past the threshold fires exactly once', async () => {
+  let fired = 0;
+  let quietFor = 0;
+  const w = watchSilence(60, (q) => { fired++; quietFor = q; });
+  await sleep(250);
+  w.stop();
+  assert.equal(fired, 1, 'a stall is reported once, not once per poll');
+  assert.ok(quietFor >= 60, `should report how long it was quiet, got ${quietFor}`);
+});
+
+test('any sign of life resets the clock', async () => {
+  // The property that decides whether a slow-but-working worker survives: a
+  // worker emits a message for every tool call, so activity must postpone the
+  // verdict indefinitely.
+  let fired = 0;
+  const w = watchSilence(120, () => fired++);
+  for (let i = 0; i < 6; i++) { await sleep(40); w.touch(); }
+  assert.equal(fired, 0, 'a working worker must never be killed');
+  w.stop();
+});
+
+test('a stopped watchdog never fires afterwards', async () => {
+  // It is stopped in a finally block, so this is the difference between a
+  // clean finish and a spurious "stalled" on a worker that already returned.
+  let fired = 0;
+  const w = watchSilence(50, () => fired++);
+  w.stop();
+  await sleep(200);
+  assert.equal(fired, 0);
+});
+
+test('touching after a stall cannot revive the verdict', async () => {
+  // The worker has already been interrupted by then; letting a late message
+  // clear the flag would leave the run reporting success for a worker that
+  // was killed.
+  let fired = 0;
+  const w = watchSilence(50, () => fired++);
+  await sleep(200);
+  w.touch();
+  await sleep(150);
+  assert.equal(fired, 1);
+  w.stop();
+});
+
+test('the stall report steers the director away from repeating it', () => {
+  const r = stalledWorkerReport('worker-2', 8 * 60_000);
+  assert.match(r, /STALLED/);
+  assert.match(r, /8 minute/);
+  // The one response guaranteed to waste the same minutes again.
+  assert.match(r, /Do NOT immediately respawn/);
+  // And the escape hatch, so a run cannot spend itself entirely on silence.
+  assert.match(r, /ask_human/);
+  // It must not read as a task failure: that framing invites a retry.
+  assert.match(r, /did not fail a task/);
+});
+
+test('partial output before the silence is handed back, not discarded', () => {
+  const r = stalledWorkerReport('worker-1', 60_000, 'wrote index.html');
+  assert.match(r, /Partial output/);
+  assert.match(r, /wrote index\.html/);
+  assert.doesNotMatch(stalledWorkerReport('worker-1', 60_000), /Partial output/);
 });

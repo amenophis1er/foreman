@@ -155,6 +155,93 @@ const LOCAL_IGNORE_LINES = ['settings.local.json', '.gitignore'];
 // caps exist to give an UNMETERED run something that binds, not to second-guess
 // a metered one that dollars already stop.
 const DEFAULT_MAX_TURNS = 150;
+
+/**
+ * How long a worker may say nothing at all before it is treated as stalled.
+ *
+ * The SDK emits a message for every tool call, every result, every retry — so
+ * total silence is not a worker thinking hard, it is a worker that is not
+ * coming back. Observed in the wild: a worker sat silent for eight minutes,
+ * failed with `error: unknown`, retried, and sat silent again, while the
+ * director waited inside spawn_worker and the run looked alive from every
+ * angle. Nothing stopped it, because nothing was watching.
+ *
+ * Set well above a slow first token — a large prompt to a local model can
+ * legitimately take minutes — because the cost of being wrong in each
+ * direction is not symmetric. Killing a slow-but-working worker throws away
+ * real progress; waiting too long only costs time on a worker that was never
+ * going to answer.
+ */
+const DEFAULT_WORKER_SILENCE_MS = 8 * 60_000;
+
+/**
+ * Grace between the wall-clock cap and the watchdog that enforces it anyway.
+ *
+ * The graceful path — capReached() at a turn boundary, one last turn to tick
+ * MISSION.md and summarise — is much better than being killed, so it gets
+ * first refusal. But it only runs at a turn boundary, and a director blocked
+ * inside a tool call never reaches one: the caps that are supposed to bound
+ * every run were, in that state, bounding nothing at all.
+ */
+const CAP_WATCHDOG_GRACE_MS = 5 * 60_000;
+
+/**
+ * Watches for silence, and says so once.
+ *
+ * Extracted rather than inlined because it is the part with the actual rule
+ * in it — reset on any sign of life, fire exactly once, never fire after it
+ * is stopped — and a watchdog nobody has watched fire is not a watchdog.
+ *
+ * The poll interval scales with the threshold so a short one can be tested in
+ * milliseconds while a production eight-minute threshold still costs one
+ * wakeup every thirty seconds.
+ */
+export function watchSilence(
+  silenceMs: number,
+  onStall: (quietForMs: number) => void,
+): { touch(): void; stop(): void } {
+  let last = Date.now();
+  let fired = false;
+  const every = Math.max(10, Math.min(30_000, Math.floor(silenceMs / 4)));
+  const timer = setInterval(() => {
+    if (fired) return;
+    const quiet = Date.now() - last;
+    if (quiet < silenceMs) return;
+    fired = true;
+    clearInterval(timer);
+    onStall(quiet);
+  }, every);
+  timer.unref?.();
+  return {
+    touch() { if (!fired) last = Date.now(); },
+    stop() { fired = true; clearInterval(timer); },
+  };
+}
+
+/**
+ * What the director is told when a worker went quiet.
+ *
+ * Deliberately not just "failed". A stall usually means the endpoint stopped
+ * answering rather than that the task was hard, and the one response that is
+ * certainly wrong — respawning the identical brief — is exactly what "worker
+ * failed" invites.
+ */
+export function stalledWorkerReport(
+  workerId: string, silenceMs: number, partial?: string,
+): string {
+  const mins = Math.max(1, Math.round(silenceMs / 60_000));
+  return (
+    `WORKER STALLED: ${workerId} produced no output at all for ${mins} minute(s) and was ` +
+    `stopped. It did not fail a task — it never reported anything, which usually means the ` +
+    `model endpoint stopped responding rather than that the work was hard.\n\n` +
+    `Do NOT immediately respawn an identical worker; if the endpoint is the problem, the ` +
+    `next one stalls the same way and the mission spends its budget on silence. Consider ` +
+    `instead: doing this piece yourself, splitting it into a smaller brief, or — if workers ` +
+    `keep stalling — telling the human via mcp__foreman__ask_human that the worker model ` +
+    `appears unreachable.` +
+    (partial ? `\n\nPartial output before it went quiet:\n${partial}` : '')
+  );
+}
 const DEFAULT_MAX_SECONDS = 4 * 60 * 60;
 
 /** Which half of the crew spent something. Roles can be on different providers. */
@@ -189,6 +276,14 @@ directing worker agents. Non-negotiable rules, in priority order:
    mcp__foreman__message_worker to send follow-ups or corrections to an
    existing worker. You may read files and run verification commands yourself,
    but implementation edits belong to workers.
+   A WORKER THAT STALLS IS NOT A WORKER THAT FAILED. If a worker comes back
+   reporting it produced nothing and was stopped, the endpoint serving it is
+   the likely cause, not the task. Respawning the same brief is then the one
+   response guaranteed to waste the same minutes again. Do the piece yourself,
+   or cut it into a smaller brief, and if a second worker stalls the same way
+   say so to the human via mcp__foreman__ask_human rather than continuing to
+   spend the run on silence. Record it in the log either way: a mission that
+   quietly lost half an hour to a dead endpoint should say so.
 3. VERIFY INDEPENDENTLY. Never trust a worker's "done". Read the files and run
    the checks yourself before ticking a milestone. Artifacts you produce
    (screenshots, reports, exports) must depict the FINAL state: if any file
@@ -263,6 +358,8 @@ export class MissionRun {
   private ledgerBaseline: (TokenUsage & { calls: number }) | null = null;
   private rebaseline = false;
   private ledgerTimer?: ReturnType<typeof setInterval>;
+  private capTimer?: ReturnType<typeof setInterval>;
+  private hardStopped = false;
   private startedAt = Date.now();
 
   constructor(
@@ -465,6 +562,11 @@ export class MissionRun {
       this.ledgerTimer = setInterval(() => void this.pollLedger(), 3000);
       this.ledgerTimer.unref?.();
     }
+    // The backstop for the caps the director cannot check while it is blocked
+    // inside a tool call. Deliberately later than the graceful wind-down, so
+    // a responsive director always gets to finish its own way.
+    this.capTimer = setInterval(() => this.enforceCapsFromOutside(), 60_000);
+    this.capTimer.unref?.();
     this.emit(isResume ? 'run_resumed' : 'run_started', {
       runId: this.meta.id,
       folder: this.meta.folder,
@@ -597,6 +699,7 @@ export class MissionRun {
       // in, and an interim estimate outliving the real figure would be the
       // one number here that is not backed by anything.
       if (this.ledgerTimer) clearInterval(this.ledgerTimer);
+      if (this.capTimer) clearInterval(this.capTimer);
       this.interimUsage = emptyUsage();
       // "Always allow" makes the SDK write .claude/settings.local.json into the
       // mission folder, which appears only once a grant happens — so this runs
@@ -966,6 +1069,34 @@ export class MissionRun {
       `$${this.meta.budgetUsd.toFixed(2)} budget — includes director turns]`;
   }
 
+  /**
+   * Enforce the wall clock on a run that has stopped checking it itself.
+   *
+   * Runs on a timer rather than at a turn boundary, because the situation it
+   * exists for is precisely one where turn boundaries have stopped happening:
+   * a director waiting inside spawn_worker on a worker that will never
+   * answer. Only time is enforced here — turns and budget can only advance
+   * *at* a turn boundary, so if none are happening neither can move.
+   */
+  private enforceCapsFromOutside(): void {
+    if (this.hardStopped || this.wasInterrupted) return;
+    const elapsed = (Date.now() - this.startedAt) / 1000;
+    const maxSeconds = this.meta.maxSeconds ?? DEFAULT_MAX_SECONDS;
+    if (elapsed < maxSeconds + CAP_WATCHDOG_GRACE_MS / 1000) return;
+    this.hardStopped = true;
+    this.emit('budget_stop', {
+      costUsd: this.meta.costUsd,
+      budgetUsd: this.meta.budgetUsd,
+      costBasis: costBasisOf(this.meta),
+      metered: isPriced(this.meta),
+      reason:
+        `TIME CAP ENFORCED: ${Math.round(elapsed / 60)} minutes, past the ` +
+        `${Math.round(maxSeconds / 60)}-minute cap and its grace period. The director did not ` +
+        `wind down on its own, which usually means it was blocked waiting on something.`,
+    });
+    void this.interrupt();
+  }
+
   /** How far past its limits the run is, as a wind-down reason — or null. */
   private capReached(): string | null {
     if (this.turns >= (this.meta.maxTurns ?? DEFAULT_MAX_TURNS)) {
@@ -1062,8 +1193,28 @@ export class MissionRun {
 
     let report = '';
     let isError = false;
+
+    // The stall watchdog. A worker that has gone quiet blocks the director
+    // inside spawn_worker, and the director's own caps are only checked at
+    // turn boundaries it can no longer reach — so without this, one silent
+    // worker holds an entire mission open until the run's wall clock expires
+    // hours later. Every message resets it; only silence trips it.
+    const silenceMs = this.meta.workerSilenceMs ?? DEFAULT_WORKER_SILENCE_MS;
+    let stalled = false;
+    const watchdog = watchSilence(silenceMs, (quietFor) => {
+      stalled = true;
+      this.emit('worker_stalled', {
+        id: workerId, quietForMs: quietFor,
+        text: `${workerId} has produced nothing for ${Math.round(quietFor / 60_000)} minute(s) — stopping it.`,
+      });
+      // Interrupting ends the for-await below, which is what lets the
+      // director be told rather than left waiting.
+      void w.q?.interrupt().catch(() => {});
+    });
+
     try {
       for await (const msg of q as AsyncIterable<SDKMessage>) {
+        watchdog.touch();
         const m = msg as Record<string, unknown>;
         if (typeof m.session_id === 'string') w.sessionId = m.session_id;
         if (m.type === 'result') {
@@ -1082,11 +1233,17 @@ export class MissionRun {
       isError = true;
       report = report || `Worker crashed: ${String(err)}`;
     } finally {
+      watchdog.stop();
       w.q = undefined;
-      w.status = isError ? 'error' : 'done';
+      w.status = isError || stalled ? 'error' : 'done';
       this.syncWorkersMeta();
       this.emit('worker_finished', { id: workerId, status: w.status, sessionId: w.sessionId });
     }
+
+    // Told to the director as a fact plus its options, not as an order: it is
+    // the agent with the context to know whether this needs a different
+    // approach, a different worker, or a human.
+    if (stalled) return { isError: true, report: stalledWorkerReport(workerId, silenceMs, report) };
     return { report, isError };
   }
 

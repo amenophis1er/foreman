@@ -265,6 +265,19 @@ function applyWire(s: RunView, e: WireEvent): RunView {
       };
     case 'run_error':
       return { ...s, entries: [...s.entries, { id: ++seq, ts, agent: 'system', kind: 'error', title: 'error', body: d.error }] };
+    case 'worker_stalled':
+      // Loud in the transcript on purpose. This exact situation — a worker
+      // silent for eight minutes while the director waited inside
+      // spawn_worker — looked from the outside like a healthy running
+      // mission, because nothing anywhere said otherwise.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.id ?? 'worker'), kind: 'error',
+          title: 'worker stalled',
+          body: String(d.text ?? 'Worker produced no output and was stopped.'),
+        }],
+      };
     case 'settings_changed':
       // Recorded in the transcript, not just applied. Foreman is a governance
       // layer: who changed the rules mid-mission, and when, is exactly the
