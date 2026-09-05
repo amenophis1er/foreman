@@ -242,6 +242,104 @@ export function stalledWorkerReport(
     (partial ? `\n\nPartial output before it went quiet:\n${partial}` : '')
   );
 }
+
+/**
+ * How many identical tool calls in a row count as a loop.
+ *
+ * Five, not three: a legitimate retry-with-backoff — a flaky test, a port
+ * still bound, a file another process is writing — is two or three attempts,
+ * and cutting those off would turn ordinary robustness into a stall report.
+ * But the fifth identical call with identical input has no new information
+ * in it: nothing the agent controls has changed between attempts, so nothing
+ * about the answer will either. Past that point every call is spend with no
+ * expected return, and each one resets the silence watchdog, so this is the
+ * stall that watchdog can never see.
+ */
+export const DEFAULT_REPEAT_LIMIT = 5;
+
+/**
+ * JSON with keys sorted at every depth, so two inputs that differ only in
+ * key order compare equal. Models emit the same arguments in a different
+ * order from one turn to the next often enough that plain JSON.stringify
+ * would let a loop hide behind it.
+ */
+function stableStringify(v: unknown): string {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'undefined';
+  if (Array.isArray(v)) return `[${v.map(stableStringify).join(',')}]`;
+  const o = v as Record<string, unknown>;
+  return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(o[k])}`).join(',')}}`;
+}
+
+/**
+ * Watches for the stall the silence watchdog cannot see: an agent that is
+ * busy but looping — the same failing command forty times, the same file
+ * re-read forever. It looks like work, burns tokens like work, and keeps the
+ * silence clock ticking over like work.
+ *
+ * Same shape as {@link watchSilence} for the same reason: the rule lives in
+ * one small exported function that can be tested without an SDK. The rule is
+ * consecutive identity — same tool, deep-equal input — with a different call
+ * breaking the streak and re-arming detection. Fires exactly once per streak:
+ * the caller decides what to do about it, and a loop that continues past the
+ * report is the same loop, not a new finding.
+ */
+export function watchRepeats(
+  limit: number,
+  onLoop: (info: { toolName: string; count: number; input: unknown }) => void,
+): { observe(toolName: string, input: unknown): void; reset(): void } {
+  let key: string | null = null;
+  let count = 0;
+  let fired = false;
+  return {
+    observe(toolName, input) {
+      const k = `${toolName}\u0000${stableStringify(input)}`;
+      if (k === key) {
+        count++;
+      } else {
+        key = k; count = 1; fired = false;
+      }
+      if (fired || count < limit) return;
+      fired = true;
+      onLoop({ toolName, count, input });
+    },
+    reset() { key = null; count = 0; fired = false; },
+  };
+}
+
+/**
+ * What the director is told when a worker was stopped for looping.
+ *
+ * Parallel to {@link stalledWorkerReport}, and for the same reason: framed as
+ * "failed", the natural response is to send the same brief again, and the
+ * same brief walks into the same wall. The repeated call is included because
+ * it is the one piece of evidence the director cannot otherwise see — it
+ * shows where the wall is.
+ */
+export function loopingWorkerReport(
+  workerId: string, toolName: string, count: number, partial?: string,
+): string {
+  return (
+    `WORKER LOOPING: ${workerId} issued the identical ${toolName} call ${count} times in a row ` +
+    `with identical input and was stopped. This is a worker stuck, not a task that failed: it ` +
+    `hit something it could not see past and kept trying the one move it had.\n\n` +
+    `Do NOT respawn the identical brief; a fresh worker with the same instructions finds the ` +
+    `same wall. Look at what it was repeating (${toolName}) and either do that step yourself, ` +
+    `change the approach or the brief so the step is not needed, or — if the obstacle is ` +
+    `outside the mission's control — ask the human via mcp__foreman__ask_human.` +
+    (partial ? `\n\nOutput before it was stopped:\n${partial}` : '')
+  );
+}
+
+/** The tool_use blocks on an SDK assistant message; empty for anything else. */
+function toolUsesOf(m: Record<string, unknown>): Array<{ name: string; input: unknown }> {
+  if (m.type !== 'assistant') return [];
+  const content = (m.message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (b): b is { type: 'tool_use'; name: string; input: unknown } =>
+      Boolean(b) && (b as { type?: unknown }).type === 'tool_use' && typeof (b as { name?: unknown }).name === 'string',
+  );
+}
 const DEFAULT_MAX_SECONDS = 4 * 60 * 60;
 
 /** Which half of the crew spent something. Roles can be on different providers. */
@@ -284,6 +382,10 @@ directing worker agents. Non-negotiable rules, in priority order:
    say so to the human via mcp__foreman__ask_human rather than continuing to
    spend the run on silence. Record it in the log either way: a mission that
    quietly lost half an hour to a dead endpoint should say so.
+   A WORKER THAT LOOPS IS THE SAME CASE. If a worker comes back reporting it
+   repeated one call many times and was stopped, it hit a wall it could not
+   see. Do not send the same brief back; look at what it was repeating, and
+   change the approach or the brief.
 3. VERIFY INDEPENDENTLY. Never trust a worker's "done". Read the files and run
    the checks yourself before ticking a milestone. Artifacts you produce
    (screenshots, reports, exports) must depict the FINAL state: if any file
@@ -637,10 +739,41 @@ export class MissionRun {
       });
       this.directorQ = q;
 
+      // The loop watchdog for the director. Not a kill: the director has the
+      // mission context and is the only agent that can change course, so the
+      // first streak gets an in-band notice. A second streak of the same call
+      // after being told, in so many words, that it is looping is a director
+      // that is not going to recover — and every further turn is spend. Built
+      // fresh per query() call, so a resumed session starts with a clean slate
+      // rather than inheriting a streak from a context it no longer has.
+      let loopNoticed: string | null = null;
+      const repeats = watchRepeats(DEFAULT_REPEAT_LIMIT, ({ toolName, count, input }) => {
+        const streak = `${toolName}\u0000${stableStringify(input)}`;
+        this.emit('director_looping', { toolName, count });
+        if (loopNoticed === streak) {
+          this.emit('run_error', {
+            error: `Director ignored a loop notice and issued the identical ${toolName} call ` +
+              `${count} more times in a row — run interrupted.`,
+          });
+          void this.interrupt();
+          return;
+        }
+        loopNoticed = streak;
+        repeats.reset();
+        this.directorInput?.push(
+          '[LOOP DETECTED — automated notice]\n' +
+          `You have issued the identical ${toolName} call ${count} times in a row with identical ` +
+          'input. Repeating it again will not produce a different result. Stop, state in one ' +
+          'sentence what you expected to change and why it did not, and either take a different ' +
+          'approach or ask the human via mcp__foreman__ask_human.',
+        );
+      });
+
       let lastTurnFailed = false;
       for await (const msg of this.directorQ as AsyncIterable<SDKMessage>) {
         const m = msg as Record<string, unknown>;
         if (typeof m.session_id === 'string') this.meta.directorSessionId = m.session_id;
+        for (const t of toolUsesOf(m)) repeats.observe(t.name, t.input);
         if (m.type === 'result') {
           // Cumulative per query() call — record only the delta per turn.
           const total = m.total_cost_usd as number | undefined;
@@ -1211,12 +1344,28 @@ export class MissionRun {
       // director be told rather than left waiting.
       void w.q?.interrupt().catch(() => {});
     });
+    // The other stall: busy but looping. Each identical call touches the
+    // silence watchdog above, so without this one a worker re-running the
+    // same failing command is indistinguishable from one making progress —
+    // until the budget says otherwise. A worker, unlike the director, has no
+    // wider context to recover with, so it is stopped and the director told.
+    // Created per runWorker call, so a new or resumed worker starts clean.
+    let looping: { toolName: string; count: number } | null = null;
+    const repeats = watchRepeats(DEFAULT_REPEAT_LIMIT, ({ toolName, count }) => {
+      looping = { toolName, count };
+      this.emit('worker_looping', {
+        id: workerId, toolName, count,
+        text: `${workerId} issued the identical ${toolName} call ${count} times in a row — stopping it.`,
+      });
+      void w.q?.interrupt().catch(() => {});
+    });
 
     try {
       for await (const msg of q as AsyncIterable<SDKMessage>) {
         watchdog.touch();
         const m = msg as Record<string, unknown>;
         if (typeof m.session_id === 'string') w.sessionId = m.session_id;
+        for (const t of toolUsesOf(m)) repeats.observe(t.name, t.input);
         if (m.type === 'result') {
           report = String(m.result ?? '');
           isError = Boolean(m.is_error);
@@ -1235,7 +1384,7 @@ export class MissionRun {
     } finally {
       watchdog.stop();
       w.q = undefined;
-      w.status = isError || stalled ? 'error' : 'done';
+      w.status = isError || stalled || looping ? 'error' : 'done';
       this.syncWorkersMeta();
       this.emit('worker_finished', { id: workerId, status: w.status, sessionId: w.sessionId });
     }
@@ -1244,6 +1393,10 @@ export class MissionRun {
     // the agent with the context to know whether this needs a different
     // approach, a different worker, or a human.
     if (stalled) return { isError: true, report: stalledWorkerReport(workerId, silenceMs, report) };
+    if (looping) {
+      const { toolName, count } = looping as { toolName: string; count: number };
+      return { isError: true, report: loopingWorkerReport(workerId, toolName, count, report) };
+    }
     return { report, isError };
   }
 

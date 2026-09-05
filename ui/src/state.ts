@@ -278,6 +278,28 @@ function applyWire(s: RunView, e: WireEvent): RunView {
           body: String(d.text ?? 'Worker produced no output and was stopped.'),
         }],
       };
+    case 'worker_looping':
+      // The stall the silence clock cannot see: the worker was busy, so the
+      // meter kept moving, but it was running the same call over and over.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.id ?? 'worker'), kind: 'error',
+          title: 'worker looping',
+          body: String(d.text ?? `Worker repeated the identical ${String(d.toolName ?? 'tool')} call ${String(d.count ?? '?')} times and was stopped.`),
+        }],
+      };
+    case 'director_looping':
+      // The director is notified, not killed, so this may be followed by a
+      // recovery — or by a run_error if it loops again after being told.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'director', kind: 'error',
+          title: 'director looping',
+          body: String(d.text ?? `Director issued the identical ${String(d.toolName ?? 'tool')} call ${String(d.count ?? '?')} times in a row — notified.`),
+        }],
+      };
     case 'settings_changed':
       // Recorded in the transcript, not just applied. Foreman is a governance
       // layer: who changed the rules mid-mission, and when, is exactly the

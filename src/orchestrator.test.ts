@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import {
-  MissionRun, accumulateUsage, stalledWorkerReport, watchSilence,
+  DEFAULT_REPEAT_LIMIT, MissionRun, accumulateUsage, loopingWorkerReport, stalledWorkerReport,
+  watchRepeats, watchSilence,
 } from './orchestrator.js';
 import type { AgentEnv } from './provider.js';
 import type { RunMeta } from './types.js';
@@ -325,4 +326,94 @@ test('partial output before the silence is handed back, not discarded', () => {
   assert.match(r, /Partial output/);
   assert.match(r, /wrote index\.html/);
   assert.doesNotMatch(stalledWorkerReport('worker-1', 60_000), /Partial output/);
+});
+
+// watchRepeats is the loop rule on its own, fed by hand: the tool_use blocks
+// it sees in production come off SDK assistant messages, and none of what
+// follows depends on the SDK to construct them.
+
+test('watchRepeats fires once at exactly the limit of consecutive identical calls', () => {
+  const hits: Array<{ toolName: string; count: number }> = [];
+  const r = watchRepeats(3, (i) => hits.push({ toolName: i.toolName, count: i.count }));
+  r.observe('Bash', { command: 'npm test' });
+  r.observe('Bash', { command: 'npm test' });
+  assert.equal(hits.length, 0); // two identical calls is a retry, not a loop
+  r.observe('Bash', { command: 'npm test' });
+  assert.deepEqual(hits, [{ toolName: 'Bash', count: 3 }]);
+});
+
+test('a different call between repeats breaks the streak', () => {
+  let fired = 0;
+  const r = watchRepeats(3, () => fired++);
+  r.observe('Bash', { command: 'npm test' });
+  r.observe('Bash', { command: 'npm test' });
+  r.observe('Read', { file_path: 'a.ts' }); // reading the failure output is progress
+  r.observe('Bash', { command: 'npm test' });
+  r.observe('Bash', { command: 'npm test' });
+  assert.equal(fired, 0);
+  // Same tool with different input is a different call too.
+  r.observe('Bash', { command: 'npm test -- --grep x' });
+  r.observe('Bash', { command: 'npm test' });
+  assert.equal(fired, 0);
+});
+
+test('key order in the input does not defeat detection', () => {
+  let fired = 0;
+  const r = watchRepeats(3, () => fired++);
+  r.observe('Edit', { file_path: 'a.ts', old_string: 'x', new_string: 'y' });
+  r.observe('Edit', { new_string: 'y', file_path: 'a.ts', old_string: 'x' });
+  r.observe('Edit', { old_string: 'x', new_string: 'y', file_path: 'a.ts' });
+  assert.equal(fired, 1);
+  // Including nested objects.
+  const r2 = watchRepeats(2, () => fired++);
+  r2.observe('T', { a: { b: 1, c: [1, { d: 2, e: 3 }] } });
+  r2.observe('T', { a: { c: [1, { e: 3, d: 2 }], b: 1 } });
+  assert.equal(fired, 2);
+});
+
+test('a streak that continues past the report does not re-fire', () => {
+  // The caller has already acted on the first report; a second one for the
+  // same loop would be a second interrupt, or a second notice, for nothing.
+  let fired = 0;
+  const r = watchRepeats(2, () => fired++);
+  for (let i = 0; i < 10; i++) r.observe('Bash', { command: 'ls' });
+  assert.equal(fired, 1);
+});
+
+test('reset() re-arms detection for the same call', () => {
+  // The director path notifies then resets, so that a director which ignores
+  // the notice and starts the same streak again is caught a second time.
+  let fired = 0;
+  const r = watchRepeats(2, () => fired++);
+  r.observe('Bash', { command: 'ls' });
+  r.observe('Bash', { command: 'ls' });
+  assert.equal(fired, 1);
+  r.observe('Bash', { command: 'ls' });
+  assert.equal(fired, 1);
+  r.reset();
+  r.observe('Bash', { command: 'ls' });
+  assert.equal(fired, 1); // one call after a reset is a first call, not a streak
+  r.observe('Bash', { command: 'ls' });
+  assert.equal(fired, 2);
+});
+
+test('the default repeat limit tolerates an ordinary retry-with-backoff', () => {
+  let fired = 0;
+  const r = watchRepeats(DEFAULT_REPEAT_LIMIT, () => fired++);
+  for (let i = 0; i < 3; i++) r.observe('Bash', { command: 'curl localhost:3000' });
+  assert.equal(fired, 0);
+});
+
+test('the looping report steers the director away from resending the brief', () => {
+  const r = loopingWorkerReport('worker-3', 'Bash', 5);
+  assert.match(r, /LOOPING/);
+  assert.match(r, /worker-3/);
+  // What it was repeating, so the director can see the trap.
+  assert.match(r, /identical Bash call 5 times/);
+  assert.match(r, /Do NOT respawn/);
+  assert.match(r, /ask_human/);
+  // It must not read as a task failure: that framing invites a retry.
+  assert.match(r, /not a task that failed/);
+  assert.doesNotMatch(r, /Output before/);
+  assert.match(loopingWorkerReport('worker-3', 'Bash', 5, 'ran tests'), /Output before it was stopped:\nran tests/);
 });
