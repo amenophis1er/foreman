@@ -60,6 +60,7 @@ import { ensureGateway, gatewayStatus, gatewayUsage, releaseGateways, stopGatewa
 import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
 import { deleteSecret, getSecret, hasSecret, putSecret } from './secrets.js';
 import { NotifyHub } from './notify.js';
+import { handleDeckRoute } from './deck.js';
 import { TelegramBot, getMe, linkCode, telegramStartLink, telegramTransport } from './notify/telegram.js';
 import QRCode from 'qrcode';
 import { ANTHROPIC_MODELS } from './anthropic-models.js';
@@ -991,6 +992,13 @@ function json(res: http.ServerResponse, code: number, body: unknown): void {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
   const runEventsMatch = url.pathname.match(/^\/runs\/([^/]+)\/events$/);
+  // The deck: what a run changed and what it produced. Read-only by design —
+  // DESIGN.md §11 — and handled before the chain because it owns two paths
+  // under /runs/{id}/ that nothing else claims.
+  if (await handleDeckRoute(req, res, url, async (id) => {
+    const m = await store.readMeta(id).catch(() => null);
+    return m ? { folder: m.folder } : null;
+  })) return;
   const runResumeMatch = url.pathname.match(/^\/runs\/([^/]+)\/resume$/);
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
   const providerKeyMatch = url.pathname.match(/^\/providers\/([A-Za-z0-9_-]{1,64})\/key$/);

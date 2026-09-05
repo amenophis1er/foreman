@@ -94,6 +94,7 @@ import type { AgentEnv } from './provider.js';
 import { generateRunTitle } from './title.js';
 import { combineBasis, costBasisOf, isPriced, type CostBasis } from './types.js';
 import { priceUsage, type ModelPrice } from './prices.js';
+import { captureBaseline } from './deck.js';
 import type { RunMeta, TokenUsage, WorkerMeta, WorkerProgress } from './types.js';
 
 /** A run's usage before its first `result` message. */
@@ -1112,6 +1113,14 @@ export class MissionRun {
       const foremanDir = path.join(this.meta.folder, '.foreman');
       await mkdir(foremanDir, { recursive: true });
       await ensureIgnoreLines(path.join(foremanDir, '.gitignore'), ['*']);
+      // What the folder looks like before the crew touches it, so the deck
+      // can later say what this run changed. Fresh starts only: a resume
+      // continues the same run and must keep the same baseline. Never on the
+      // critical path — a missing baseline degrades to "cannot attribute",
+      // not to a failed run.
+      if (!isResume) {
+        void captureBaseline(this.meta.folder, this.meta.id).catch(() => {});
+      }
       await mkdir(path.join(this.meta.folder, WORK_DIR), { recursive: true }).catch(() => {});
       // Covers a .claude/ left by an earlier run; the one this run creates is
       // handled again on the way out.
