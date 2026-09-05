@@ -11,10 +11,10 @@ export interface ModelInfo {
   providerLabel?: string;
   /** 0–4 relative cost, drawn as a four-bar mark. 0 or absent renders as "—". */
   cost?: 0 | 1 | 2 | 3 | 4;
-  /** One line of guidance shown under the label — where it runs and what it costs. Never reconstructed client-side, so an unmetered row can't grow a dollar figure it doesn't have. */
+  /** One line of guidance shown under the label — where it runs and what it costs. Never reconstructed client-side, so a row Foreman can't price never grows a dollar figure it doesn't have. */
   note?: string;
-  /** Whether spending on it is real money Foreman can price. Informational only here — the note already says so; ModelSelect never invents cost language from this flag. */
-  metered?: boolean;
+  /** What spending on it is: `priced`, `free`, or real-but-unquantified (`unpriced`). Informational only here — the note already says so; ModelSelect never invents cost language from it. */
+  costBasis?: 'priced' | 'free' | 'unpriced';
 }
 
 /** Custom listbox picker for an agent role. `''` means "inherit your Claude Code default". */

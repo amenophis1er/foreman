@@ -13,29 +13,54 @@ export function formatTokens(n) {
 const sumUsage = (u) => (u ? u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWriteTokens : 0);
 
 /**
- * Budget spend: thin track + escalating fill, with the figures always
- * readable as text. `metered === false` means `spent` is not real money (a
- * gateway priced local or third-party tokens with a table that does not
- * apply) — Foreman's one loud promise is never lying about who pays, so this
- * mode renders tokens and turns instead and never prints a dollar sign.
+ * An indeterminate track: structure, carrying no claim about magnitude.
+ *
+ * Used where something is genuinely being consumed but the amount is unknown.
+ * The stripes are the honest shape of "some, of an amount nobody here can
+ * state" — a partial fill would be a number, and there is no number.
  */
-export function BudgetMeter({ spent, budget, metered = true, usage = null, turns, style }) {
+const STRIPES = 'repeating-linear-gradient(-45deg, var(--line-strong) 0 3px, transparent 3px 7px)';
+
+/**
+ * Budget spend: thin track + escalating fill, with the figures always
+ * readable as text.
+ *
+ * Only `costBasis === 'priced'` prints a dollar sign. Foreman's one loud
+ * promise is never lying about who pays, and through a gateway the SDK prices
+ * foreign tokens with a table that does not apply — so the other two bases
+ * render tokens and turns, which are what actually moved.
+ *
+ * `free` and `unpriced` are deliberately NOT the same rendering. This meter
+ * used to carry a single tooltip that read "a local model has no per-token
+ * cost, and an external endpoint's spend is real but Foreman does not have
+ * its price table" — one sentence covering two opposite situations, because
+ * the boolean behind it could not tell them apart. An empty track says
+ * nothing is being spent; a striped one says something is, and that no one
+ * here can say how much.
+ */
+export function BudgetMeter({ spent, budget, costBasis = 'priced', usage = null, turns, style }) {
   spent = Number(spent) || 0;
   budget = Number(budget) || 0;
 
-  if (!metered) {
+  if (costBasis !== 'priced') {
+    const unpriced = costBasis === 'unpriced';
     const tokens = sumUsage(usage);
-    // The track still needs to mean something, but the two numbers that would
-    // fill it honestly — the 60-turn cap and the 45-minute wall-clock cap —
-    // are server-side defaults this component is never given. Fabricating a
-    // fraction from them here would be the exact lie this mode exists to
-    // avoid, so the bar stays an empty track: visible structure, no claim.
+    // The two numbers that would fill this track honestly — the turn cap and
+    // the wall-clock cap — are server-side defaults the component is never
+    // given. Fabricating a fraction from them would be the exact lie this
+    // mode exists to avoid, so the bar makes no magnitude claim either way.
     return (
       <div
-        title="No dollar figure: a local model has no per-token cost, and an external endpoint's spend is real but Foreman does not have its price table. Turns and tokens are what's actually known."
+        title={unpriced
+          ? 'Real spend, on an account Foreman cannot price — no table for this endpoint, or a plan being drawn down. Check the provider for the bill; turns and tokens are all that is known here.'
+          : 'Runs on hardware you already own, so nothing is billed per token. Turns and tokens are the only real units.'}
         style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', minWidth: 170, ...style }}
       >
-        <div style={{ flex: 1, height: 'var(--meter-h)', background: 'var(--bg-inset)', borderRadius: 2, overflow: 'hidden' }} />
+        <div style={{
+          flex: 1, height: 'var(--meter-h)', background: 'var(--bg-inset)',
+          borderRadius: 2, overflow: 'hidden',
+          backgroundImage: unpriced ? STRIPES : undefined,
+        }} />
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-sm)', color: 'var(--ink-1)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
           {formatTokens(tokens)} tok{typeof turns === 'number' ? ` · ${turns} turn${turns === 1 ? '' : 's'}` : ''}
         </span>

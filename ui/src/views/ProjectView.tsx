@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  api, providerHome, useChat, useRunHistory, useRunView,
-  type ProjectSummary, type RunSummary, type RunView as RunViewState, type TokenUsage,
+  api, basisOf, providerHome, useChat, useRunHistory, useRunView,
+  type CostBasis, type ProjectSummary, type RunSummary,
+  type RunView as RunViewState, type TokenUsage,
 } from '../state';
 import { AppHeader } from '../ds/shell/AppHeader';
 import { Button } from '../ds/core/Button';
@@ -212,22 +213,25 @@ function PlanPane({ chat, folder, starting, error, onStart }: {
 }
 
 /** Key run properties (models, budget, browser), pulled from run metadata. */
-function RunDetails({ r, liveCost, liveMetered, liveUsage, liveTurns }: {
-  r: RunSummary; liveCost?: number; liveMetered?: boolean; liveUsage?: TokenUsage | null; liveTurns?: number;
+function RunDetails({ r, liveCost, liveBasis, liveUsage, liveTurns }: {
+  r: RunSummary; liveCost?: number; liveBasis?: CostBasis; liveUsage?: TokenUsage | null; liveTurns?: number;
 }) {
-  const metered = liveMetered ?? r.metered ?? true;
+  const costBasis = liveBasis ?? basisOf(r);
   const usage = liveUsage ?? r.usage ?? null;
   const turns = liveTurns ?? r.turns;
   const tokenCount = usage ? usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens : 0;
   const rows: Array<[string, string]> = [
     ['director', r.directorModel || 'default'],
     ['workers', r.workerModel || 'default'],
-    // Same honesty rule as BudgetMeter: an unmetered run never gets a dollar
-    // sign, even in this plain key/value list — tokens (and turns, if known)
-    // stand in for the figure this run genuinely has no price for.
-    ['budget', metered
+    // Same honesty rule as BudgetMeter: a run Foreman cannot price never gets
+    // a dollar sign, even in this plain key/value list — tokens (and turns, if
+    // known) stand in for the figure this run genuinely has no price for.
+    // There is room for words here, unlike on a fleet card, so `unpriced`
+    // says what it is rather than leaving the reader to infer "free".
+    ['budget', costBasis === 'priced'
       ? `$${((liveCost ?? r.costUsd) || 0).toFixed(2)} / $${r.budgetUsd.toFixed(2)}`
-      : `${formatTokens(tokenCount)} tok${typeof turns === 'number' ? ` · ${turns} turn${turns === 1 ? '' : 's'}` : ''}`],
+      : `${formatTokens(tokenCount)} tok${typeof turns === 'number' ? ` · ${turns} turn${turns === 1 ? '' : 's'}` : ''}`
+        + (costBasis === 'unpriced' ? ' · cost not tracked' : ' · no per-token cost')],
     ['browser', r.browserTools ? 'on' : 'off'],
   ];
   if (r.resumes) rows.push(['resumes', String(r.resumes)]);
@@ -343,7 +347,7 @@ export function ProjectView({
         {selectedRunId && <StatusBadge status={run.runStatus} />}
         {selectedRunId && (
           <BudgetMeter spent={run.costUsd} budget={run.budgetUsd}
-            metered={run.metered} usage={run.usage} turns={selectedRun?.turns} />
+            costBasis={run.costBasis} usage={run.usage} turns={selectedRun?.turns} />
         )}
         {viewingLive && run.runStatus === 'running' && (
           <Button variant="danger" onClick={() => void api.interrupt(selectedRunId!)}>Interrupt</Button>
@@ -441,7 +445,7 @@ export function ProjectView({
               sessionId={run.directorSessionId}
               details={selectedRun && (
                 <RunDetails r={selectedRun} liveCost={run.costUsd}
-                  liveMetered={run.metered} liveUsage={run.usage} liveTurns={selectedRun.turns} />
+                  liveBasis={run.costBasis} liveUsage={run.usage} liveTurns={selectedRun.turns} />
               )} />
           </div>
           <div style={{ minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>

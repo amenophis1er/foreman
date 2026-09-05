@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, providerHome, type ProjectSummary } from '../state';
+import { api, basisOf, providerHome, type ProjectSummary } from '../state';
 import { AppHeader } from '../ds/shell/AppHeader';
 import { BillingBadge, type BillingMode } from '../ds/status/BillingBadge';
 import { Button } from '../ds/core/Button';
@@ -151,7 +151,7 @@ export function FleetView({
               title: p.activeRun.title,
               costUsd: p.activeRun.costUsd,
               budgetUsd: p.activeRun.budgetUsd,
-              metered: p.activeRun.metered,
+              costBasis: basisOf(p.activeRun),
               usage: p.activeRun.usage,
               turns: p.activeRun.turns,
             } : undefined}

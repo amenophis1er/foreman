@@ -20,7 +20,7 @@ export interface ProjectCardProps {
   run?: {
     mission: string; title?: string; costUsd: number; budgetUsd: number;
     /** False when the dollar figure is not real money; the meter shows tokens. */
-    metered?: boolean;
+    costBasis?: 'priced' | 'free' | 'unpriced';
     usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number };
     turns?: number;
   };

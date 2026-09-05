@@ -11,6 +11,34 @@ import { onConnection, onSse, type Envelope } from './sse';
 
 export type Status = 'idle' | 'running' | 'done' | 'error' | 'interrupted';
 
+/**
+ * What a run's spend is. Mirrors `CostBasis` in src/types.ts.
+ *
+ *  - `priced`   — the dollar figure is real; show and cap in dollars.
+ *  - `free`     — the operator's own hardware; nothing is charged per token.
+ *  - `unpriced` — real spend of an amount nobody here can state.
+ *
+ * `free` and `unpriced` both hide the dollar figure and must never be shown
+ * with the same words: one of them is a reason to go and look at a bill.
+ */
+export type CostBasis = 'priced' | 'free' | 'unpriced';
+
+/**
+ * The basis on a wire payload, tolerating every vintage of it.
+ *
+ * Events replay from a log that outlives any deploy, so a run recorded before
+ * the split arrives carrying only `metered`. That meant "not priceable" —
+ * free and unpriced at once — and reads as `unpriced` here for the same
+ * reason the server does it: describing real spend as free is the error that
+ * costs someone money.
+ */
+export function basisOf(d: { costBasis?: string; metered?: boolean }): CostBasis {
+  if (d.costBasis === 'priced' || d.costBasis === 'free' || d.costBasis === 'unpriced') {
+    return d.costBasis;
+  }
+  return d.metered === false ? 'unpriced' : 'priced';
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -85,7 +113,9 @@ export type RunSummary = {
   directorModel?: string; workerModel?: string; resumes?: number;
   browserTools?: boolean;
   directorSessionId?: string;
-  /** False when `costUsd` is not real money — see src/provider.ts. */
+  /** What this run's spend is — see src/types.ts. Absent on older runs. */
+  costBasis?: CostBasis;
+  /** @deprecated Read `costBasis` through `basisOf()`. */
   metered?: boolean;
   usage?: TokenUsage;
   turns?: number;
@@ -111,11 +141,12 @@ export type RunView = {
   runStatus: Status;
   mission: string;
   /**
-   * Whether `costUsd` is real money. Through a gateway the SDK prices foreign
-   * tokens with Anthropic's table, so the figure is fiction and the meter must
-   * show what is true instead — tokens and turns.
+   * What this run's spend is. Through a gateway the SDK prices foreign tokens
+   * with Anthropic's table, so a dollar figure is fiction and the meter shows
+   * what is true instead — tokens and turns. `unpriced` additionally says the
+   * spend is real but untracked, which `free` must never be confused with.
    */
-  metered: boolean;
+  costBasis: CostBasis;
   usage: TokenUsage | null;
   /** Generated mission name, once `run_titled` arrives; '' until then. */
   title: string;
@@ -130,7 +161,7 @@ export type RunView = {
 };
 
 const emptyRun: RunView = {
-  runStatus: 'idle', mission: '', title: '', metered: true, usage: null, costUsd: 0, budgetUsd: 5,
+  runStatus: 'idle', mission: '', title: '', costBasis: 'priced', usage: null, costUsd: 0, budgetUsd: 5,
   agents: [], entries: [], approvals: [], questions: [], missionDoc: null,
 };
 
@@ -183,7 +214,7 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         // Read here rather than waiting for a `cost` event: a run that spends
         // no priceable dollars may never emit one, and the meter would show
         // the previous run's units until it did.
-        metered: d.metered !== false,
+        costBasis: basisOf(d),
         usage: d.usage ?? null,
         agents: [{ id: 'director', status: 'running' }],
       };
@@ -200,9 +231,9 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         mission: d.mission ?? s.mission,
         budgetUsd: d.budgetUsd ?? s.budgetUsd,
         costUsd: d.costUsd ?? s.costUsd,
-        // A resume can legitimately change this: the flag is recomputed at
-        // dispatch, so a run wrongly marked metered by older code heals here.
-        metered: d.metered !== undefined ? d.metered !== false : s.metered,
+        // A resume can legitimately change this: the basis is recomputed at
+        // dispatch, so a run wrongly classified by older code heals here.
+        costBasis: d.costBasis || d.metered !== undefined ? basisOf(d) : s.costBasis,
         usage: d.usage ?? s.usage,
         agents: [{ id: 'director', status: 'running' as Status }, ...others],
         entries: [...s.entries, {
@@ -240,7 +271,7 @@ function applyWire(s: RunView, e: WireEvent): RunView {
       return {
         ...s, costUsd: d.costUsd, budgetUsd: d.budgetUsd,
         usage: d.usage ?? s.usage,
-        metered: d.metered !== false,
+        costBasis: basisOf(d),
       };
     case 'message': {
       const extra: Partial<RunView> =
