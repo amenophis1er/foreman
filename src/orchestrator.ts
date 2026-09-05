@@ -129,8 +129,13 @@ const LOCAL_IGNORE_LINES = ['settings.local.json', '.gitignore'];
  * tokens with Anthropic's table), but "too many turns" and "too long" are true
  * everywhere — and a runaway agent is what a cap exists to stop, not a bill.
  */
-const DEFAULT_MAX_TURNS = 60;
-const DEFAULT_MAX_SECONDS = 45 * 60;
+// Sized to bound a runaway without shortening a legitimate mission. The
+// director's own SDK limit is 150 turns, so anything tighter here would be a
+// silent regression on runs that used to be governed by budget alone — these
+// caps exist to give an UNMETERED run something that binds, not to second-guess
+// a metered one that dollars already stop.
+const DEFAULT_MAX_TURNS = 150;
+const DEFAULT_MAX_SECONDS = 4 * 60 * 60;
 
 /** Broadcasts to SSE clients and appends to the run's event log. */
 export type Emitter = (event: string, data: unknown) => void;
