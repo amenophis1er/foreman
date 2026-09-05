@@ -560,6 +560,20 @@ export function workerStatusBlock(w: WorkerMeta, now = Date.now(), withReport = 
 /** Which half of the crew spent something. Roles can be on different providers. */
 type AgentRole = 'director' | 'worker';
 
+/**
+ * How a worker may be launched other than as the run configured it. Used by
+ * exactly one path — a retry on the director's provider after a stall, at the
+ * human's request — so it is deliberately narrow: an environment, a model,
+ * and which role's rates price the tokens.
+ */
+interface WorkerOverrides {
+  env?: AgentEnv;
+  model?: string;
+  priceRole?: AgentRole;
+  /** For the transcript and the report: why this worker exists. */
+  reason?: string;
+}
+
 /** Broadcasts to SSE clients and appends to the run's event log. */
 export type Emitter = (event: string, data: unknown) => void;
 
@@ -1719,7 +1733,81 @@ export class MissionRun {
    * the record exists and `worker_started` has been emitted, which is exactly
    * the guarantee spawn_worker's immediate reply relies on.
    */
-  private launchWorker(workerId: string, prompt: string, resumeSessionId?: string): WorkerRuntime {
+  /**
+   * Item 6, decided as "ask": a worker on a gateway provider has stalled or
+   * looped. Rather than letting the director cope alone or retrying somewhere
+   * else on its own, the harness asks the human — in the tab and on their
+   * phone — with the retry as a button: *continue (the director decides)*,
+   * or *retry once on the director's provider*. Nobody answers in ten
+   * minutes → continue. The fallback is therefore never automatic and never
+   * more than one tap away, which is what reconciled "ask" with "fallback".
+   *
+   * A retry on the director's provider changes what the run's dollars mean —
+   * a free or unpriced worker becomes a priced one — so the cost basis is
+   * re-derived and announced before that worker spends a token. Only asked
+   * when a retry target actually differs; a worker already on the director's
+   * provider has nowhere else to go.
+   */
+  private async askFallback(
+    workerId: string, prompt: string, outcome: WorkerOutcome, why: 'stalled' | 'looping',
+  ): Promise<WorkerOutcome> {
+    const rb = this.roleBasis;
+    const sameTarget = !rb
+      || (this.agentEnv.director === this.agentEnv.worker
+        && (this.meta.directorModel || '') === (this.meta.workerModel || ''));
+    if (sameTarget) return outcome;
+
+    const directorLabel = this.meta.directorModel || 'the director\'s model';
+    const options = [
+      'Continue — the director decides what to do next',
+      `Retry once on the director's provider (${directorLabel})`,
+    ];
+    const id = `q-${Date.now()}-fallback-${workerId}`;
+    const question =
+      `${workerId} ${why} on ${this.meta.workerModel || 'the worker model'}. ` +
+      `Continue and let the director decide, or retry the same brief once on ${directorLabel}?`;
+    this.emit('question', { id, question, options, harness: true });
+    const answer = await new Promise<string>((resolve) => {
+      this.pendingQuestions.set(id, resolve);
+      this.armAsk(id, (afterMs) => {
+        if (!this.pendingQuestions.delete(id)) return;
+        this.emit('question_timeout', { id, afterMs });
+        resolve(options[0]);
+      });
+    });
+    if (!answer.toLowerCase().startsWith('retry')) {
+      this.emit('question_answered', { id });
+      return outcome;
+    }
+    this.emit('question_answered', { id });
+
+    // The human chose to spend on the director's provider: say what that
+    // does to the money before it happens.
+    const nb = combineBasis(costBasisOf(this.meta), rb.director);
+    if (nb !== costBasisOf(this.meta)) {
+      this.meta.costBasis = nb;
+      this.meta.metered = nb === 'priced';
+      this.emit('settings_changed', {
+        changes: [`retrying ${workerId} on the director's provider — this run is now ${nb}` +
+          (nb === 'priced' ? ' and the dollar cap is live' : '')],
+        browserTools: Boolean(this.meta.browserTools), budgetUsd: this.meta.budgetUsd,
+      });
+      this.saveMeta(this.meta);
+      this.emitEconomics();
+    }
+    const nextId = `worker-${++this.workerSeq}`;
+    this.launchWorker(nextId, prompt, undefined, {
+      env: this.agentEnv.director, model: this.meta.directorModel || undefined, priceRole: 'director',
+      reason: `retry of ${workerId} on the director's provider, at the human's request`,
+    });
+    return {
+      isError: true,
+      report: `${outcome.report}\n\nTHE HUMAN CHOSE TO RETRY: the same brief is now running as ${nextId} on ` +
+        `${directorLabel}. Supervise ${nextId} with check_workers / wait_for_worker; do not respawn this brief yourself.`,
+    };
+  }
+
+  private launchWorker(workerId: string, prompt: string, resumeSessionId?: string, overrides?: WorkerOverrides): WorkerRuntime {
     const existing = this.workers.get(workerId);
     const w: WorkerRuntime = existing ?? {
       id: workerId, status: 'running', costUsd: 0, task: prompt.slice(0, 500),
@@ -1742,9 +1830,10 @@ export class MissionRun {
     this.syncWorkersMeta();
     this.emit('worker_started', {
       id: workerId, task: prompt.slice(0, 200), resumed: Boolean(resumeSessionId),
+      ...(overrides?.reason ? { reason: overrides.reason } : {}),
     });
 
-    w.promise = this.runWorker(workerId, prompt, resumeSessionId)
+    w.promise = this.runWorker(workerId, prompt, resumeSessionId, overrides)
       // runWorker catches its own failures; this is the belt for anything it
       // could not, because an unsettled `done` would hang a wait_for_worker.
       .catch((err): WorkerOutcome => ({ report: `Worker crashed: ${String(err)}`, isError: true }))
@@ -1771,7 +1860,7 @@ export class MissionRun {
    * record's live activity fields current, because those are what
    * check_workers shows while this is still running.
    */
-  private async runWorker(workerId: string, prompt: string, resumeSessionId?: string):
+  private async runWorker(workerId: string, prompt: string, resumeSessionId?: string, overrides?: WorkerOverrides):
     Promise<WorkerOutcome> {
     const w = this.workers.get(workerId);
     if (!w) throw new Error(`runWorker: no record for ${workerId}; launchWorker creates it`);
@@ -1782,10 +1871,10 @@ export class MissionRun {
         cwd: this.meta.folder,
         permissionMode: 'default',
         resume: resumeSessionId,
-        model: this.meta.workerModel,
+        model: overrides?.model || this.meta.workerModel,
         maxTurns: 60,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: WORKER_CHARTER },
-        ...this.agentEnv.worker,
+        ...(overrides?.env ?? this.agentEnv.worker),
         // Built per worker: the report_progress handler closes over this id,
         // which is how a report lands on the right record without the worker
         // having to know its own name.
@@ -1844,8 +1933,10 @@ export class MissionRun {
           this.noteUsageLimit(report);
           // Same ordering rule as the director loop: the cost event carries
           // usage, so usage has to be current before it is emitted.
-          this.addUsage(m.usage, 'worker');
-          this.addCost(m.total_cost_usd as number | undefined, 'worker');
+          // A worker retried on the director's provider is priced with the
+          // director's rates: the tokens went through that gateway.
+          this.addUsage(m.usage, overrides?.priceRole ?? 'worker');
+          this.addCost(m.total_cost_usd as number | undefined, overrides?.priceRole ?? 'worker');
           w.costUsd += (m.total_cost_usd as number | undefined) ?? 0;
         }
         this.emit('message', { agent: workerId, msg });
@@ -1861,10 +1952,16 @@ export class MissionRun {
     // Told to the director as a fact plus its options, not as an order: it is
     // the agent with the context to know whether this needs a different
     // approach, a different worker, or a human.
-    if (stalled) return { isError: true, report: stalledWorkerReport(workerId, silenceMs, report) };
+    // A retry that itself stalls is not offered another retry: the fallback
+    // is one tap, once, not a ladder.
+    if (stalled) {
+      const out: WorkerOutcome = { isError: true, report: stalledWorkerReport(workerId, silenceMs, report) };
+      return overrides?.env ? out : this.askFallback(workerId, prompt, out, 'stalled');
+    }
     if (looping) {
       const { toolName, count } = looping as { toolName: string; count: number };
-      return { isError: true, report: loopingWorkerReport(workerId, toolName, count, report) };
+      const out: WorkerOutcome = { isError: true, report: loopingWorkerReport(workerId, toolName, count, report) };
+      return overrides?.env ? out : this.askFallback(workerId, prompt, out, 'looping');
     }
     return { report, isError };
   }

@@ -729,6 +729,7 @@ async function driveRun(
   let agentEnv;
   let roleBasis = resolved.costBasis;
   let prices: { director?: ModelPrice; worker?: ModelPrice } = {};
+  let roleBases: { director: CostBasis; worker: CostBasis } | undefined;
   let gatewayRoles = { director: false, worker: false };
   try {
     // Resolved per role. Where both roles share a provider this resolves once
@@ -773,6 +774,7 @@ async function driveRun(
       : await roleCost(workerProvider, meta.workerModel);
     roleBasis = combineBasis(directorCost.basis, workerCost.basis);
     prices = { director: directorCost.price, worker: workerCost.price };
+    roleBases = { director: directorCost.basis, worker: workerCost.basis };
   } catch (err) {
     meta.status = 'error';
     meta.endedAt = Date.now();
@@ -804,7 +806,7 @@ async function driveRun(
   meta.metered = roleBasis === 'priced';
   const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv, prices, {
     key: ledgerKeyFor(meta), roles: gatewayRoles, read: gatewayUsage,
-  });
+  }, roleBases);
   activeByProject.set(projectId, run);
   try {
     if (changes?.directorChanged || changes?.workerChanged) {

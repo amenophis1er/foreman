@@ -1030,3 +1030,72 @@ test('a resumed run adds this attempt’s ledger cost to what earlier attempts p
   await run.pollLedger();
   assert.ok(Math.abs(run.meta.costUsd - 1.65) < 1e-9, `0.25 native + (1.0 earlier + 0.4 now), got ${run.meta.costUsd}`);
 });
+
+// ---------------------------------------------------------------------------
+// Item 6: a stalled gateway worker asks the human, with the retry one tap away
+// ---------------------------------------------------------------------------
+
+function fallbackRun(over: Partial<RunMeta>, roleBasis?: { director: 'priced' | 'free' | 'unpriced'; worker: 'priced' | 'free' | 'unpriced' }) {
+  const events: Array<{ event: string; data: any }> = [];
+  const launched: any[] = [];
+  const directorEnv = { env: { A: 'director' } } as unknown as AgentEnv;
+  const workerEnv = { env: { A: 'worker' } } as unknown as AgentEnv;
+  const run = new MissionRun(
+    meta({ directorModel: 'sonnet', workerModel: 'glm-5.3-flash:cloud', costBasis: 'free', askTimeoutMs: 20, ...over }),
+    (event, data) => events.push({ event, data }), () => {},
+    { director: directorEnv, worker: workerEnv }, {}, undefined, roleBasis,
+  ) as unknown as {
+    askFallback(id: string, prompt: string, out: { report: string; isError: boolean }, why: string): Promise<{ report: string; isError: boolean }>;
+    launchWorker(...a: unknown[]): unknown;
+    answerQuestion(id: string, text: string): boolean;
+    meta: RunMeta;
+  };
+  run.launchWorker = (...a: unknown[]) => { launched.push(a); return {}; };
+  return { run, events, launched, directorEnv };
+}
+
+test('the human taps retry: the brief relaunches on the director’s provider and the basis flips, announced', async () => {
+  const { run, events, launched, directorEnv } = fallbackRun({ askTimeoutMs: 60_000 }, { director: 'priced', worker: 'free' });
+  const p = run.askFallback('worker-1', 'build the page', { report: 'WORKER STALLED…', isError: true }, 'stalled');
+  await new Promise((r) => setTimeout(r, 10));
+  const q = events.find((e) => e.event === 'question');
+  assert.ok(q, 'the human is asked');
+  assert.equal(q!.data.options.length, 2);
+  assert.match(q!.data.options[1], /Retry once on the director's provider \(sonnet\)/);
+  assert.equal(run.answerQuestion(q!.data.id, q!.data.options[1]), true);
+  const out = await p;
+  assert.equal(launched.length, 1, 'relaunched exactly once');
+  const [id, prompt, resume, overrides] = launched[0] as [string, string, undefined, any];
+  assert.match(id, /^worker-\d+$/);
+  assert.equal(prompt, 'build the page');
+  assert.equal(resume, undefined);
+  assert.equal(overrides.env, directorEnv);
+  assert.equal(overrides.model, 'sonnet');
+  assert.equal(overrides.priceRole, 'director');
+  assert.equal(run.meta.costBasis, 'priced', 'free worker → priced director: the run is priced now');
+  assert.ok(events.some((e) => e.event === 'settings_changed' && /now priced/.test(e.data.changes[0])), 'and it is announced');
+  assert.match(out.report, /THE HUMAN CHOSE TO RETRY/);
+  assert.match(out.report, new RegExp(`running as ${id}`));
+});
+
+test('nobody answers: after the timeout the director simply continues, nothing is relaunched', async () => {
+  const { run, events, launched } = fallbackRun({}, { director: 'priced', worker: 'free' });
+  const out = await run.askFallback('worker-1', 'brief', { report: 'WORKER STALLED…', isError: true }, 'stalled');
+  assert.equal(launched.length, 0);
+  assert.equal(out.report, 'WORKER STALLED…', 'the outcome is handed back unchanged');
+  assert.ok(events.some((e) => e.event === 'question_timeout'));
+  assert.equal(run.meta.costBasis, 'free', 'no money was committed on the human’s behalf');
+});
+
+test('a worker already on the director’s provider is not asked — there is nowhere else to go', async () => {
+  const { run, events, launched } = fallbackRun({ directorModel: 'sonnet', workerModel: 'sonnet' }, { director: 'priced', worker: 'priced' });
+  (run as any).agentEnv.worker = (run as any).agentEnv.director;
+  const out = await run.askFallback('worker-1', 'brief', { report: 'r', isError: true }, 'looping');
+  assert.equal(events.filter((e) => e.event === 'question').length, 0);
+  assert.equal(launched.length, 0);
+  assert.equal(out.report, 'r');
+  // And with no role bases known at all, likewise.
+  const bare = fallbackRun({});
+  await bare.run.askFallback('worker-1', 'brief', { report: 'r', isError: true }, 'stalled');
+  assert.equal(bare.events.filter((e) => e.event === 'question').length, 0);
+});
