@@ -10,7 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { ensureGateway, gatewayStatus, stopGateways } from './gateway.js';
+import { ensureGateway, gatewayStatus, reapNow, releaseGateways, stopGateways } from './gateway.js';
 import { providerEnv, resolveProvider } from './provider.js';
 
 const ROOT = '/tmp/foreman-gateway-test';
@@ -119,4 +119,51 @@ test('an agent env built for a gateway points at that gateway', async (t) => {
   assert.equal(env?.ANTHROPIC_BASE_URL, url);
   assert.ok(env?.ANTHROPIC_API_KEY, 'the invariant still holds through the supervisor');
   assert.equal(env?.ANTHROPIC_DEFAULT_SONNET_MODEL, 'llama3');
+});
+
+test('a gateway a run still holds is never reaped, however quiet', async (t) => {
+  const upstream = await stubUpstream();
+  t.after(async () => { stopGateways(); await upstream.close(); });
+
+  const p = await resolveProvider(
+    { kind: 'openai-compatible', id: 'held', baseUrl: upstream.url }, ROOT);
+
+  // Idle time moves when an agent env is BUILT, which happens once at
+  // dispatch — not when requests flow. Reaping on that alone pulled the proxy
+  // out from under a thirty-minute mission ten minutes in, and every call
+  // after it failed with a refused connection.
+  const url = await ensureGateway(p, 'run-1');
+  assert.equal(gatewayStatus().length, 1);
+
+  reapNow(Date.now() + 60 * 60_000);
+  assert.equal(gatewayStatus().length, 1, 'held by run-1, so it must survive');
+
+  const stillThere = await fetch(`${url}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': 'k' },
+    body: JSON.stringify({ model: 'm', max_tokens: 4, messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  assert.equal(stillThere.status, 200, 'a held gateway still answers');
+
+  releaseGateways('run-1');
+  reapNow(Date.now() + 60 * 60_000);
+  assert.equal(gatewayStatus().length, 0, 'released and idle, so it goes');
+});
+
+test('two runs holding one gateway: the first to finish does not kill it', async (t) => {
+  const upstream = await stubUpstream();
+  t.after(async () => { stopGateways(); await upstream.close(); });
+
+  const p = await resolveProvider(
+    { kind: 'openai-compatible', id: 'shared', baseUrl: upstream.url }, ROOT);
+  await ensureGateway(p, 'run-a');
+  await ensureGateway(p, 'run-b');
+
+  releaseGateways('run-a');
+  reapNow(Date.now() + 60 * 60_000);
+  assert.equal(gatewayStatus().length, 1, 'run-b still needs it');
+
+  releaseGateways('run-b');
+  reapNow(Date.now() + 60 * 60_000);
+  assert.equal(gatewayStatus().length, 0);
 });

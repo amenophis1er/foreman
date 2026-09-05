@@ -52,7 +52,7 @@ import { defaultInstance, discoverInstances, effectiveConfigDir } from './instan
 import {
   normalizeOpenAiBaseUrl, providerEnv, providerOf, providerProblem, resolveProvider,
 } from './provider.js';
-import { ensureGateway, gatewayStatus, stopGateways } from './gateway.js';
+import { ensureGateway, gatewayStatus, releaseGateways, stopGateways } from './gateway.js';
 import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
 import { deleteSecret, hasSecret, putSecret } from './secrets.js';
 import { ANTHROPIC_MODELS } from './anthropic-models.js';
@@ -408,10 +408,14 @@ function makeEmitter(runId: string, projectId: string) {
  * gateway can never be skipped on one of them — which would leave the agent
  * pointed at a closed port with a real credential in hand.
  */
-async function agentEnvFor(resolved: ResolvedProvider): Promise<ReturnType<typeof providerEnv>> {
+async function agentEnvFor(
+  resolved: ResolvedProvider, holder?: string,
+): Promise<ReturnType<typeof providerEnv>> {
   await mkdir(resolved.configDir, { recursive: true }).catch(() => {});
   if (resolved.wire === 'anthropic-native') return providerEnv(resolved);
-  return providerEnv(resolved, await ensureGateway(resolved));
+  // `holder` keeps the gateway alive for as long as this run needs it — see
+  // the reaper in gateway.ts.
+  return providerEnv(resolved, await ensureGateway(resolved, holder));
 }
 
 /**
@@ -465,7 +469,7 @@ async function driveChatTurn(project: Project, text: string): Promise<void> {
       folder: project.folder,
       text,
       model: settings.plannerModel,
-      agentEnv: await agentEnvFor(resolved),
+      agentEnv: await agentEnvFor(resolved, `chat:${project.id}`),
       emit,
     });
     const next: ChatMeta = {
@@ -555,10 +559,10 @@ async function driveRun(
       if (roleProblem) throw new Error(roleProblem);
     }
     agentEnv = {
-      director: await agentEnvFor(directorProvider),
+      director: await agentEnvFor(directorProvider, meta.id),
       worker: directorProvider === workerProvider
-        ? await agentEnvFor(directorProvider)
-        : await agentEnvFor(workerProvider),
+        ? await agentEnvFor(directorProvider, meta.id)
+        : await agentEnvFor(workerProvider, meta.id),
     };
     roleMetered = directorProvider.metered || workerProvider.metered;
   } catch (err) {
@@ -614,6 +618,8 @@ async function driveRun(
     meta.endedAt = Date.now();
     await store.writeMeta(meta).catch(() => {});
   } finally {
+    // However the run ended, it no longer needs its gateways.
+    releaseGateways(meta.id);
     if (activeByProject.get(projectId) === run) activeByProject.delete(projectId);
   }
 }

@@ -28,7 +28,10 @@ const GATEWAY_CLI = fileURLToPath(new URL('./gateway/llm-gateway.cjs', import.me
 /** Give up on a gateway that has not bound its port by then. */
 const START_TIMEOUT_MS = 10_000;
 
-/** A gateway unused for this long is shut down. Restarting one costs ~200ms. */
+/**
+ * A gateway held by nobody for this long is shut down. Restarting one costs
+ * ~200ms, so reaping is cheap — but only once nothing can still need it.
+ */
 const IDLE_MS = 10 * 60_000;
 
 /** Restarts within this window count toward the crash-loop cutoff. */
@@ -43,6 +46,17 @@ interface Gateway {
   child: ChildProcess;
   /** Bumped whenever an agent env is built against this gateway. */
   lastUsed: number;
+  /**
+   * Runs currently depending on this gateway.
+   *
+   * Idle time alone is not safe to reap on: `lastUsed` moves when an agent
+   * environment is *built*, which happens once at dispatch, not when requests
+   * flow. A mission that ran for thirty minutes therefore looked idle after
+   * ten, and the proxy was pulled out from under a live run — every subsequent
+   * call failed with a refused connection, for the director and its workers
+   * alike. A gateway with holders is never reaped, however quiet it looks.
+   */
+  holders: Set<string>;
   restarts: number[];
   /** Set when the gateway has crash-looped; reported instead of restarted. */
   broken?: string;
@@ -103,7 +117,7 @@ async function waitForListen(port: number, child: ChildProcess): Promise<void> {
  * URL: a run that cannot reach its gateway must fail with a reason, not send
  * requests into a closed port.
  */
-export async function ensureGateway(p: ResolvedProvider): Promise<string> {
+export async function ensureGateway(p: ResolvedProvider, holder?: string): Promise<string> {
   if (p.wire === 'anthropic-native') throw new Error('native providers need no gateway');
   const key = keyFor(p);
 
@@ -112,6 +126,7 @@ export async function ensureGateway(p: ResolvedProvider): Promise<string> {
     if (existing.broken) throw new Error(existing.broken);
     if (existing.child.exitCode === null) {
       existing.lastUsed = Date.now();
+      if (holder) existing.holders.add(holder);
       return `http://127.0.0.1:${existing.port}`;
     }
     running.delete(key);
@@ -145,7 +160,10 @@ export async function ensureGateway(p: ResolvedProvider): Promise<string> {
   });
   child.unref();
 
-  const gw: Gateway = { key, port, mode, upstream, child, lastUsed: Date.now(), restarts: [] };
+  const gw: Gateway = {
+    key, port, mode, upstream, child, lastUsed: Date.now(), restarts: [],
+    holders: new Set(holder ? [holder] : []),
+  };
   running.set(key, gw);
 
   // The gateway logs one line per translated model substitution and its own
@@ -185,22 +203,43 @@ export async function ensureGateway(p: ResolvedProvider): Promise<string> {
   return `http://127.0.0.1:${port}`;
 }
 
+/**
+ * Retires gateways nothing holds and nothing has used recently.
+ *
+ * Exported so a test can run it at an arbitrary clock instead of waiting a
+ * real ten minutes — the property worth testing is *which* gateways it spares,
+ * and that is invisible on the interval's own schedule.
+ */
+export function reapNow(now = Date.now()): void {
+  for (const [key, g] of running) {
+    if (g.holders.size > 0) continue;
+    if (now - g.lastUsed < IDLE_MS) continue;
+    g.child.kill();
+    running.delete(key);
+  }
+}
+
 /** Stops gateways nothing has used recently. Cheap to restart on demand. */
 function startReaper(): void {
   if (reaper) return;
   reaper = setInterval(() => {
-    const now = Date.now();
-    for (const [key, g] of running) {
-      if (now - g.lastUsed < IDLE_MS) continue;
-      g.child.kill();
-      running.delete(key);
-    }
+    reapNow();
     if (running.size === 0 && reaper) {
       clearInterval(reaper);
       reaper = null;
     }
   }, 60_000);
   reaper.unref();
+}
+
+/**
+ * Releases every gateway a run was holding. Called when the run ends, however
+ * it ends — the reaper can then retire anything nothing else needs.
+ */
+export function releaseGateways(holder: string): void {
+  for (const g of running.values()) {
+    if (g.holders.delete(holder)) g.lastUsed = Date.now();
+  }
 }
 
 /** Stops every gateway. Called on server shutdown so none are orphaned. */
