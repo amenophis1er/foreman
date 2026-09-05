@@ -108,6 +108,8 @@ interface PendingAsk {
   answers?: Record<string, string>;
   index?: number;
   head?: string;
+  /** cq only: head and link, the text a resolution appends to. */
+  base?: string;
 }
 
 /** Keyboard for one planner question: one option per row so long labels stay readable. */
@@ -254,7 +256,13 @@ export function resolution(env: Envelope): { key: string; suffix: string } | nul
 export class NotifyHub {
   private transports: Transport[] = [];
   private recent = new Map<string, number>();
-  private sent = new Map<string, { transport: Transport; id: string; text: string }>();
+  /**
+   * What was sent, per key. `base` is what a resolution appends to: for a
+   * stepped planner question it is the head and the link only, so the
+   * finished message reads head → answers → link, not answers under a stale
+   * option list from step one.
+   */
+  private sent = new Map<string, { transport: Transport; id: string; text: string; base?: string }>();
   private pending = new Map<string, PendingAsk>();
   private byMessage = new Map<string, string>(); // messageId -> ask key
   private answerHandler: ((a: Answer) => void) | null = null;
@@ -298,11 +306,14 @@ export class NotifyHub {
       this.pending.set(s.key, { key: s.key, projectId: env.projectId, kind: 'q', id: String(d.id) });
     } else if (env.event === 'chat_question') {
       const qs = d.questions as AskQuestion[];
-      const project = this.ctx().projectName?.(env.projectId) ?? env.projectId;
+      const c = this.ctx();
+      const project = c.projectName?.(env.projectId) ?? env.projectId;
+      const head = `<b>Needs you — the planner asks</b> · ${esc(project)}`;
+      const link = `${c.publicUrl}/#/p/${env.projectId}`;
       this.pending.set(s.key, {
         key: s.key, projectId: env.projectId, kind: 'cq', id: String(d.id),
-        questions: qs, answers: {}, index: 0,
-        head: `<b>Needs you — the planner asks</b> · ${esc(project)}`,
+        questions: qs, answers: {}, index: 0, head,
+        base: `${head}\n<a href="${esc(link)}">Open in Foreman</a>`,
       });
     } else if (/timeout$/.test(env.event)) {
       this.pending.delete(s.key);
@@ -372,7 +383,10 @@ export class NotifyHub {
       const text = cqStep(ask.head ?? '', qs, ask.index, answers);
       const m = this.sent.get(ask.key);
       const id = messageId ?? m?.id;
-      if (m && id) void m.transport.edit(id, text, { buttons: optionRows(ask.id, ask.index, qs[ask.index]) }).catch(() => { this.failures++; });
+      if (m && id) {
+        m.text = text; // so a later re-edit (timeout, dedupe) starts from the current step
+        void m.transport.edit(id, text, { buttons: optionRows(ask.id, ask.index, qs[ask.index]) }).catch(() => { this.failures++; });
+      }
       return true;
     }
     this.pending.delete(ask.key);
@@ -391,7 +405,7 @@ export class NotifyHub {
         } else {
           const id = await t.send(text, buttons ? { buttons } : undefined);
           if (id) {
-            this.sent.set(key, { transport: t, id, text });
+            this.sent.set(key, { transport: t, id, text, base: this.pending.get(key)?.base });
             this.byMessage.set(id, key);
             const ask = this.pending.get(key);
             if (ask) { ask.messageId = id; ask.transport = t; }
@@ -409,8 +423,11 @@ export class NotifyHub {
     this.pending.delete(key);
     const m = this.sent.get(key);
     if (!m) return;
-    // Edited without buttons: an answered question offers nothing to tap.
-    try { await m.transport.edit(m.id, m.text + suffix); } catch { this.failures++; }
+    // Edited without buttons: an answered question offers nothing to tap. A
+    // stepped question resolves onto its base — head and link — so the
+    // finished message is the answers, not the answers under step one's
+    // option list.
+    try { await m.transport.edit(m.id, (m.base ?? m.text) + suffix); } catch { this.failures++; }
     this.sent.delete(key);
     this.byMessage.delete(m.id);
   }

@@ -302,3 +302,28 @@ test('the bot dispatches taps and texts from the linked chat only, and acknowled
   const acks = tg.calls.filter((c) => c.method === 'answerCallbackQuery').map((c) => c.body.callback_query_id);
   assert.deepEqual(acks.sort(), ['cb1', 'cb2'], 'a stranger’s tap is acknowledged too, so their spinner stops');
 });
+
+test('a stepped planner question resolves onto head and link — never under a stale option list', async () => {
+  // Seen on the first live run: the finished message showed step one's
+  // options again above the two answers, because the base text was never
+  // updated while stepping.
+  const t = buttonTransport();
+  const hub = new NotifyHub(ctx()); hub.attach(t); hub.onAnswer(() => {});
+  hub.handle(env('chat_question', { id: 'q-9', questions: [
+    { question: 'Hero?', options: [{ label: 'Dark gym' }, { label: 'Track' }] },
+    { question: 'CTA?', options: [{ label: 'Orange' }, { label: 'Silver' }] },
+  ] }, { runId: null, chat: true }));
+  await tick();
+  hub.handleCallback('cq|q-9|0|0', '1');
+  await tick();
+  hub.handleCallback('cq|q-9|1|1', '1');
+  hub.handle(env('chat_answered', { id: 'q-9', answers: { 'Hero?': 'Dark gym', 'CTA?': 'Silver' }, source: 'telegram' }, { runId: null, chat: true }));
+  await tick();
+  const final = t.edits.at(-1)!.text;
+  assert.doesNotMatch(final, /Tap an option/);
+  assert.doesNotMatch(final, /1\. <b>Dark gym<\/b>/, 'no option list survives into the finished message');
+  assert.match(final, /Needs you — the planner asks/);
+  assert.match(final, /✓ Hero\? → <b>Dark gym<\/b>/);
+  assert.match(final, /✓ CTA\? → <b>Silver<\/b> · via telegram/);
+  assert.match(final, /Open in Foreman/);
+});
