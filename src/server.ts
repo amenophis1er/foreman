@@ -511,8 +511,16 @@ async function driveChatTurn(project: Project, text: string): Promise<void> {
       emit('chat_error', { error: `provider unavailable — ${problem}` });
       return;
     }
+    // What the machine can run, so a recommendation is a real id. Fetched
+    // per turn because it is per turn: a provider that came up or went away
+    // since the last message changes the answer.
+    const { models } = await availableModels(project).catch(() => ({ models: [] }));
     const result = await runPlanningTurn({
       projectId: project.id,
+      models: models.map((m) => ({
+        id: m.id, label: m.label, providerId: m.providerId,
+        providerLabel: m.providerLabel, costBasis: m.costBasis, note: m.note,
+      })),
       sessionId: meta.sessionId,
       folder: project.folder,
       text,

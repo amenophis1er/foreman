@@ -697,6 +697,13 @@ export type MissionProposal = {
   rationale?: string;
   /** The planner judged the criteria need a browser; the card starts with it on. */
   browser?: boolean;
+  /** Planner-recommended models, validated server-side; the card pre-selects them. */
+  directorModel?: string;
+  workerModel?: string;
+  directorProviderId?: string;
+  workerProviderId?: string;
+  /** The planner's one line on why those two, shown beside the pickers. */
+  modelRationale?: string;
   createdAt: number;
 };
 

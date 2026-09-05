@@ -33,6 +33,16 @@ export interface ProposalCardProps {
   rationale?: string;
   /** The planner judged the criteria need a browser; the switch starts on. The human can still flip it. */
   browser?: boolean;
+  /**
+   * The planner's model recommendations, already validated server-side against the machine's list.
+   * Pre-select the pickers; '' or absent inherits. The human can change either.
+   */
+  directorModel?: string;
+  workerModel?: string;
+  directorProviderId?: string;
+  workerProviderId?: string;
+  /** The planner's one line on why those two, shown above the pickers. */
+  modelRationale?: string;
   /** Same server-provided list the Composer's pickers use. */
   models?: ModelInfo[] | null;
   modelsLoading?: boolean;

@@ -402,6 +402,19 @@ export interface MissionProposal {
    * the switch on. Absent means "the planner did not say", not "no".
    */
   browser?: boolean;
+  /**
+   * The planner's model recommendations, already validated against the
+   * machine's list — an id it could not have picked from the list is dropped
+   * and the role inherits. The card pre-selects these; the human can change
+   * them. `modelRationale` is the planner's one line on why, shown beside
+   * the pickers so the choice reads as a suggestion with a reason, not a
+   * setting that appeared.
+   */
+  directorModel?: string;
+  workerModel?: string;
+  directorProviderId?: string;
+  workerProviderId?: string;
+  modelRationale?: string;
   createdAt: number;
 }
 

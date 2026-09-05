@@ -26,16 +26,21 @@ import { Banner } from '../status/Banner';
  */
 export function ProposalCard({
   mission, doneWhen = [], budgetUsd = 5, rationale, browser = false,
+  directorModel: suggestedDirector = '', workerModel: suggestedWorker = '',
+  directorProviderId: suggestedDirectorProvider, workerProviderId: suggestedWorkerProvider,
+  modelRationale,
   models, modelsLoading, modelsNote, modelsInheritNote,
   busy, error, onStart, onDismiss, style,
 }) {
   const [brief, setBrief] = useState(mission);
   const [budget, setBudget] = useState(budgetUsd);
   const [browserTools, setBrowserTools] = useState(Boolean(browser));
-  const [directorModel, setDirectorModel] = useState('');
-  const [workerModel, setWorkerModel] = useState('');
-  const [directorProviderId, setDirectorProviderId] = useState(undefined);
-  const [workerProviderId, setWorkerProviderId] = useState(undefined);
+  // Pre-selected from the planner's recommendation when it made one — it has
+  // read the criteria and knows what the work is mostly made of. '' inherits.
+  const [directorModel, setDirectorModel] = useState(suggestedDirector || '');
+  const [workerModel, setWorkerModel] = useState(suggestedWorker || '');
+  const [directorProviderId, setDirectorProviderId] = useState(suggestedDirectorProvider);
+  const [workerProviderId, setWorkerProviderId] = useState(suggestedWorkerProvider);
   const edited = brief !== mission || Number(budget) !== Number(budgetUsd);
 
   return (
@@ -90,6 +95,15 @@ export function ProposalCard({
         </div>
       )}
 
+      {/* The planner's reason for its model picks, above the pickers it
+          filled: a suggestion with a reason reads as advice; a picker that
+          arrived already set reads as a setting nobody chose. */}
+      {modelRationale && (suggestedDirector || suggestedWorker) && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+          <Icon name="model" size={12} />
+          <span><span style={{ color: 'var(--ink-1)' }}>Suggested models —</span> {modelRationale}</span>
+        </div>
+      )}
       {/* The same row the composer shows, in the same order, so the two ways
           of starting a mission never disagree about what can be chosen. */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--sp-4)', flexWrap: 'wrap' }}>

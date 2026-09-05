@@ -236,6 +236,11 @@ function PlanPane({
             budgetUsd={chat.proposal.budgetUsd}
             rationale={chat.proposal.rationale}
             browser={chat.proposal.browser}
+            directorModel={chat.proposal.directorModel}
+            workerModel={chat.proposal.workerModel}
+            directorProviderId={chat.proposal.directorProviderId}
+            workerProviderId={chat.proposal.workerProviderId}
+            modelRationale={chat.proposal.modelRationale}
             models={models} modelsLoading={modelsLoading}
             modelsNote={modelsNote} modelsInheritNote={modelsInheritNote}
             busy={starting} error={error}

@@ -144,7 +144,13 @@ How to behave:
      - browser: true whenever a DONE WHEN criterion needs a page to load,
        render, be free of console errors, or be screenshotted. The card starts
        with the browser on; a mission that needs one and starts without it
-       fails its own criteria an hour later.
+       fails its own criteria an hour later;
+     - director_model / worker_model, from MODELS AVAILABLE, with a one-line
+       model_rationale in terms of the work. The director plans, delegates and
+       verifies — give it a capable model. Workers implement — a fast or free
+       model is right when the work is mostly authoring or mechanical, and
+       wrong when it needs judgement across many files. Say which and why.
+       Omit both to inherit the project's defaults; never invent an id.
    Do not propose on the first message unless the human's request is already
    completely unambiguous. Do not propose the same thing twice; refine it.
    BUDGET, ANCHORED: one small file or a contained fix, $1-2. A feature across
@@ -158,9 +164,56 @@ How to behave:
 6. NEVER discuss Foreman's own server or oversight tooling as a work target.
 `;
 
+/** One model the planner may recommend — the server's list, trimmed to what a recommendation needs. */
+export interface PlannerModel {
+  id: string;
+  label: string;
+  providerId?: string;
+  providerLabel: string;
+  costBasis: 'priced' | 'free' | 'unpriced';
+  note?: string;
+}
+
+/**
+ * Does this mission need a browser? Decided from the words the planner
+ * itself wrote, so a planner that forgot to set `browser: true` cannot
+ * propose a mission whose criteria say "screenshots" with the browser off.
+ * The planner's explicit flag still wins when present; this is the net
+ * under it, not a replacement. Deliberately broad: a false positive costs a
+ * switch the human can flip off, a false negative cost an hour once.
+ */
+export function needsBrowser(mission: string, doneWhen: string[]): boolean {
+  const text = `${mission}\n${doneWhen.join('\n')}`.toLowerCase();
+  return /\b(screenshot|browser|console error|render(s|ed|ing)? (correctly|properly|in)|viewport|mobile width|playwright|opens? (correctly )?in a browser|no broken image)/.test(text);
+}
+
+/**
+ * Keeps a recommended model only if it is one the machine can actually run.
+ * A planner that hallucinates an id, or names one from a provider that has
+ * since gone away, gets "inherit" rather than a mission that fails at
+ * dispatch on a model nobody could have picked from the list.
+ */
+export function pickKnownModel(
+  id: string | undefined, models: PlannerModel[] | undefined,
+): PlannerModel | undefined {
+  if (!id || !models?.length) return undefined;
+  const want = id.trim().toLowerCase();
+  return models.find((m) => m.id.toLowerCase() === want || m.label.toLowerCase() === want);
+}
+
+/** The section appended to the charter so the planner can recommend real models. */
+function modelsSection(models: PlannerModel[] | undefined): string {
+  if (!models?.length) return '';
+  const lines = models.map((m) =>
+    `  - ${m.id} — ${m.providerLabel} · ${m.costBasis}${m.note ? ` · ${m.note}` : ''}`);
+  return `\nMODELS AVAILABLE ON THIS MACHINE (use these exact ids in propose_mission):\n${lines.join('\n')}\n`;
+}
+
 export interface PlanningTurn {
   /** Keys the one question this project's planner may be parked on. */
   projectId: string;
+  /** What the machine can run, so recommendations are real ids, not guesses. */
+  models?: PlannerModel[];
   /** Session to resume; absent starts a fresh conversation. */
   sessionId?: string;
   folder: string;
@@ -232,18 +285,35 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
       browser: z.boolean().optional().describe(
         'True when the mission needs a browser: any DONE WHEN criterion about pages ' +
         'loading, rendering, console errors or screenshots. The card starts with it on.'),
+      director_model: z.string().optional().describe(
+        'Recommended director, an exact id from MODELS AVAILABLE. Omit to inherit the project default.'),
+      worker_model: z.string().optional().describe(
+        'Recommended worker model, an exact id from MODELS AVAILABLE. Omit to inherit.'),
+      model_rationale: z.string().optional().describe(
+        'One line: why these two, in terms of the work (e.g. "workers on a fast model: mostly HTML/CSS authoring")'),
     },
-    async ({ mission, done_when, budget_usd, rationale, browser }) => {
+    async ({ mission, done_when, budget_usd, rationale, browser, director_model, worker_model, model_rationale }) => {
+      // Real ids only. A recommendation the machine cannot run becomes
+      // "inherit", never a mission that fails at dispatch.
+      const director = pickKnownModel(director_model, turn.models);
+      const worker = pickKnownModel(worker_model, turn.models);
       proposal = {
         id: `mp-${Date.now().toString(36)}`,
         mission,
         doneWhen: done_when,
         budgetUsd: budget_usd,
         rationale,
-        // The planner knows whether the criteria need a browser better than
-        // a default does. A mission whose DONE WHEN says "screenshots saved"
-        // once started with the browser off and lost an hour to it.
-        browser: browser === true ? true : undefined,
+        // The planner's explicit flag, with a deterministic net under it: the
+        // criteria it just wrote are read back for "screenshot", "console
+        // error", "renders correctly" and the like. A mission whose DONE WHEN
+        // said "screenshots saved" once started with the browser off and lost
+        // an hour; that cannot depend on the model remembering a flag.
+        browser: browser === true || needsBrowser(mission, done_when) ? true : undefined,
+        directorModel: director?.id,
+        workerModel: worker?.id,
+        directorProviderId: director?.providerId,
+        workerProviderId: worker?.providerId,
+        modelRationale: director || worker ? model_rationale : undefined,
         createdAt: Date.now(),
       };
       turn.emit('mission_proposed', proposal);
@@ -328,7 +398,13 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
         maxTurns: MAX_TURNS,
         tools: PLANNER_TOOLS,
         permissionMode: 'default',
-        systemPrompt: { type: 'preset', preset: 'claude_code', append: PLANNER_CHARTER },
+        // The model list rides on the system prompt rather than a tool: the
+        // planner should know what it can recommend before it starts
+        // thinking about the proposal, not discover it by asking.
+        systemPrompt: {
+          type: 'preset', preset: 'claude_code',
+          append: PLANNER_CHARTER + modelsSection(turn.models),
+        },
         mcpServers: { foreman: createSdkMcpServer({ name: 'foreman', tools: [proposeMission, askUser] }) },
         canUseTool,
         ...turn.agentEnv,
