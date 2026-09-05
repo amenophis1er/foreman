@@ -27,6 +27,7 @@ import { readFile } from 'node:fs/promises';
 import { defaultInstance } from './instance.js';
 import { codexHome, isStale, readCodexAuth, refreshCodexAuth } from './codex.js';
 import { getSecret } from './secrets.js';
+import { discoverModels } from './models.js';
 import type { CostBasis, ProviderRef, ClaudeInstanceRef } from './types.js';
 
 /**
@@ -315,6 +316,32 @@ export function normalizeOpenAiBaseUrl(url: string): string {
     base = `${isPrivateHost(base.split('/')[0]) ? 'http' : 'https'}://${base}`;
   }
   return base.replace(/\/+$/, '').replace(/\/v1$/, '');
+}
+
+/**
+ * Sharpen a provider's basis with the model actually chosen.
+ *
+ * An Ollama daemon on this machine is free — but the very same daemon will
+ * happily serve a `:cloud` model that runs on somebody's paid servers and
+ * signs for it with the operator's own Ollama account. The endpoint sets the
+ * floor and the model can raise it, so a loopback provider is not proof that
+ * a run costs nothing. That is exactly the configuration Foreman is most
+ * often used in, which is why it earns a lookup at dispatch.
+ *
+ * Discovery is a call to an endpoint already about to serve the whole
+ * mission, and it never throws: when it cannot answer, the provider's own
+ * basis stands. That fallback only ever says `free` about an endpoint already
+ * on this machine or this LAN, so the worst case is the answer we had before
+ * asking.
+ */
+export async function refineBasis(p: ResolvedProvider, model?: string): Promise<CostBasis> {
+  // Only `free` can be wrong in the direction that matters. A priced or
+  // unpriced endpoint does not become free because of which model it serves.
+  if (p.costBasis !== 'free' || !p.upstreamUrl) return p.costBasis;
+  const chosen = model || p.model;
+  if (!chosen) return p.costBasis;
+  const found = await discoverModels(p.upstreamUrl, { apiKey: p.apiKey });
+  return found?.some((m) => m.id === chosen && m.remote) ? 'unpriced' : p.costBasis;
 }
 
 /** The host[:port] of a base URL, however sloppily it was typed. */

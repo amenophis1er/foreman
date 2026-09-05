@@ -50,7 +50,7 @@ import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
 import { defaultInstance, discoverInstances, effectiveConfigDir } from './instance.js';
 import {
-  normalizeOpenAiBaseUrl, providerEnv, providerOf, providerProblem, resolveProvider,
+  normalizeOpenAiBaseUrl, providerEnv, providerOf, providerProblem, refineBasis, resolveProvider,
 } from './provider.js';
 import { ensureGateway, gatewayStatus, releaseGateways, stopGateways } from './gateway.js';
 import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
@@ -578,7 +578,10 @@ async function driveRun(
         ? await agentEnvFor(directorProvider, meta.id)
         : await agentEnvFor(workerProvider, meta.id),
     };
-    roleBasis = combineBasis(directorProvider.costBasis, workerProvider.costBasis);
+    roleBasis = combineBasis(
+      await refineBasis(directorProvider, meta.directorModel),
+      await refineBasis(workerProvider, meta.workerModel),
+    );
   } catch (err) {
     meta.status = 'error';
     meta.endedAt = Date.now();

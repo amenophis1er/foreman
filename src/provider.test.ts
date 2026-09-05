@@ -11,10 +11,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import {
   ANTHROPIC_NATIVE_BASE_URL, GATEWAY_INVARIANT, normalizeOpenAiBaseUrl,
-  ownedConfigDir, providerEnv, providerFromLegacy, providerOf, providerProblem, resolveProvider,
+  ownedConfigDir, providerEnv, providerFromLegacy, providerOf, providerProblem, refineBasis,
+  resolveProvider,
 } from './provider.js';
 import type { ProviderRef } from './types.js';
 
@@ -292,4 +294,52 @@ test('the deprecated metered boolean never disagrees with the basis', async (t) 
     const p = await resolveProvider(ref, root);
     assert.equal(p.metered, p.costBasis === 'priced', `${ref.kind} drifted`);
   }
+});
+
+test('a cloud model behind a local daemon is not free', async (t) => {
+  // The configuration Foreman is most often used in, and the one the endpoint
+  // alone gets wrong: `glm-…:cloud` reaches 127.0.0.1, but runs on paid
+  // servers the daemon signs for with the operator's own Ollama account.
+  const root = await mkdtemp(path.join(os.tmpdir(), 'foreman-refine-'));
+  const daemon = http.createServer((req, res) => {
+    if (req.url !== '/api/tags') { res.writeHead(404); res.end(); return; }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ models: [
+      { name: 'qwen3:8b', details: { parameter_size: '8B' } },
+      { name: 'glm-5.3-flash:cloud', remote_model: true, remote_host: 'https://ollama.com' },
+    ] }));
+  });
+  await new Promise<void>((r) => daemon.listen(0, '127.0.0.1', r));
+  const port = (daemon.address() as { port: number }).port;
+  t.after(async () => {
+    await new Promise<void>((r) => daemon.close(() => r()));
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const p = await resolveProvider(
+    { kind: 'openai-compatible', id: 'o', baseUrl: `http://127.0.0.1:${port}` }, root);
+  assert.equal(p.costBasis, 'free', 'the endpoint alone says free');
+
+  assert.equal(await refineBasis(p, 'qwen3:8b'), 'free');
+  assert.equal(await refineBasis(p, 'glm-5.3-flash:cloud'), 'unpriced',
+    'a model the daemon merely proxies is somebody else’s bill');
+});
+
+test('refining never downgrades a basis, and survives an endpoint that will not answer', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'foreman-refine-2-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  // A priced or unpriced endpoint does not become free because of its model,
+  // so refining must not even ask.
+  const priced = await resolveProvider({ kind: 'claude-code' }, root);
+  assert.equal(await refineBasis(priced, 'anything'), 'priced');
+  const paid = await resolveProvider(
+    { kind: 'openai-compatible', id: 'o', baseUrl: 'https://openrouter.ai/api' }, root);
+  assert.equal(await refineBasis(paid, 'anything'), 'unpriced');
+
+  // Nothing listening: discovery returns null rather than throwing, and the
+  // provider's own answer stands. Port 1 is reserved and never bound.
+  const dead = await resolveProvider(
+    { kind: 'openai-compatible', id: 'o', baseUrl: 'http://127.0.0.1:1' }, root);
+  assert.equal(await refineBasis(dead, 'whatever'), 'free');
 });
