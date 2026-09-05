@@ -45,7 +45,9 @@ import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MissionRun } from './orchestrator.js';
-import { runPlanningTurn } from './planner.js';
+import {
+  DEFAULT_PLANNER_MODEL, answerChatQuestion, pendingChatQuestion, runPlanningTurn,
+} from './planner.js';
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
@@ -490,16 +492,27 @@ async function driveChatTurn(project: Project, text: string): Promise<void> {
   const emit = makeChatEmitter(project.id);
   const meta = await chatMetaOf(project.id);
   emit('chat_message', { text });
-  emit('chat_turn', { state: 'thinking' });
   try {
     const settings = await effectiveSettings(project.id);
     const resolved = await resolveProvider(providerOf(project), store.root);
+    // Who is answering, said on every turn. A planning conversation had no
+    // visible model or provider at all — the human was talking to "foreman"
+    // and could not tell whether that meant Sonnet on their subscription or a
+    // local model through a gateway, which decides both the quality of the
+    // advice and who is paying for it.
+    emit('chat_turn', {
+      state: 'thinking',
+      model: settings.plannerModel || DEFAULT_PLANNER_MODEL,
+      provider: resolved.label,
+      costBasis: resolved.costBasis,
+    });
     const problem = providerProblem(resolved);
     if (problem) {
       emit('chat_error', { error: `provider unavailable — ${problem}` });
       return;
     }
     const result = await runPlanningTurn({
+      projectId: project.id,
       sessionId: meta.sessionId,
       folder: project.folder,
       text,
@@ -1079,6 +1092,13 @@ const server = http.createServer(async (req, res) => {
           chatMetaOf(projectId),
           store.readChatEvents(projectId).catch(() => []),
         ]);
+        // Who answers here, for the bar's footer before any turn has run.
+        // Best-effort: a project whose provider cannot resolve still gets its
+        // transcript, and the first turn will say what went wrong.
+        const project = await store.getProject(projectId);
+        const settings = await effectiveSettings(projectId).catch(() => null);
+        const resolved = project
+          ? await resolveProvider(providerOf(project), store.root).catch(() => null) : null;
         json(res, 200, {
           events,
           costUsd: meta.costUsd,
@@ -1086,6 +1106,14 @@ const server = http.createServer(async (req, res) => {
           // A turn in flight is server state, not log state: a client that
           // loads mid-turn needs to know a reply is already on its way.
           thinking: chatTurns.has(projectId),
+          // Likewise a question the planner is parked on — it lives in the
+          // turn, not the log, and a reload must put the picker back.
+          question: pendingChatQuestion(projectId),
+          who: resolved ? {
+            model: settings?.plannerModel || DEFAULT_PLANNER_MODEL,
+            provider: resolved.label,
+            costBasis: resolved.costBasis,
+          } : null,
         });
 
       } else if (req.method === 'DELETE') {
@@ -1110,6 +1138,21 @@ const server = http.createServer(async (req, res) => {
         if (activeByProject.has(id)) {
           return json(res, 409, { error: 'this project has a mission running — steer the director instead' });
         }
+        // A turn parked on a question is still a turn — but a human who types
+        // instead of clicking is answering, not starting a new message. Route
+        // the text to the waiting question rather than refusing it: the
+        // picker's "something else" and the plain input box should mean the
+        // same thing.
+        const pending = pendingChatQuestion(id);
+        if (pending) {
+          const first = pending.questions[0]?.question ?? 'answer';
+          const emit = makeChatEmitter(id);
+          emit('chat_message', { text: message });
+          if (answerChatQuestion(id, pending.id, { [first]: message })) {
+            emit('chat_answered', { id: pending.id, answers: { [first]: message } });
+          }
+          return json(res, 200, { ok: true, answered: pending.id });
+        }
         // Check-and-set with no await in between, like reserveProject.
         if (chatTurns.has(id)) return json(res, 409, { error: 'the planner is still replying' });
         chatTurns.add(id);
@@ -1119,6 +1162,24 @@ const server = http.createServer(async (req, res) => {
       } else {
         json(res, 405, { error: 'method not allowed' });
       }
+
+    } else if (req.method === 'POST' && url.pathname === '/chat/answer') {
+      // The picker's answer to a planner ask_user. Resolves the tool call that
+      // is blocking the turn; the transcript records what was chosen so a
+      // reload shows the decision, not just the question.
+      const { projectId: id, id: questionId, answers } = await readBody(req);
+      if (typeof id !== 'string' || typeof questionId !== 'string' || !answers || typeof answers !== 'object') {
+        return json(res, 400, { error: 'projectId, id and answers are required' });
+      }
+      const clean: Record<string, string> = {};
+      for (const [k, v] of Object.entries(answers as Record<string, unknown>)) {
+        if (typeof v === 'string') clean[k] = v.slice(0, 2000);
+      }
+      if (!answerChatQuestion(id, questionId, clean)) {
+        return json(res, 404, { error: 'no question waiting under that id — it may have timed out' });
+      }
+      makeChatEmitter(id)('chat_answered', { id: questionId, answers: clean });
+      json(res, 200, { ok: true });
 
     } else if (req.method === 'POST' && url.pathname === '/permission') {
       const { id, behavior, message } = await readBody(req);

@@ -21,6 +21,7 @@ import { QuestionCard } from '../ds/mission/QuestionCard';
 import { PlanBoard } from '../ds/mission/PlanBoard';
 import { Composer } from '../ds/mission/Composer';
 import { ChatBar } from '../ds/mission/ChatBar';
+import { QuestionPicker } from '../ds/mission/QuestionPicker';
 import { ProposalCard } from '../ds/mission/ProposalCard';
 import { Tabs } from '../ds/core/Tabs';
 import { SteerBar } from '../ds/mission/SteerBar';
@@ -227,7 +228,20 @@ function PlanPane({ chat, folder, starting, error, onStart }: {
         )}
       </div>
       <div style={{ padding: 'var(--sp-2) var(--sp-3) var(--sp-3)', flex: '0 0 auto' }}>
-        <ChatBar busy={chat.thinking} onSend={(t) => void chat.send(t)} />
+        {/* A pending question takes the input box's place rather than sitting
+            above it: it IS the input right now, and two ways to reply to the
+            same thing side by side would be a real question about which one
+            to use. Typing still works — the server routes it as the answer. */}
+        {chat.question ? (
+          <QuestionPicker
+            questions={chat.question.questions}
+            askedAt={chat.question.askedAt}
+            who={chat.who}
+            onAnswer={(answers) => void chat.answer(chat.question!.id, answers)}
+            onFreeText={(t) => void chat.send(t)} />
+        ) : (
+          <ChatBar busy={chat.thinking} who={chat.who} onSend={(t) => void chat.send(t)} />
+        )}
       </div>
     </>
   );

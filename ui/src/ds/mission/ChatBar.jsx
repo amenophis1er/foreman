@@ -7,7 +7,7 @@ import { Icon } from '../core/Icon';
  * transcript, the same shell as SteerBar without the recipient and timing
  * controls — there is one listener here, and nothing to interrupt.
  */
-export function ChatBar({ value, onChange, onSend, busy, disabled, disabledReason, placeholder, style }) {
+export function ChatBar({ value, onChange, onSend, busy, disabled, disabledReason, placeholder, who, style }) {
   const [localText, setLocalText] = useState('');
   const [focus, setFocus] = useState(false);
   const ta = useRef(null);
@@ -56,7 +56,19 @@ export function ChatBar({ value, onChange, onSend, busy, disabled, disabledReaso
           }} />
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
-        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+        {/* Who is answering, always. A conversation with no visible model or
+            provider left the human unable to tell Sonnet on their subscription
+            from a local model through a gateway — which decides both the
+            quality of the advice and who pays for it. */}
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          title={who ? `${who.model} via ${who.provider}` : undefined}>
+          {who && (
+            <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-1)' }}>
+              {who.model} · {who.provider.split(' · ')[0]}
+              {who.costBasis === 'free' ? ' · free' : who.costBasis === 'unpriced' ? ' · unpriced' : ''}
+              {' — '}
+            </span>
+          )}
           {busy ? 'The foreman is looking…' : 'Reads the project, never changes it.'}
         </span>
         <Button size="sm" icon="send" onClick={send} disabled={!canSend} title="⌘↵"

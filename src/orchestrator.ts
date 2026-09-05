@@ -174,21 +174,12 @@ export { WORK_DIR };
  */
 export const DEFAULT_ASK_TIMEOUT_MS = 10 * 60_000;
 
-/**
- * Arms a one-shot timer for an ask, or nothing at all when `ms` is 0.
- *
- * Trivial on purpose, and exported for the same reason `watchSilence` is: the
- * rule — fire once, never after cancel, `0` means never — is the part that
- * matters, and a rule this small is exactly the kind that gets re-inlined
- * slightly wrong. Unref'd so a pending ask never keeps the process alive.
- */
-export function armAskTimeout(ms: number, onTimeout: () => void): { cancel(): void } {
-  if (!(ms > 0)) return { cancel() {} };
-  let fired = false;
-  const timer = setTimeout(() => { fired = true; onTimeout(); }, ms);
-  timer.unref?.();
-  return { cancel() { if (!fired) clearTimeout(timer); fired = true; } };
-}
+// The ask timer lives in ask.ts now, shared with the planner's ask_user: the
+// rule — fire once, never after cancel, `0` means never — must be one
+// implementation, not two that drift. Re-exported so callers and tests that
+// learned it here keep working.
+import { armAskTimeout } from './ask.js';
+export { armAskTimeout };
 
 function unattendedMinutes(ms: number): number {
   return Math.max(1, Math.round(ms / 60_000));

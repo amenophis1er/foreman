@@ -698,6 +698,19 @@ export type MissionProposal = {
   createdAt: number;
 };
 
+/** One structured question from the planner. Mirrors `AskQuestion` in src/ask.ts. */
+export type ChatQuestion = {
+  question: string;
+  options: Array<{ label: string; hint?: string }>;
+  multi?: boolean;
+};
+
+/** A batch of questions the planner is parked on, answered together. */
+export type ChatAsk = { id: string; questions: ChatQuestion[]; askedAt?: number };
+
+/** Who is answering in this conversation — the thing the chat never showed. */
+export type ChatWho = { model: string; provider: string; costBasis: CostBasis };
+
 export type ChatView = {
   entries: Entry[];
   /** Everything this conversation has cost since it began. */
@@ -706,9 +719,26 @@ export type ChatView = {
   proposal: MissionProposal | null;
   /** A turn is in flight — the planner is reading or writing its reply. */
   thinking: boolean;
+  /**
+   * A question the planner is waiting on. While set, the input box becomes a
+   * picker: clicking is faster than typing and the answer comes back exact.
+   * Typing still works — the server routes it to the same question.
+   */
+  question: ChatAsk | null;
+  /** Model and provider serving the planner, shown in the bar's footer. */
+  who: ChatWho | null;
 };
 
-const emptyChat: ChatView = { entries: [], costUsd: 0, proposal: null, thinking: false };
+const emptyChat: ChatView = {
+  entries: [], costUsd: 0, proposal: null, thinking: false, question: null, who: null,
+};
+
+/** "Stack → plain HTML · Imagery → stock photos": what the human chose, for the transcript. */
+function summariseAnswers(qs: ChatQuestion[], answers: Record<string, string>): string {
+  return qs
+    .map((q) => `${q.question.replace(/[?:]\s*$/, '')} → ${answers[q.question] || '(no answer)'}`)
+    .join('\n');
+}
 
 function applyChatWire(s: ChatView, e: WireEvent): ChatView {
   const ts = e.ts ?? Date.now();
@@ -727,8 +757,10 @@ function applyChatWire(s: ChatView, e: WireEvent): ChatView {
       // final `result` (which merely repeats the last assistant message) are
       // mission-transcript furniture; in a chat they read as the machine
       // talking to itself. A failed turn still surfaces, as `chat_error`.
+      // ask_user's tool pill is hidden too: the picker is its rendering, and a
+      // pill saying "ask_user" above a card full of options says nothing.
       const es = entriesFromSdkMessage('foreman', d.msg, ts)
-        .filter((e) => e.kind === 'text' || e.kind === 'tool');
+        .filter((e) => e.kind === 'text' || (e.kind === 'tool' && !/ask_user/.test(e.title)));
       return es.length ? { ...s, entries: [...s.entries, ...es] } : s;
     }
     case 'mission_proposed':
@@ -745,7 +777,50 @@ function applyChatWire(s: ChatView, e: WireEvent): ChatView {
     case 'chat_cost':
       return { ...s, costUsd: d.costUsd ?? s.costUsd };
     case 'chat_turn':
-      return { ...s, thinking: d.state === 'thinking' };
+      return {
+        ...s,
+        thinking: d.state === 'thinking',
+        // Said on every turn so a change of Settings mid-conversation shows
+        // up on the next reply, not after a reload.
+        who: typeof d.model === 'string' && typeof d.provider === 'string'
+          ? { model: d.model, provider: d.provider, costBasis: basisOf(d) }
+          : s.who,
+      };
+    case 'chat_question':
+      // The planner is parked on this until answered. Nothing is appended to
+      // the transcript here: the picker IS the rendering, and the answer
+      // becomes the transcript entry once it exists.
+      return Array.isArray(d.questions) && d.questions.length
+        ? { ...s, question: { id: String(d.id), questions: d.questions, askedAt: ts } }
+        : s;
+    case 'chat_answered': {
+      // Recorded as something *you* said, because it is: a click is an answer.
+      // The summary form ("Stack → plain HTML") is what the planner also
+      // received, so transcript and model agree on what was decided.
+      const open = s.question;
+      const qs = open && open.id === d.id ? open.questions : [];
+      const body = qs.length ? summariseAnswers(qs, d.answers ?? {})
+        : Object.entries(d.answers ?? {}).map(([q, a]) => `${q} → ${a}`).join('\n');
+      return {
+        ...s,
+        question: s.question?.id === d.id ? null : s.question,
+        entries: body ? [...s.entries, {
+          id: ++seq, ts, agent: 'you', kind: 'steer', title: 'you chose', body,
+        }] : s.entries,
+      };
+    }
+    case 'chat_question_timeout':
+      // Loud, and honest about what happened: the planner went on without an
+      // answer, and its next reply states the assumptions it made.
+      return {
+        ...s,
+        question: s.question?.id === d.id ? null : s.question,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'error', title: 'no answer (unattended)',
+          body: `No answer after ${Math.round((d.afterMs ?? 0) / 60000)} minutes — the planner ` +
+            'is proceeding on its recommended options and will state the assumptions.',
+        }],
+      };
     case 'chat_error':
       return {
         ...s,
@@ -780,6 +855,8 @@ function chatReducer(s: ChatView, a: ChatAction): ChatView {
  */
 export function useChat(projectId: string | null): ChatView & {
   send: (text: string) => Promise<string | null>;
+  /** Answer the planner's pending question with the picker's choices. */
+  answer: (id: string, answers: Record<string, string>) => Promise<string | null>;
   clear: () => Promise<void>;
   dismissProposal: () => void;
 } {
@@ -791,6 +868,7 @@ export function useChat(projectId: string | null): ChatView & {
     if (!r?.ok) return null;
     return await r.json() as {
       events: WireEvent[]; costUsd: number; proposal: MissionProposal | null; thinking: boolean;
+      question: ChatAsk | null; who: ChatWho | null;
     };
   }, []);
 
@@ -815,6 +893,11 @@ export function useChat(projectId: string | null): ChatView & {
           ...emptyChat, costUsd: data.costUsd, proposal: data.proposal, thinking: data.thinking,
         };
         for (const e of data.events) view = applyChatWire(view, e);
+        // The pending question is server state, not log state: the log holds
+        // every question ever asked, and replaying it would resurrect one that
+        // was answered or timed out. Only what the server says is still open
+        // gets a picker.
+        view = { ...view, question: data.question ?? null, who: data.who ?? view.who };
         dispatch({ t: 'load', view });
       }
       // Live frames that arrived during the fetch are applied after it, so a
@@ -838,11 +921,20 @@ export function useChat(projectId: string | null): ChatView & {
     dispatch({ t: 'reset' });
   }, [projectId]);
 
+  // The picker's answer. The server resolves the tool call and echoes
+  // `chat_answered` on the stream, which is what clears the picker here — so
+  // a second tab answering the same question clears this one too.
+  const answer = useCallback(async (id: string, answers: Record<string, string>): Promise<string | null> => {
+    if (!projectId) return 'no project';
+    const r = await post('/chat/answer', { projectId, id, answers });
+    return r.ok ? null : ((await r.json().catch(() => ({}))).error ?? 'could not deliver the answer');
+  }, [projectId]);
+
   // Local-only: the human said "not this one" without spending a turn saying
   // so. The server still holds it, and the next proposal replaces it.
   const dismissProposal = useCallback(() => dispatch({ t: 'dismiss' }), []);
 
-  return { ...state, send, clear, dismissProposal };
+  return { ...state, send, answer, clear, dismissProposal };
 }
 
 /** Hash router: '#/' → fleet, '#/p/<projectId>' → project view,
