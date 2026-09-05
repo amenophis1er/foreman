@@ -1152,6 +1152,15 @@ const server = http.createServer(async (req, res) => {
     } else if (req.method === 'POST' && runResumeMatch) {
       const meta = await store.readMeta(runResumeMatch[1]).catch(() => null);
       if (!meta) return json(res, 404, { error: 'unknown run' });
+      // Resume already re-reads Settings; an explicit patch rides along for
+      // the things that are per-run rather than per-project. Browser tools
+      // matter here specifically: PATCH /run reaches future workers, but the
+      // director keeps the tool set its own query() opened with, so a resume
+      // is the only point at which the DIRECTOR can gain a browser.
+      const resumeBody: Record<string, unknown> = await readBody(req).catch(() => ({}));
+      if (typeof resumeBody.browserTools === 'boolean') {
+        meta.browserTools = resumeBody.browserTools || undefined;
+      }
       if (meta.status === 'running' || meta.status === 'done') {
         return json(res, 409, { error: `run is ${meta.status}; only interrupted or failed runs can resume` });
       }
