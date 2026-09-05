@@ -353,6 +353,62 @@ export class MissionRun {
     );
   }
 
+  /**
+   * Change a running mission's settings without restarting it.
+   *
+   * Both fields genuinely bind mid-run, which is why these two and not a
+   * general settings patch:
+   *
+   *  - **`browserTools`** is read by browserServers() at every worker spawn,
+   *    so turning it on reaches every worker started from now on. The
+   *    director keeps whatever tool set its own query() was opened with and
+   *    gains the browser on its next resume — said plainly in the returned
+   *    note, because a half-applied change the human believes is fully
+   *    applied is worse than one they know the shape of.
+   *  - **`budgetUsd`** is re-read by enforceBudget() on every cost update, so
+   *    a raised cap takes effect on the next token. Raising it also clears the
+   *    alerts already sent: a notice that fired against the old figure has
+   *    been superseded, and leaving the flags set would mean a genuine
+   *    overrun of the NEW budget passed in silence.
+   *
+   * Returns what actually changed, for the transcript. A governance layer has
+   * to record who changed the rules mid-mission, so this is emitted into the
+   * run's own event log rather than only mutating state.
+   */
+  applySettings(patch: { browserTools?: boolean; budgetUsd?: number }): string[] {
+    const changed: string[] = [];
+
+    if (typeof patch.browserTools === 'boolean' && patch.browserTools !== Boolean(this.meta.browserTools)) {
+      this.meta.browserTools = patch.browserTools || undefined;
+      changed.push(patch.browserTools
+        ? 'browser tools ON — workers spawned from now on get a headless browser; ' +
+          'the director gains it when the run is resumed'
+        : 'browser tools OFF — no worker spawned from now on gets a browser');
+    }
+
+    if (typeof patch.budgetUsd === 'number' && Number.isFinite(patch.budgetUsd)
+        && patch.budgetUsd >= 0 && patch.budgetUsd !== this.meta.budgetUsd) {
+      const raised = patch.budgetUsd > this.meta.budgetUsd;
+      changed.push(`budget $${this.meta.budgetUsd.toFixed(2)} → $${patch.budgetUsd.toFixed(2)}`);
+      this.meta.budgetUsd = patch.budgetUsd;
+      if (raised) {
+        // The wind-down order already delivered cannot be unsaid — the
+        // director read it — but the flags must not keep a later, real
+        // overrun quiet.
+        this.budgetNoticeSent = false;
+        this.budgetKillSent = false;
+        this.budgetStopped = false;
+      }
+    }
+
+    if (changed.length) {
+      this.saveMeta(this.meta);
+      this.emit('settings_changed', { changes: changed, browserTools: Boolean(this.meta.browserTools), budgetUsd: this.meta.budgetUsd });
+      this.emitEconomics();
+    }
+    return changed;
+  }
+
   async interrupt(): Promise<void> {
     this.wasInterrupted = true;
     this.directorInput?.close(); // no further turns; let the session wind down

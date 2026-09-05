@@ -212,10 +212,31 @@ function PlanPane({ chat, folder, starting, error, onStart }: {
   );
 }
 
-/** Key run properties (models, budget, browser), pulled from run metadata. */
-function RunDetails({ r, liveCost, liveBasis, liveUsage, liveTurns }: {
-  r: RunSummary; liveCost?: number; liveBasis?: CostBasis; liveUsage?: TokenUsage | null; liveTurns?: number;
+/**
+ * Key run properties (models, budget, browser), pulled from run metadata.
+ *
+ * Two of them are editable while the run is live, and only two, because only
+ * those two genuinely bind mid-run: a worker spawned from now on reads
+ * `browserTools` at spawn, and the budget cap re-reads its figure on every
+ * cost update. Offering a control that silently does nothing until some later
+ * restart would be worse than not offering it, so the rest stay read-only and
+ * the browser row says plainly that the director itself catches up on resume.
+ */
+function RunDetails({ r, live, liveCost, liveBasis, liveUsage, liveTurns, onChanged }: {
+  r: RunSummary; live?: boolean; liveCost?: number; liveBasis?: CostBasis;
+  liveUsage?: TokenUsage | null; liveTurns?: number; onChanged?: () => void;
 }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const editable = Boolean(live) && r.status === 'running';
+
+  const patch = async (p: { browserTools?: boolean; budgetUsd?: number }) => {
+    setBusy(true); setErr('');
+    try { await api.updateRun(r.id, p); onChanged?.(); }
+    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
+
   const costBasis = liveBasis ?? basisOf(r);
   const usage = liveUsage ?? r.usage ?? null;
   const turns = liveTurns ?? r.turns;
@@ -232,20 +253,45 @@ function RunDetails({ r, liveCost, liveBasis, liveUsage, liveTurns }: {
       ? `$${((liveCost ?? r.costUsd) || 0).toFixed(2)} / $${r.budgetUsd.toFixed(2)}`
       : `${formatTokens(tokenCount)} tok${typeof turns === 'number' ? ` · ${turns} turn${turns === 1 ? '' : 's'}` : ''}`
         + (costBasis === 'unpriced' ? ' · cost not tracked' : ' · no per-token cost')],
-    ['browser', r.browserTools ? 'on' : 'off'],
   ];
-  if (r.resumes) rows.push(['resumes', String(r.resumes)]);
+  const valueStyle = {
+    color: 'var(--ink-1)', fontFamily: 'var(--font-mono)',
+    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  } as const;
   return (
-    <div style={{
-      marginTop: 8, display: 'grid', gridTemplateColumns: 'auto 1fr',
-      columnGap: 10, rowGap: 2, fontSize: 'var(--fs-xs)',
-    }}>
-      {rows.map(([k, v]) => (
-        <React.Fragment key={k}>
-          <span style={{ color: 'var(--ink-2)' }}>{k}</span>
-          <span style={{ color: 'var(--ink-1)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span>
-        </React.Fragment>
-      ))}
+    <div style={{ marginTop: 8, fontSize: 'var(--fs-xs)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 10, rowGap: 2 }}>
+        {rows.map(([k, v]) => (
+          <React.Fragment key={k}>
+            <span style={{ color: 'var(--ink-2)' }}>{k}</span>
+            <span style={valueStyle}>{v}</span>
+          </React.Fragment>
+        ))}
+        <span style={{ color: 'var(--ink-2)' }}>browser</span>
+        {editable ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void patch({ browserTools: !r.browserTools })}
+            title={r.browserTools
+              ? 'Turn off. No worker spawned after this gets a browser.'
+              : 'Turn on. Workers spawned after this get a headless browser; the director itself gains it when the run is resumed.'}
+            style={{
+              ...valueStyle, justifySelf: 'start', background: 'none', padding: 0,
+              border: 'none', borderBottom: '1px dashed var(--line-strong)',
+              cursor: busy ? 'wait' : 'pointer', font: 'inherit',
+              fontFamily: 'var(--font-mono)', color: 'var(--ink-1)',
+            }}
+          >{r.browserTools ? 'on' : 'off'}</button>
+        ) : <span style={valueStyle}>{r.browserTools ? 'on' : 'off'}</span>}
+        {r.resumes ? (
+          <>
+            <span style={{ color: 'var(--ink-2)' }}>resumes</span>
+            <span style={valueStyle}>{r.resumes}</span>
+          </>
+        ) : null}
+      </div>
+      {err && <div style={{ marginTop: 4, color: 'var(--status-critical)' }}>{err}</div>}
     </div>
   );
 }
@@ -444,8 +490,9 @@ export function ProjectView({
               onSelectRun={setSelectedRunId}
               sessionId={run.directorSessionId}
               details={selectedRun && (
-                <RunDetails r={selectedRun} liveCost={run.costUsd}
-                  liveBasis={run.costBasis} liveUsage={run.usage} liveTurns={selectedRun.turns} />
+                <RunDetails r={selectedRun} live={viewingLive} liveCost={run.costUsd}
+                  liveBasis={run.costBasis} liveUsage={run.usage} liveTurns={selectedRun.turns}
+                  onChanged={refreshFleet} />
               )} />
           </div>
           <div style={{ minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>

@@ -265,6 +265,19 @@ function applyWire(s: RunView, e: WireEvent): RunView {
       };
     case 'run_error':
       return { ...s, entries: [...s.entries, { id: ++seq, ts, agent: 'system', kind: 'error', title: 'error', body: d.error }] };
+    case 'settings_changed':
+      // Recorded in the transcript, not just applied. Foreman is a governance
+      // layer: who changed the rules mid-mission, and when, is exactly the
+      // kind of thing the run log exists to answer.
+      return {
+        ...s,
+        budgetUsd: typeof d.budgetUsd === 'number' ? d.budgetUsd : s.budgetUsd,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'steer',
+          title: 'settings changed',
+          body: (d.changes ?? []).join('\n'),
+        }],
+      };
     case 'run_titled':
       return { ...s, title: String(d.title ?? '') };
     case 'cost':
@@ -749,6 +762,19 @@ export const api = {
   answer: (id: string, text: string) => post('/answer', { id, text }),
   steer: (runId: string, text: string) => post('/steer', { runId, text }),
   interrupt: (runId: string) => post('/interrupt', { runId }),
+  /**
+   * Change a live run's settings. Only the fields that genuinely bind
+   * mid-run are accepted — the server rejects anything else rather than
+   * appearing to apply it.
+   */
+  updateRun: (runId: string, patch: { browserTools?: boolean; budgetUsd?: number }) =>
+    fetch('/run', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ runId, ...patch }),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      return r.json() as Promise<{ changes: string[] }>;
+    }),
   /** Stores a provider's key. There is no read counterpart, by design. */
   setProviderKey: (providerId: string, key: string) =>
     fetch(`/providers/${encodeURIComponent(providerId)}/key`, {

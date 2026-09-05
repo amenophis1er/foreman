@@ -20,6 +20,7 @@
  *   DELETE /projects/{id}        Unlink (history kept; active run blocks it)
  *   POST   /run                  Start a mission {projectId, mission, budgetUsd,
  *                                directorModel?, workerModel?, browserTools?}
+ *   PATCH  /run                  Change a live run's browser tools or budget
  *   POST   /runs/{id}/resume     Resume an interrupted/failed run
  *   POST   /permission           Resolve an approval {id, behavior, message?}
  *   POST   /answer               Answer a director question {id, text}
@@ -1116,6 +1117,25 @@ const server = http.createServer(async (req, res) => {
       if (!run) return json(res, 404, { error: 'no active run with that id' });
       if (!run.steer(trimmed)) return json(res, 409, { error: 'run is no longer accepting steers' });
       json(res, 200, { ok: true });
+
+    } else if (req.method === 'PATCH' && url.pathname === '/run') {
+      // Change a live mission's settings. Deliberately only the two that
+      // genuinely bind mid-run — see MissionRun.applySettings(). A field that
+      // needs a restart belongs on the resume path, not here, because a
+      // setting that silently does nothing until some later event is worse
+      // than one the UI never offered.
+      const { runId, browserTools, budgetUsd } = await readBody(req);
+      const run = activeRuns().find((r) => r.meta.id === runId);
+      if (!run) return json(res, 404, { error: 'no active run with that id' });
+      const patch: { browserTools?: boolean; budgetUsd?: number } = {};
+      if (typeof browserTools === 'boolean') patch.browserTools = browserTools;
+      if (typeof budgetUsd === 'number' && Number.isFinite(budgetUsd) && budgetUsd >= 0) {
+        patch.budgetUsd = budgetUsd;
+      }
+      if (!Object.keys(patch).length) return json(res, 400, { error: 'nothing to change' });
+      const changes = run.applySettings(patch);
+      await store.writeMeta(run.meta).catch(() => {});
+      json(res, 200, { ok: true, changes });
 
     } else if (req.method === 'POST' && url.pathname === '/interrupt') {
       const { runId } = await readBody(req);
