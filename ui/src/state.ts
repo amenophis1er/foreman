@@ -70,6 +70,12 @@ export function providerHome(p?: ProviderRef): string | undefined {
   }
 }
 
+/** Real token counts, unlike the dollar figure beside them. */
+export type TokenUsage = {
+  inputTokens: number; outputTokens: number;
+  cacheReadTokens: number; cacheWriteTokens: number;
+};
+
 export type RunSummary = {
   id: string; projectId?: string; folder: string; mission: string;
   /** Short generated name; absent until the naming call lands (or fails). */
@@ -79,6 +85,10 @@ export type RunSummary = {
   directorModel?: string; workerModel?: string; resumes?: number;
   browserTools?: boolean;
   directorSessionId?: string;
+  /** False when `costUsd` is not real money — see src/provider.ts. */
+  metered?: boolean;
+  usage?: TokenUsage;
+  turns?: number;
 };
 
 export type ProjectSummary = {
@@ -91,6 +101,8 @@ export type ProjectSummary = {
   lastRun: { mission: string; title?: string; status: Status; createdAt?: number; costUsd?: number } | null;
   /** When this project last did anything; the server sorts the fleet by it. */
   lastActivityAt?: number;
+  /** Whether a key is on file for this project's provider. Never the key. */
+  providerHasKey?: boolean;
   pendingPermissions: number;
   pendingQuestions: number;
 };
@@ -98,6 +110,13 @@ export type ProjectSummary = {
 export type RunView = {
   runStatus: Status;
   mission: string;
+  /**
+   * Whether `costUsd` is real money. Through a gateway the SDK prices foreign
+   * tokens with Anthropic's table, so the figure is fiction and the meter must
+   * show what is true instead — tokens and turns.
+   */
+  metered: boolean;
+  usage: TokenUsage | null;
   /** Generated mission name, once `run_titled` arrives; '' until then. */
   title: string;
   costUsd: number;
@@ -111,7 +130,7 @@ export type RunView = {
 };
 
 const emptyRun: RunView = {
-  runStatus: 'idle', mission: '', title: '', costUsd: 0, budgetUsd: 5,
+  runStatus: 'idle', mission: '', title: '', metered: true, usage: null, costUsd: 0, budgetUsd: 5,
   agents: [], entries: [], approvals: [], questions: [], missionDoc: null,
 };
 
@@ -197,7 +216,11 @@ function applyWire(s: RunView, e: WireEvent): RunView {
     case 'run_titled':
       return { ...s, title: String(d.title ?? '') };
     case 'cost':
-      return { ...s, costUsd: d.costUsd, budgetUsd: d.budgetUsd };
+      return {
+        ...s, costUsd: d.costUsd, budgetUsd: d.budgetUsd,
+        usage: d.usage ?? s.usage,
+        metered: d.metered !== false,
+      };
     case 'message': {
       const extra: Partial<RunView> =
         d.agent === 'director' && d.msg?.session_id ? { directorSessionId: d.msg.session_id } : {};
@@ -668,6 +691,14 @@ export const api = {
   answer: (id: string, text: string) => post('/answer', { id, text }),
   steer: (runId: string, text: string) => post('/steer', { runId, text }),
   interrupt: (runId: string) => post('/interrupt', { runId }),
+  /** Stores a provider's key. There is no read counterpart, by design. */
+  setProviderKey: (providerId: string, key: string) =>
+    fetch(`/providers/${encodeURIComponent(providerId)}/key`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key }),
+    }),
+  clearProviderKey: (providerId: string) =>
+    fetch(`/providers/${encodeURIComponent(providerId)}/key`, { method: 'DELETE' }),
   browse: (path?: string) =>
     fetch('/browse' + (path ? `?path=${encodeURIComponent(path)}` : '')),
   mkdir: (parent: string, name: string) => post('/mkdir', { parent, name }),

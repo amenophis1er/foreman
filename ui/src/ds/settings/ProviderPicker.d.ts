@@ -4,7 +4,13 @@ export type ProviderRef =
   | { kind: 'claude-code'; configDir?: string; executable?: string; ownLogin?: boolean }
   | { kind: 'anthropic-api'; id?: string; apiKeyEnv: string; model?: string }
   | { kind: 'codex'; id?: string; codexHome?: string; upstreamUrl?: string; model?: string }
-  | { kind: 'openai-compatible'; id?: string; baseUrl: string; apiKeyEnv?: string; label?: string; model?: string };
+  | {
+      kind: 'openai-compatible'; id?: string; baseUrl: string;
+      apiKeyEnv?: string; label?: string; model?: string;
+      /** This endpoint requires a credential — distinguishes a keyless local
+       *  daemon from an endpoint whose key is simply not configured yet. */
+      needsKey?: boolean;
+    };
 
 /** One Claude Code install found on disk, as `GET /instances` reports it. */
 export interface DiscoveredInstance {
@@ -37,6 +43,16 @@ export interface ProviderPickerProps {
   /** A running local Ollama daemon, offered as a one-click custom-endpoint
    *  choice. From `GET /instances` → `.ollama` (absent/null when none is running). */
   ollama?: OllamaInfo | null;
+  /** Whether a key is on file for this provider. Never the key: the server has
+   *  no route that returns one, so this component can report, replace and
+   *  remove a key but never display it. */
+  hasKey?: boolean;
+  keyBusy?: boolean;
+  keyError?: string;
+  /** Stores a key immediately — a different endpoint from the rest of
+   *  Settings, so it does not wait for Save. Omit to hide the row entirely. */
+  onStoreKey?: (key: string) => void;
+  onClearKey?: () => void;
   style?: CSSProperties;
 }
 

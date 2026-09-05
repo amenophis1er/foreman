@@ -398,12 +398,18 @@ export class MissionRun {
           // Cumulative per query() call — record only the delta per turn.
           const total = m.total_cost_usd as number | undefined;
           if (typeof total === 'number') {
+            // Usage first: addCost emits the `cost` event carrying it, so
+            // folding it in afterwards ships a snapshot one turn stale — the
+            // meter showed `0 tok` on a run that had just spent 123k of them.
+            this.turns++;
+            this.addUsage(m.usage);
             this.addCost(total - this.directorCostSeen);
             this.directorCostSeen = total;
+          } else {
+            this.turns++;
+            this.addUsage(m.usage);
           }
           lastTurnFailed = Boolean(m.is_error);
-          this.turns++;
-          this.addUsage(m.usage);
           this.noteUsageLimit(String(m.result ?? ''));
 
           // Enforce the cap against the director's own spend, at the only
@@ -735,8 +741,10 @@ export class MissionRun {
           report = String(m.result ?? '');
           isError = Boolean(m.is_error);
           this.noteUsageLimit(report);
-          this.addCost(m.total_cost_usd as number | undefined);
+          // Same ordering rule as the director loop: the cost event carries
+          // usage, so usage has to be current before it is emitted.
           this.addUsage(m.usage);
+          this.addCost(m.total_cost_usd as number | undefined);
           w.costUsd += (m.total_cost_usd as number | undefined) ?? 0;
         }
         this.emit('message', { agent: workerId, msg });

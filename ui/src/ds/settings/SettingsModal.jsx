@@ -37,7 +37,7 @@ const GUARDED = ['Bash', 'Write', 'Edit', 'WebFetch', 'spawn_worker'];
  * Global settings with an optional per-project overlay. In project scope every row shows whether it inherits or overrides;
  * overrides can be reset to global. Nothing persists until Save.
  */
-export function SettingsModal({ global, project, projectName, models, modelsLoading, modelsNote, provider, providerInstances, providerOllama, scope: scopeProp, onScope, section: sectionProp, onSection, onSave, onClose, onUnlink, style }) {
+export function SettingsModal({ global, project, projectName, models, modelsLoading, modelsNote, provider, providerInstances, providerOllama, providerHasKey, providerKeyBusy, providerKeyError, onStoreProviderKey, onClearProviderKey, scope: scopeProp, onScope, section: sectionProp, onSection, onSave, onClose, onUnlink, style }) {
   const [localScope, setLocalScope] = useState(scopeProp ?? 'global');
   const [localSection, setLocalSection] = useState(sectionProp ?? 'models');
   const scope = onScope ? scopeProp : localScope;
@@ -103,7 +103,9 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
       {!isProject && row('showHidden', 'Show hidden folders in picker', null, <Switch checked={get('showHidden')} onChange={(v) => set('showHidden', v)} />)}
       {isProject && (
         <Row label="Provider" hint="Which engine runs this project's agents, who pays, and where requests go. Clearing it returns to the server default." stacked>
-          <ProviderPicker value={prov} onChange={setProv} instances={providerInstances} ollama={providerOllama} />
+          <ProviderPicker
+            hasKey={providerHasKey} keyBusy={providerKeyBusy} keyError={providerKeyError}
+            onStoreKey={onStoreProviderKey} onClearKey={onClearProviderKey} value={prov} onChange={setProv} instances={providerInstances} ollama={providerOllama} />
         </Row>
       )}
       {isProject && (

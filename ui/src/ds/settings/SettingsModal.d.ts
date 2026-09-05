@@ -42,6 +42,13 @@ export interface SettingsModalProps {
   providerInstances?: DiscoveredInstance[];
   /** A running local Ollama daemon, passed through to `ProviderPicker`. */
   providerOllama?: OllamaInfo | null;
+  /** Whether a key is on file for the project's provider. Never the key. */
+  providerHasKey?: boolean;
+  providerKeyBusy?: boolean;
+  providerKeyError?: string;
+  /** Stores/clears the key immediately — its own endpoint, not part of Save. */
+  onStoreProviderKey?: (key: string) => void;
+  onClearProviderKey?: () => void;
   scope?: SettingsScope;
   /** Pass with `scope` to control it; without it `scope` is the initial value. */
   onScope?: (s: SettingsScope) => void;

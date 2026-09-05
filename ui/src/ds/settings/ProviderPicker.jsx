@@ -3,6 +3,8 @@ import { Tabs } from '../core/Tabs';
 import { TextInput } from '../forms/TextInput';
 import { Switch } from '../forms/Switch';
 import { Icon } from '../core/Icon';
+import { Button } from '../core/Button';
+import { Banner } from '../status/Banner';
 import { shortPath } from '../core/path';
 
 const KIND_TABS = [
@@ -26,13 +28,71 @@ function blank(kind) {
   }
 }
 
-/** `apiKeyEnv` names a variable in the server's own environment. There is no
- *  secret store yet, so the row must say that outright rather than look like
- *  a place to paste a key — see docs/provider-model-tracker.md Cross-cutting. */
+/** `apiKeyEnv` names a variable in the server's own environment — the fallback
+ *  when no key is stored for this provider, and the way to keep a key out of
+ *  Foreman entirely. */
 function EnvVarHint() {
   return (
     <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', marginTop: 4 }}>
-      Names an environment variable on the server; a paste-a-key store is coming.
+      Names an environment variable on the server. A stored key below takes
+      precedence; leave both empty and this endpoint needs no credential.
+    </div>
+  );
+}
+
+/**
+ * The stored-key row.
+ *
+ * Write-only, because the server is: there is no route that returns a key, so
+ * this can report that one exists and offer to replace or remove it, and can
+ * never show it. That asymmetry is deliberate and worth surfacing rather than
+ * hiding behind a masked field that looks like it holds the real value.
+ *
+ * A key is saved the moment it is submitted, not on the modal's Save: it goes
+ * to a different endpoint than the rest of Settings, and a half-saved
+ * credential is worse than an explicit one.
+ */
+function StoredKey({ hasKey, busy, error, onStore, onClear }) {
+  const [draft, setDraft] = useState('');
+  const [open, setOpen] = useState(false);
+
+  if (!onStore) return null;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-1)' }}>
+          {hasKey ? 'A key is stored for this provider.' : 'No key stored.'}
+        </span>
+        {hasKey && (
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+            It cannot be shown — only replaced or removed.
+          </span>
+        )}
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 'var(--sp-2)' }}>
+          <Button size="sm" variant="ghost" onClick={() => setOpen((o) => !o)}>
+            {open ? 'Cancel' : hasKey ? 'Replace' : 'Add a key'}
+          </Button>
+          {hasKey && (
+            <Button size="sm" variant="danger" disabled={busy} onClick={onClear}>Remove</Button>
+          )}
+        </span>
+      </div>
+
+      {open && (
+        <div style={{ display: 'flex', gap: 'var(--sp-2)', alignItems: 'center' }}>
+          <TextInput mono type="password" placeholder="paste the key" value={draft}
+            onChange={setDraft} autoFocus
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && draft.trim()) { onStore(draft.trim()); setDraft(''); setOpen(false); }
+            }} />
+          <Button size="sm" variant="good" disabled={busy || !draft.trim()}
+            onClick={() => { onStore(draft.trim()); setDraft(''); setOpen(false); }}>
+            {busy ? 'Saving…' : 'Save key'}
+          </Button>
+        </div>
+      )}
+      {error && <Banner tone="error" inline>{error}</Banner>}
     </div>
   );
 }
@@ -84,7 +144,10 @@ function InstanceOption({ inst, selected, onClick }) {
  * environment variable *name*; there is no secret store yet, so the row says
  * that instead of pretending a pasted key would go anywhere.
  */
-export function ProviderPicker({ value, onChange, instances, ollama, style }) {
+export function ProviderPicker({
+  value, onChange, instances, ollama,
+  hasKey, keyBusy, keyError, onStoreKey, onClearKey, style,
+}) {
   const [advanced, setAdvanced] = useState(false);
   const kind = value?.kind ?? 'default';
 
@@ -141,7 +204,9 @@ export function ProviderPicker({ value, onChange, instances, ollama, style }) {
 
       {kind === 'anthropic-api' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
-          <Field label="Environment variable">
+          <StoredKey hasKey={hasKey} busy={keyBusy} error={keyError}
+            onStore={onStoreKey} onClear={onClearKey} />
+          <Field label="Environment variable (optional fallback)">
             <TextInput mono placeholder="ANTHROPIC_API_KEY_ALPHA" value={value.apiKeyEnv ?? ''}
               onChange={(v) => patch({ apiKeyEnv: v })} />
           </Field>
@@ -229,6 +294,16 @@ export function ProviderPicker({ value, onChange, instances, ollama, style }) {
               onChange={(v) => patch({ apiKeyEnv: v || undefined })} />
           </Field>
           {!!value.apiKeyEnv && <EnvVarHint />}
+          <StoredKey hasKey={hasKey} busy={keyBusy} error={keyError}
+            onStore={onStoreKey} onClear={onClearKey} />
+          {/* Without this, "no key stored and none named" is indistinguishable
+              from "this endpoint wants none" — a local Ollama and an
+              unconfigured OpenRouter would look identical. */}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', fontSize: 'var(--fs-sm)' }}>
+            <Switch checked={value.needsKey === true}
+              onChange={(v) => patch({ needsKey: v || undefined })} />
+            This endpoint requires a credential
+          </label>
         </div>
       )}
     </div>

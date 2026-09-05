@@ -159,6 +159,30 @@ export default function App() {
 
   const project = projectId ? projects.find((p) => p.id === projectId) : null;
 
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyError, setKeyError] = useState('');
+
+  /**
+   * A provider's key is written the moment it is submitted, to its own
+   * endpoint — not folded into Settings' Save. It is a different resource with
+   * different rules (write-only, 0600 on disk), and a credential that is
+   * half-saved because someone hit Cancel is worse than one saved plainly.
+   */
+  const providerId = project && 'id' in (project.provider ?? {})
+    ? (project.provider as { id?: string }).id : undefined;
+
+  const writeKey = async (key: string | null) => {
+    if (!providerId) return;
+    setKeyError('');
+    setKeyBusy(true);
+    const r = await (key === null
+      ? api.clearProviderKey(providerId)
+      : api.setProviderKey(providerId, key)).finally(() => setKeyBusy(false));
+    if (!r.ok) setKeyError((await r.json().catch(() => ({}))).error ?? 'could not save the key');
+    else refresh(); // providerHasKey rides on the fleet poll
+  };
+
+
   const saveSettings = async (v: {
     global: Settings; project: Settings; provider?: ProviderRef | null;
   }) => {
@@ -222,6 +246,10 @@ export default function App() {
           provider={project?.provider ?? null}
           providerInstances={providerChoices.instances}
           providerOllama={providerChoices.ollama}
+          providerHasKey={project?.providerHasKey}
+          providerKeyBusy={keyBusy} providerKeyError={keyError}
+          onStoreProviderKey={providerId ? (k) => void writeKey(k) : undefined}
+          onClearProviderKey={providerId ? () => void writeKey(null) : undefined}
           onSave={(v) => void saveSettings(v)}
           onClose={() => setSettingsOpen(false)} />
       )}

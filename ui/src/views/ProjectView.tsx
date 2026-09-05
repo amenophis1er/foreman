@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   api, providerHome, useChat, useRunHistory, useRunView,
-  type ProjectSummary, type RunSummary, type RunView as RunViewState,
+  type ProjectSummary, type RunSummary, type RunView as RunViewState, type TokenUsage,
 } from '../state';
 import { AppHeader } from '../ds/shell/AppHeader';
 import { Button } from '../ds/core/Button';
@@ -10,7 +10,7 @@ import { SectionTitle } from '../ds/core/SectionTitle';
 import { Banner } from '../ds/status/Banner';
 import { StatusBadge } from '../ds/status/StatusBadge';
 import { BillingBadge, type BillingMode } from '../ds/status/BillingBadge';
-import { BudgetMeter } from '../ds/status/BudgetMeter';
+import { BudgetMeter, formatTokens } from '../ds/status/BudgetMeter';
 import { AttentionBar } from '../ds/status/AttentionBar';
 import { RunRail } from '../ds/mission/RunRail';
 import { RunTimeline } from '../ds/mission/RunTimeline';
@@ -212,11 +212,22 @@ function PlanPane({ chat, folder, starting, error, onStart }: {
 }
 
 /** Key run properties (models, budget, browser), pulled from run metadata. */
-function RunDetails({ r, liveCost }: { r: RunSummary; liveCost?: number }) {
+function RunDetails({ r, liveCost, liveMetered, liveUsage, liveTurns }: {
+  r: RunSummary; liveCost?: number; liveMetered?: boolean; liveUsage?: TokenUsage | null; liveTurns?: number;
+}) {
+  const metered = liveMetered ?? r.metered ?? true;
+  const usage = liveUsage ?? r.usage ?? null;
+  const turns = liveTurns ?? r.turns;
+  const tokenCount = usage ? usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens : 0;
   const rows: Array<[string, string]> = [
     ['director', r.directorModel || 'default'],
     ['workers', r.workerModel || 'default'],
-    ['budget', `$${((liveCost ?? r.costUsd) || 0).toFixed(2)} / $${r.budgetUsd.toFixed(2)}`],
+    // Same honesty rule as BudgetMeter: an unmetered run never gets a dollar
+    // sign, even in this plain key/value list — tokens (and turns, if known)
+    // stand in for the figure this run genuinely has no price for.
+    ['budget', metered
+      ? `$${((liveCost ?? r.costUsd) || 0).toFixed(2)} / $${r.budgetUsd.toFixed(2)}`
+      : `${formatTokens(tokenCount)} tok${typeof turns === 'number' ? ` · ${turns} turn${turns === 1 ? '' : 's'}` : ''}`],
     ['browser', r.browserTools ? 'on' : 'off'],
   ];
   if (r.resumes) rows.push(['resumes', String(r.resumes)]);
@@ -326,7 +337,10 @@ export function ProjectView({
         <BillingBadge mode={p.billingMode ?? auth.mode} compact account={auth.account}
           source={billingSource(p, auth.source)} />
         {selectedRunId && <StatusBadge status={run.runStatus} />}
-        {selectedRunId && <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} />}
+        {selectedRunId && (
+          <BudgetMeter spent={run.costUsd} budget={run.budgetUsd}
+            metered={run.metered} usage={run.usage} turns={selectedRun?.turns} />
+        )}
         {viewingLive && run.runStatus === 'running' && (
           <Button variant="danger" onClick={() => void api.interrupt(selectedRunId!)}>Interrupt</Button>
         )}
@@ -421,7 +435,10 @@ export function ProjectView({
               filter={filter} onFilter={(a) => setFilter(filter === a ? null : a)}
               onSelectRun={setSelectedRunId}
               sessionId={run.directorSessionId}
-              details={selectedRun && <RunDetails r={selectedRun} liveCost={run.costUsd} />} />
+              details={selectedRun && (
+                <RunDetails r={selectedRun} liveCost={run.costUsd}
+                  liveMetered={run.metered} liveUsage={run.usage} liveTurns={selectedRun.turns} />
+              )} />
           </div>
           <div style={{ minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             {(run.entries.length > 0 || run.approvals.length + run.questions.length > 0) && (
