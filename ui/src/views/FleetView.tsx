@@ -161,7 +161,10 @@ export function FleetView({
   const totalRunning = projects.filter((p) => p.activeRun).length;
   const totalNeeds = (projects as FleetProject[]).reduce((n, p) =>
     n + (Array.isArray(p.needs) ? p.needs.length : (p.pendingPermissions || 0) + (p.pendingQuestions || 0)), 0);
-  const pill = [
+  const quiet = totalRunning === 0 && totalNeeds === 0;
+  // An idle fleet says so in words. Silence looked like a page that had not
+  // loaded its other two sections yet, not like a fleet with nothing to do.
+  const pill = quiet && projects.length > 0 ? 'all quiet' : [
     totalRunning > 0 ? `${totalRunning} running` : null,
     totalNeeds > 0 ? `${totalNeeds} needs you` : null,
   ].filter(Boolean).join(' · ');
@@ -212,15 +215,17 @@ export function FleetView({
 
       <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {!connected && <Banner tone="disconnected" inline>disconnected</Banner>}
-        {/* The page's one status line: what is happening across the fleet.
-            Omitted when nothing is — an idle fleet says so by saying nothing. */}
+        {/* The page's one status line: what is happening across the fleet —
+            including "nothing", said quietly, so the board never reads as
+            half-loaded when its first two sections are legitimately empty. */}
         {pill && (
           <span style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
             padding: '2px 10px', borderRadius: 'var(--r-pill)',
-            border: `1px solid ${totalNeeds > 0 ? 'var(--status-warning)' : 'var(--line-strong)'}`,
+            border: `1px solid ${totalNeeds > 0 ? 'var(--status-warning)' : quiet ? 'var(--line)' : 'var(--line-strong)'}`,
             background: totalNeeds > 0 ? 'var(--brand-wash)' : 'transparent',
-            fontSize: 'var(--fs-xs)', color: 'var(--ink-1)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
+            fontSize: 'var(--fs-xs)', color: quiet ? 'var(--ink-3)' : 'var(--ink-1)',
+            fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
           }}>{pill}</span>
         )}
         {/* Only when it warns. A fleet has many projects, each with its own
@@ -274,6 +279,15 @@ export function FleetView({
               <Empty>Nothing matches “{query.trim()}”.</Empty>
               <Button variant="ghost" size="sm" onClick={() => setQuery('')}>Clear filter</Button>
             </div>
+          )}
+
+          {/* 0 · Quiet. The two sections above Recent are omitted when empty;
+              this one line stands in for both so the reader knows they are
+              empty by fact, not missing by accident — and what to do next. */}
+          {needs.length === 0 && running.length === 0 && shown.length > 0 && (
+            <Empty>
+              All quiet — nothing running, nothing waiting on you. Open a project to plan its next mission.
+            </Empty>
           )}
 
           {/* 1 · Needs you. First, always, and answerable here. */}
