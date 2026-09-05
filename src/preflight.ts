@@ -19,6 +19,7 @@ import { access, mkdir, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { defaultInstance, describeInstance, effectiveConfigDir } from './instance.js';
 import { discoverOllama, ollamaHost } from './ollama.js';
+import { codexHome, codexModels, readCodexAuth } from './codex.js';
 
 export type CheckStatus = 'ok' | 'warn' | 'error';
 
@@ -168,6 +169,38 @@ async function checkOllama(): Promise<Check | null> {
   };
 }
 
+/**
+ * A Codex install, if there is one.
+ *
+ * Silent when Codex is not installed, for the same reason as Ollama. But an
+ * install with no login IS worth a warning rather than silence: the operator
+ * put Codex there on purpose, so a project pinned to it will fail, and the fix
+ * is one command.
+ */
+async function checkCodex(): Promise<Check | null> {
+  const home = codexHome();
+  const auth = await readCodexAuth(home).catch(() => null);
+  const installed = await exists(path.join(home, 'auth.json'))
+    || await exists(path.join(home, 'config.toml'));
+  if (!installed) return null;
+
+  if (!auth) {
+    return {
+      name: 'Codex',
+      status: 'warn',
+      detail: `${home} — installed, not signed in`,
+      fix: 'codex login   (Foreman reads that login; it never mints its own token)',
+    };
+  }
+  const models = await codexModels(home);
+  const how = auth.OPENAI_API_KEY ? 'API key' : 'ChatGPT subscription';
+  return {
+    name: 'Codex',
+    status: 'ok',
+    detail: `${home} — ${how}${models.length ? ` · ${models.length} models` : ''}`,
+  };
+}
+
 async function checkPort(port: number): Promise<Check> {
   const name = `Port ${port}`;
   const inUse = await new Promise<boolean>((resolve) => {
@@ -227,6 +260,7 @@ export async function preflight(opts: {
     checkAuth(),
     checkInstance(),
     checkOllama(),
+    checkCodex(),
     checkPort(opts.port),
     checkHome(opts.foremanHome),
     checkUi(opts.distDir),

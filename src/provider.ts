@@ -96,6 +96,12 @@ export interface ResolvedProvider {
   /** Concrete model id, where the provider pins one. */
   model?: string;
   /**
+   * Codex only: the ChatGPT account the login belongs to. The gateway reads it
+   * from the token's own claims per request; this is the fallback for a token
+   * that carries none.
+   */
+  accountId?: string;
+  /**
    * `claude-code` only: strip inherited key credentials so the install's own
    * stored login pays. The original per-project billing lever.
    */
@@ -228,6 +234,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
         configDir: ownedConfigDir(root, ref.id),
         upstreamUrl: ref.upstreamUrl ?? 'https://chatgpt.com/backend-api',
         apiKey: token,
+        accountId: auth?.tokens?.account_id,
         model: ref.model,
         problem,
       };

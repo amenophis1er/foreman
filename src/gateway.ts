@@ -57,7 +57,10 @@ let reaper: NodeJS.Timeout | null = null;
  * share, since the credential rides on each request rather than the process.
  */
 function keyFor(p: ResolvedProvider): string {
-  return `${p.wire}|${p.upstreamUrl ?? ''}`;
+  // Account id is part of the identity for Codex: it is the gateway's fallback
+  // when a token carries no account claim, and two logins sharing a process
+  // would then borrow the first one's.
+  return `${p.wire}|${p.upstreamUrl ?? ''}|${p.accountId ?? ''}`;
 }
 
 /** An unused loopback port, chosen by the OS rather than guessed. */
@@ -116,6 +119,7 @@ export async function ensureGateway(p: ResolvedProvider): Promise<string> {
 
   const mode = p.wire === 'gateway-codex' ? 'codex' as const : 'openai' as const;
   const upstream = p.upstreamUrl ?? '';
+  const accountId = p.accountId ?? '';
   const port = await freePort();
 
   // Only routing goes in the env. LLM_GATEWAY_DEFAULT_MODEL is deliberately
@@ -128,6 +132,14 @@ export async function ensureGateway(p: ResolvedProvider): Promise<string> {
       LLM_GATEWAY_MODE: mode,
       LLM_GATEWAY_TARGET_URL: upstream,
       LLM_GATEWAY_PORT: String(port),
+      // The ported file defaults this to the name of the project it came from.
+      // Foreman says who it actually is: the originator header is a claim
+      // about which client is calling, and sending someone else's name — or
+      // the CLI's, to look like Codex itself — would be a lie told to a
+      // vendor. See provider-model.md §5.
+      CODEX_ORIGINATOR: process.env.CODEX_ORIGINATOR || 'foreman',
+      // Only consulted when the token carries no account claim of its own.
+      ...(accountId ? { CODEX_ACCOUNT_ID: accountId } : {}),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
