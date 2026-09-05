@@ -92,7 +92,7 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
 import { WORK_DIR, makePolicy, type PendingPermission } from './policy.js';
 import type { AgentEnv } from './provider.js';
 import { generateRunTitle } from './title.js';
-import { costBasisOf, isPriced } from './types.js';
+import { combineBasis, costBasisOf, isPriced, type CostBasis } from './types.js';
 import { priceUsage, type ModelPrice } from './prices.js';
 import type { RunMeta, TokenUsage, WorkerMeta, WorkerProgress } from './types.js';
 
@@ -738,7 +738,13 @@ export class MissionRun {
   /** Gateway tokens seen since the last confirmed result. Never persisted. */
   private interimUsage: TokenUsage = emptyUsage();
   /** The ledger reading the interim is measured against. */
-  private ledgerBaseline: (TokenUsage & { calls: number }) | null = null;
+  private ledgerBaseline: (TokenUsage & { calls: number; costUsd?: number }) | null = null;
+  /** The three piles `meta.costUsd` is the sum of — see RunMeta.costParts. */
+  private costParts: { native: number; rated: number; ledger: number };
+  /** Ledger cost persisted by earlier attempts; this attempt's ledger starts at zero. */
+  private ledgerBefore = 0;
+  /** Once an upstream has stated a cost, its figure outranks the rated one for gateway tokens. */
+  private ledgerReportsCost = false;
   private rebaseline = false;
   private ledgerTimer?: ReturnType<typeof setInterval>;
   private capTimer?: ReturnType<typeof setInterval>;
@@ -784,10 +790,23 @@ export class MissionRun {
     private readonly ledger?: {
       key: string;
       roles: { director: boolean; worker: boolean };
-      read: (key: string) => Promise<TokenUsage & { calls: number } | null>;
+      read: (key: string) => Promise<TokenUsage & { calls: number; costUsd?: number } | null>;
     },
+    /**
+     * Each role's cost basis, so a mid-run change of provider — a worker
+     * retried on the director's — can re-derive the run's basis and say so
+     * before another token is spent. Absent means "unknown", which leaves the
+     * run's basis alone.
+     */
+    private readonly roleBasis?: { director: CostBasis; worker: CostBasis },
   ) {
     this.meta = meta;
+    // Cost kept as parts, so a resume adds to the right pile and an upstream
+    // that reports its own figure can outrank the rated one for the same
+    // tokens. A run recorded before parts existed has its whole total treated
+    // as native, which changes nothing about what it shows.
+    this.costParts = meta.costParts ?? { native: meta.costUsd ?? 0, rated: 0, ledger: 0 };
+    this.ledgerBefore = this.costParts.ledger;
     // Usage and turns are counted from zero on a fresh run, but a resumed one
     // must keep the running total rather than quietly under-reporting
     // everything before the restart — same reasoning as the workers map below.
@@ -1370,10 +1389,22 @@ export class MissionRun {
    * number is fiction — and adding fiction to a figure computed from the
    * endpoint's own published rates would corrupt the one honest total.
    */
+  /**
+   * `costUsd` from its parts. The upstream's own figure, once it has given
+   * one, replaces the rated figure for gateway tokens rather than adding to
+   * it — they price the same tokens, and the party that sends the bill wins.
+   */
+  private recomputeCost(): void {
+    const p = this.costParts;
+    this.meta.costUsd = p.native + (this.ledgerReportsCost ? p.ledger : p.rated);
+    this.meta.costParts = { ...p };
+  }
+
   private addCost(usd: number | undefined, role: AgentRole = 'director'): void {
     if (typeof usd !== 'number') return;
     if (this.prices[role]) return;
-    this.meta.costUsd += usd;
+    this.costParts.native += usd;
+    this.recomputeCost();
     this.saveMeta(this.meta);
     this.emitEconomics();
     this.enforceBudget();
@@ -1415,6 +1446,26 @@ export class MissionRun {
     if (!this.ledger) return;
     const now = await this.ledger.read(this.ledger.key).catch(() => null);
     if (!now) return;
+    // An upstream that states its own cost per response (OpenRouter does) is
+    // the most authoritative figure there is for those tokens: it replaces
+    // the rated figure rather than adding to it. A run that was `unpriced`
+    // becomes `priced` the moment a real bill shows up — and says so, because
+    // the dollar cap arms with it.
+    if (typeof now.costUsd === 'number' && Number.isFinite(now.costUsd)) {
+      const before = this.meta.costUsd;
+      this.ledgerReportsCost = true;
+      this.costParts.ledger = this.ledgerBefore + now.costUsd;
+      if (!isPriced(this.meta)) {
+        this.meta.costBasis = 'priced';
+        this.meta.metered = true;
+        this.emit('settings_changed', {
+          changes: ['the upstream reports its own cost per response — this run is now priced and the dollar cap is live'],
+          browserTools: Boolean(this.meta.browserTools), budgetUsd: this.meta.budgetUsd,
+        });
+      }
+      this.recomputeCost();
+      if (this.meta.costUsd !== before) { this.saveMeta(this.meta); this.enforceBudget(); }
+    }
     if (!this.ledgerBaseline || this.rebaseline) {
       this.ledgerBaseline = now;
       this.rebaseline = false;
@@ -1459,7 +1510,7 @@ export class MissionRun {
     // own tokens at its own prices, accumulated per role so a mixed run bills
     // each half correctly instead of applying one table to both.
     const price = this.prices[role];
-    if (price) this.meta.costUsd += priceUsage(price, delta);
+    if (price) { this.costParts.rated += priceUsage(price, delta); this.recomputeCost(); }
     this.saveMeta(this.meta);
     this.emitEconomics();
     if (price) this.enforceBudget();
@@ -2059,10 +2110,16 @@ export class MissionRun {
       'ask_human',
       'Ask the human overseer a question and wait for their answer. Use for anything ' +
       'irreversible, out of scope, over budget, or that only a human can decide.',
-      { question: z.string().describe('The question, with enough context to answer it') },
-      async ({ question }) => {
+      {
+        question: z.string().describe('The question, with enough context to answer it'),
+        options: z.array(z.string()).min(2).max(6).optional().describe(
+          'When the answer is a choice, the choices — recommended first. The human ' +
+          'taps one (in the tab or on their phone) instead of typing; they can still type.'),
+      },
+      async ({ question, options }) => {
         const id = `q-${Date.now()}-${this.pendingQuestions.size}`;
-        this.emit('question', { id, question });
+        const opts = options?.map((o) => o.trim()).filter(Boolean).slice(0, 6);
+        this.emit('question', { id, question, ...(opts?.length ? { options: opts } : {}) });
         // Same unattended default as a permission card, with the opposite
         // polarity: a question is not refused, it is handed back. The
         // director keeps its context and is told to decide and record.

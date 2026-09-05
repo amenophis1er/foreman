@@ -4,6 +4,8 @@ import type { CSSProperties } from 'react';
 export interface QuestionCardProps {
   /** The director's question, verbatim. Whitespace is preserved. */
   question: string;
+  /** Choices the director offered; each is a one-tap answer, the first marked recommended. Typing still works. */
+  options?: string[];
   /** Controlled answer text. Omit to let the card hold its own draft. */
   value?: string;
   onChange?: (v: string) => void;

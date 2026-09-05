@@ -327,3 +327,17 @@ test('a stepped planner question resolves onto head and link — never under a s
   assert.match(final, /✓ CTA\? → <b>Silver<\/b> · via telegram/);
   assert.match(final, /Open in Foreman/);
 });
+
+test('a director question with options gets buttons, and a tap answers with the label', async () => {
+  const t = buttonTransport();
+  const answers: unknown[] = [];
+  const hub = new NotifyHub(ctx()); hub.attach(t); hub.onAnswer((a) => answers.push(a));
+  hub.handle(env('question', { id: 'dq2', question: 'Deploy target?', options: ['Staging', 'Production'] }));
+  await tick();
+  const rows = t.buttons[0] as Array<Array<{ label: string; data: string }>>;
+  assert.deepEqual(rows.map((r) => r[0].data), ['q|dq2|0', 'q|dq2|1']);
+  assert.match(rows[0][0].label, /★/);
+  assert.equal(hub.handleCallback('q|dq2|1', '1'), true);
+  assert.deepEqual(answers, [{ kind: 'q', id: 'dq2', text: 'Production' }]);
+  assert.equal(hub.handleCallback('q|dq2|1', '1'), false, 'a second tap finds nothing pending');
+});

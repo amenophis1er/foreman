@@ -668,7 +668,7 @@ export function ProjectView({
               {run.questions.map((q) => (
                 <div key={q.id} style={{ marginBottom: 'var(--sp-2)' }}>
                   <WaitingSince since={q.since} now={now} />
-                  <QuestionCard question={q.question}
+                  <QuestionCard question={q.question} options={q.options}
                     onAnswer={(answer) => void api.answer(q.id, answer)} />
                 </div>
               ))}

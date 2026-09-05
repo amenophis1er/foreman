@@ -981,3 +981,52 @@ test('a real repeat still fires through the same path', () => {
   for (let i = 0; i < 3; i++) observeToolUse(r, 'Bash', { command: 'npm test' });
   assert.equal(fired, 1);
 });
+
+// ---------------------------------------------------------------------------
+// An upstream that states its own cost outranks the rated figure
+// ---------------------------------------------------------------------------
+
+test('a ledger-reported cost replaces the rated cost for gateway tokens and arms the cap', async () => {
+  const events: Array<{ event: string; data: any }> = [];
+  let ledgerCost: number | undefined;
+  const run = new MissionRun(
+    meta({ costBasis: 'unpriced', budgetUsd: 5 }), (event, data) => events.push({ event, data }), () => {},
+    noopAgentEnv, { worker: { input: 0.000002, output: 0.00001 } },
+    { key: 'r.0', roles: { director: false, worker: true }, read: async () => ({
+      inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, calls: 1, costUsd: ledgerCost,
+    }) },
+  ) as unknown as {
+    addUsage(raw: unknown, role?: string): void; addCost(usd: number, role?: string): void;
+    pollLedger(): Promise<void>; meta: RunMeta;
+  };
+
+  // Rated path first: worker tokens priced from the table.
+  run.addUsage({ input_tokens: 1000 }, 'worker');
+  assert.ok(Math.abs(run.meta.costUsd - 0.002) < 1e-9);
+  assert.equal(run.meta.costBasis, 'unpriced', 'a rated figure alone does not change the recorded basis here');
+
+  // Then the upstream states what it actually charged for the same tokens.
+  ledgerCost = 0.0031;
+  await run.pollLedger();
+  assert.ok(Math.abs(run.meta.costUsd - 0.0031) < 1e-9, `the bill-sender's figure replaces the rated one, got ${run.meta.costUsd}`);
+  assert.equal(run.meta.costBasis, 'priced');
+  assert.ok(events.some((e) => e.event === 'settings_changed' && /now priced/.test(e.data.changes?.[0] ?? '')),
+    'the flip to priced is announced, because the dollar cap arms with it');
+  assert.deepEqual(run.meta.costParts, { native: 0, rated: 0.002, ledger: 0.0031 });
+
+  // Native (Anthropic) cost still adds on top; it prices different tokens.
+  run.addCost(0.5, 'director');
+  assert.ok(Math.abs(run.meta.costUsd - 0.5031) < 1e-9);
+});
+
+test('a resumed run adds this attempt’s ledger cost to what earlier attempts persisted', async () => {
+  const run = new MissionRun(
+    meta({ costBasis: 'priced', costUsd: 1.25, costParts: { native: 0.25, rated: 0, ledger: 1.0 } }),
+    () => {}, () => {}, noopAgentEnv, {},
+    { key: 'r.1', roles: { director: false, worker: true }, read: async () => ({
+      inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, calls: 1, costUsd: 0.4,
+    }) },
+  ) as unknown as { pollLedger(): Promise<void>; meta: RunMeta };
+  await run.pollLedger();
+  assert.ok(Math.abs(run.meta.costUsd - 1.65) < 1e-9, `0.25 native + (1.0 earlier + 0.4 now), got ${run.meta.costUsd}`);
+});

@@ -29,6 +29,7 @@ import { codexHome, isStale, readCodexAuth, refreshCodexAuth } from './codex.js'
 import { getSecret } from './secrets.js';
 import { discoverModels } from './models.js';
 import type { ModelPrice } from './prices.js';
+import { isOpenAiHost, openaiPrice } from './openai-prices.js';
 import type { CostBasis, ProviderRef, ClaudeInstanceRef } from './types.js';
 
 /**
@@ -360,8 +361,17 @@ export async function roleCost(p: ResolvedProvider, model?: string): Promise<Rol
 
   const found = await discoverModels(p.upstreamUrl, { apiKey: p.apiKey });
   const m = found?.find((x) => x.id === chosen);
+  // Provenance, in order of authority: a rate the endpoint itself publishes
+  // beats everything; failing that, direct api.openai.com is priced from the
+  // dated list in openai-prices.ts — the one table Foreman keeps, by
+  // decision, with its source and verification date in its header. Any
+  // other endpoint that publishes nothing stays unpriced.
+  if (m?.price) return { basis: 'priced', price: m.price };
+  if (isOpenAiHost(p.upstreamUrl)) {
+    const listed = openaiPrice(chosen);
+    if (listed) return { basis: 'priced', price: listed };
+  }
   if (!m) return { basis: p.costBasis };
-  if (m.price) return { basis: 'priced', price: m.price };
   // No published rates: real spend we cannot quantify, unless the endpoint is
   // the operator's own hardware AND the model actually runs there.
   return { basis: p.costBasis === 'free' && !m.remote ? 'free' : 'unpriced' };

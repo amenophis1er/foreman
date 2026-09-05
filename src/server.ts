@@ -65,6 +65,7 @@ import QRCode from 'qrcode';
 import { ANTHROPIC_MODELS } from './anthropic-models.js';
 import { codexHome, codexModels, readCodexAuth } from './codex.js';
 import { costRank, describeModel, discoverModels } from './models.js';
+import { isOpenAiHost, openaiPrice, openaiPriceNote } from './openai-prices.js';
 import type { ResolvedProvider } from './provider.js';
 import type { ModelPrice } from './prices.js';
 import {
@@ -245,11 +246,16 @@ async function availableModels(project: Project | null): Promise<{
     const found = await discoverModels(resolved.upstreamUrl ?? pinned.baseUrl, {
       apiKey: resolved.apiKey,
     });
-    for (const m of found ?? []) {
+    const onOpenAi = isOpenAiHost(resolved.upstreamUrl);
+    for (const raw of found ?? []) {
+      // Direct OpenAI publishes no rates; the dated list in openai-prices.ts
+      // stands in, and says so in the note. A published rate still wins.
+      const listed = onOpenAi && !raw.price ? openaiPrice(raw.id) : null;
+      const m = listed ? { ...raw, price: listed } : raw;
       out.push({
         id: m.id, label: m.id, model: m.id,
         providerId: pinned.id, providerLabel: pinned.label ?? 'Custom endpoint',
-        cost: costRank(m), note: describeModel(m),
+        cost: costRank(m), note: listed ? (openaiPriceNote(m.id) ?? describeModel(m)) : describeModel(m),
         // Three-way, in the order the facts outrank each other. A published
         // rate settles it. Otherwise the endpoint sets the floor and the model
         // can raise it: a daemon on this machine is free, but a `:cloud` model

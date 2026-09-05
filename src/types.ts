@@ -346,6 +346,15 @@ export interface RunMeta {
   status: RunStatus;
   costUsd: number;
   /**
+   * Where `costUsd` came from, kept apart so a resume adds to the right
+   * pile: `native` is the SDK's own figure for Anthropic-native roles,
+   * `rated` is gateway tokens priced from published or listed rates, and
+   * `ledger` is what a gateway upstream itself reported per response. When
+   * the upstream reports, its number outranks the rated one for the same
+   * tokens — the party that sends the bill wins.
+   */
+  costParts?: { native: number; rated: number; ledger: number };
+  /**
    * Token counts accumulated from every director and worker `result`
    * message's `usage` object. Absent on runs recorded before this landed.
    */

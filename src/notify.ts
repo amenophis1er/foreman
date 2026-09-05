@@ -110,6 +110,8 @@ interface PendingAsk {
   head?: string;
   /** cq only: head and link, the text a resolution appends to. */
   base?: string;
+  /** q only: the director's offered choices, so a tap can be turned back into its label. */
+  options?: string[];
 }
 
 /** Keyboard for one planner question: one option per row so long labels stay readable. */
@@ -160,12 +162,19 @@ export function shape(env: Envelope, ctx: NotifyContext): Shaped | null {
         // run, and that is a decision for a screen showing what it opens.
         buttons: [[{ label: '✓ Allow', data: `p|${d.id}|allow` }, { label: '✗ Deny', data: `p|${d.id}|deny` }]],
       };
-    case 'question':
+    case 'question': {
+      const opts = Array.isArray(d.options) ? (d.options as unknown[]).filter((o): o is string => typeof o === 'string').slice(0, 6) : [];
+      const list = opts.length ? '\n' + opts.map((o, i) => `${i + 1}. <b>${esc(clip(o, 80))}</b>${i === 0 ? ' ★' : ''}`).join('\n') : '';
       return {
         key: `q:${d.id}`, gate: 'needsYou',
-        text: `${head('Needs you — director asks')}${runLine}\n${esc(clip(d.question, 300))}` +
-          `\n<i>Reply to this message to answer. "Decide yourself" if unanswered in 10 min.</i>${foot}`,
+        text: `${head('Needs you — director asks')}${runLine}\n${esc(clip(d.question, 300))}${list}` +
+          `\n<i>${opts.length ? 'Tap an option, or reply with your own answer.' : 'Reply to this message to answer.'} ` +
+          `"Decide yourself" if unanswered in 10 min.</i>${foot}`,
+        buttons: opts.length
+          ? opts.map((o, i) => [{ label: `${i + 1}. ${clip(o, 40)}${i === 0 ? ' ★' : ''}`, data: `q|${d.id}|${i}` }])
+          : undefined,
       };
+    }
     case 'chat_question': {
       const qs = Array.isArray(d.questions) ? d.questions as AskQuestion[] : [];
       if (!qs.length) return null;
@@ -303,7 +312,8 @@ export class NotifyHub {
     if (env.event === 'permission_request') {
       this.pending.set(s.key, { key: s.key, projectId: env.projectId, kind: 'perm', id: String(d.id) });
     } else if (env.event === 'question') {
-      this.pending.set(s.key, { key: s.key, projectId: env.projectId, kind: 'q', id: String(d.id) });
+      const options = Array.isArray(d.options) ? (d.options as unknown[]).filter((o): o is string => typeof o === 'string') : undefined;
+      this.pending.set(s.key, { key: s.key, projectId: env.projectId, kind: 'q', id: String(d.id), options });
     } else if (env.event === 'chat_question') {
       const qs = d.questions as AskQuestion[];
       const c = this.ctx();
@@ -333,6 +343,16 @@ export class NotifyHub {
       // message; a second tap on the same buttons must find nothing to do.
       this.pending.delete(ask.key);
       this.answerHandler?.({ kind: 'perm', id, behavior: a });
+      return true;
+    }
+    if (kind === 'q') {
+      // A director question with options: the tap is the label, exactly as
+      // typing it would have been.
+      const ask = this.pending.get(`q:${id}`);
+      const label = ask?.options?.[Number(a)];
+      if (!ask || !label) return false;
+      this.pending.delete(ask.key);
+      this.answerHandler?.({ kind: 'q', id, text: label });
       return true;
     }
     if (kind === 'cq') {

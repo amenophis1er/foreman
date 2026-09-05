@@ -68,7 +68,8 @@ export type Approval = {
   since?: number;
 };
 
-export type Question = { id: string; question: string; since?: number };
+/** `options` when the director offered choices — rendered as buttons; typing still works. */
+export type Question = { id: string; question: string; options?: string[]; since?: number };
 export type AgentInfo = { id: string; status: Status; task?: string };
 
 /** '' inherits; otherwise an id from GET /models or a full claude-* id. */
