@@ -17,6 +17,14 @@ export interface ChatBarProps {
   disabled?: boolean;
   disabledReason?: string;
   placeholder?: string;
+  /**
+   * Who is answering: the planner's model and the provider serving it, with
+   * its cost basis. Rendered in the footer on every state of the bar, because
+   * a conversation that never said which model was talking left the human
+   * unable to tell Sonnet on their subscription from a local model through a
+   * gateway — which decides both the quality of the advice and who pays.
+   */
+  who?: { model: string; provider: string; costBasis: 'priced' | 'free' | 'unpriced' } | null;
   style?: CSSProperties;
 }
 

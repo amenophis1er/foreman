@@ -13,8 +13,17 @@ export interface ApprovalCardProps {
   decisionReason?: string;
   /** Tool input. Rendered through `ToolCall` (expanded): diff for Write/Edit, pretty JSON otherwise. */
   input?: unknown;
+  /**
+   * Set when the ask came from the folder boundary: the directory "always"
+   * will open for the run. Relabels the middle button `Allow this path (run)`
+   * with the path in its tooltip, because there the grant is a path, not a tool.
+   */
+  escapedPath?: string;
   onAllow?: () => void;
-  /** Grants this tool for the rest of the run (survives resume). Guarded asks still prompt. */
+  /**
+   * Grants this tool for the rest of the run (survives resume) — or, when
+   * `escapedPath` is set, grants that directory instead. Guarded asks still prompt.
+   */
   onAlways?: () => void;
   onDeny?: () => void;
   style?: CSSProperties;

@@ -23,7 +23,10 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import type { ResolvedProvider } from './provider.js';
 
-const GATEWAY_CLI = fileURLToPath(new URL('./gateway/llm-gateway.cjs', import.meta.url));
+// ledger.cjs, not llm-gateway.cjs: the wrapper binds the socket, counts tokens
+// per run, and hands every request to the ported handler unchanged. See its
+// header for why the counting lives outside the file it wraps.
+const GATEWAY_CLI = fileURLToPath(new URL('./gateway/ledger.cjs', import.meta.url));
 
 /** Give up on a gateway that has not bound its port by then. */
 const START_TIMEOUT_MS = 10_000;
@@ -155,6 +158,11 @@ export async function ensureGateway(p: ResolvedProvider, holder?: string): Promi
       CODEX_ORIGINATOR: process.env.CODEX_ORIGINATOR || 'foreman',
       // Only consulted when the token carries no account claim of its own.
       ...(accountId ? { CODEX_ACCOUNT_ID: accountId } : {}),
+      // Opt-in request dumping for diagnosing a stall that only the real
+      // payload reproduces. Forwarded only when the operator set it: the
+      // files contain prompts and repository contents.
+      ...(process.env.FOREMAN_GATEWAY_DUMP_DIR
+        ? { FOREMAN_GATEWAY_DUMP_DIR: process.env.FOREMAN_GATEWAY_DUMP_DIR } : {}),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -252,6 +260,45 @@ export function stopGateways(): void {
     clearInterval(reaper);
     reaper = null;
   }
+}
+
+/**
+ * Token totals every running gateway has counted for one run key.
+ *
+ * Summed across gateways because a run may hold two — a director on one
+ * provider, workers on another — and the caller wants the run's total, not a
+ * per-process breakdown. A gateway that has seen nothing for this key simply
+ * contributes nothing, so an unreachable or restarted one degrades to a lower
+ * number rather than an error: this is a live read of work in progress, and
+ * the SDK's own figure at the end of the turn remains the authority.
+ */
+export async function gatewayUsage(key: string): Promise<{
+  inputTokens: number; outputTokens: number; cacheReadTokens: number;
+  cacheWriteTokens: number; calls: number; costUsd?: number;
+} | null> {
+  let out: {
+    inputTokens: number; outputTokens: number; cacheReadTokens: number;
+    cacheWriteTokens: number; calls: number; costUsd?: number;
+  } | null = null;
+  for (const g of running.values()) {
+    if (g.broken) continue;
+    const body = await fetch(`http://127.0.0.1:${g.port}/_foreman/usage`, {
+      signal: AbortSignal.timeout(1500),
+    }).then((r) => (r.ok ? r.json() : null)).catch(() => null) as Record<string, {
+      inputTokens: number; outputTokens: number; cacheReadTokens: number;
+      cacheWriteTokens: number; calls: number; costUsd?: number;
+    }> | null;
+    const t = body?.[key];
+    if (!t) continue;
+    out ??= { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, calls: 0 };
+    out.inputTokens += t.inputTokens;
+    out.outputTokens += t.outputTokens;
+    out.cacheReadTokens += t.cacheReadTokens;
+    out.cacheWriteTokens += t.cacheWriteTokens;
+    out.calls += t.calls;
+    if (typeof t.costUsd === 'number') out.costUsd = (out.costUsd ?? 0) + t.costUsd;
+  }
+  return out;
 }
 
 /** Running gateways, for preflight and diagnostics. Never includes secrets. */

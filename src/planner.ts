@@ -29,6 +29,65 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentEnv } from './provider.js';
 import type { MissionProposal } from './types.js';
+import {
+  armAskTimeout, formatAnswers, normaliseQuestions,
+  type AskAnswers, type AskQuestion, type PendingAsk,
+} from './ask.js';
+
+/**
+ * How long the planner waits on a question before answering itself.
+ *
+ * Planning is the one attended surface — the human is, by definition, in the
+ * chat — so this is long. It is not infinite, because the rule that every
+ * ask carries an unattended default has no exceptions: a human who stepped
+ * away mid-conversation should come back to a planner that made a reasonable
+ * assumption and said so, not to a turn that has been hanging for an hour.
+ */
+export const PLANNER_ASK_TIMEOUT_MS = 30 * 60_000;
+
+/**
+ * Questions the planner is waiting on, one per project at most.
+ *
+ * Module-level rather than per turn because the answer arrives on a different
+ * HTTP request than the one that started the turn. Keyed by project: a
+ * planning turn is one `query()` call, one turn runs at a time per project
+ * (server.ts enforces it), and a turn can only be parked on one question at a
+ * time — so the project id is the natural key and a second question from the
+ * same turn replaces the first.
+ */
+const pendingAsks = new Map<string, PendingAsk & {
+  resolve: (answers: AskAnswers | null) => void;
+  cancel: () => void;
+}>();
+
+/** The question a project's planner is currently parked on, for a client that loads mid-turn. */
+export function pendingChatQuestion(projectId: string): PendingAsk | null {
+  const p = pendingAsks.get(projectId);
+  return p ? { id: p.id, questions: p.questions, askedAt: p.askedAt } : null;
+}
+
+/**
+ * Deliver the human's answers to a waiting `ask_user`. Returns false when
+ * nothing is waiting under that id — a stale card, or a double click — so the
+ * route can say so instead of pretending.
+ */
+export function answerChatQuestion(projectId: string, id: string, answers: AskAnswers): boolean {
+  const p = pendingAsks.get(projectId);
+  if (!p || p.id !== id) return false;
+  p.cancel();
+  pendingAsks.delete(projectId);
+  p.resolve(answers);
+  return true;
+}
+
+/** Called when a turn ends for any reason, so a dead turn never holds a question open. */
+function dropPendingAsk(projectId: string): void {
+  const p = pendingAsks.get(projectId);
+  if (!p) return;
+  p.cancel();
+  pendingAsks.delete(projectId);
+  p.resolve(null);
+}
 
 /**
  * The only built-in tools the planner gets. Passed as the `tools` base set, so
@@ -37,8 +96,8 @@ import type { MissionProposal } from './types.js';
  */
 const PLANNER_TOOLS = ['Read', 'Grep', 'Glob'];
 
-/** Conversation, not deep reasoning. Overridable from Settings later. */
-const DEFAULT_PLANNER_MODEL = 'sonnet';
+/** Conversation, not deep reasoning. Overridable from Settings (plannerModel). */
+export const DEFAULT_PLANNER_MODEL = 'sonnet';
 
 /** A planning turn that reads half the repo has misunderstood its job. */
 const MAX_TURNS = 20;
@@ -57,6 +116,15 @@ How to behave:
 1. TALK LIKE A COLLEAGUE, NOT A FORM. Short, direct answers. Ask about what is
    genuinely ambiguous and would change the work; do not interrogate the human
    through a checklist. One or two good questions beat six obvious ones.
+   ASK WITH OPTIONS, NOT PROSE. When a question has a small set of sensible
+   answers — stack, scope, source of assets, which of two approaches — call
+   mcp__foreman__ask_user with those answers as options. The human clicks
+   instead of typing, and you get an unambiguous answer instead of a
+   paragraph to interpret. Put the option you would recommend FIRST and say
+   why in its hint. Batch up to three related questions in one call. Keep
+   prose questions for the genuinely open-ended ("what is this for?"). If no
+   answer comes, the tool tells you so: proceed on your recommendation and
+   state the assumption in your reply and in any proposal.
 2. LOOK BEFORE YOU ASK. Read the folder first — README, package manifests, the
    files under discussion, CLAUDE.md if present. Never ask a human something
    the repository already answers. Ground what you say in what you actually
@@ -72,7 +140,17 @@ How to behave:
        conversation: full context, paths, constraints, and what to leave alone;
      - DONE WHEN criteria that are actually checkable by reading files or
        running commands, not "works well";
-     - a budget you can justify from the size of the work.
+     - a budget you can justify from the size of the work;
+     - browser: true whenever a DONE WHEN criterion needs a page to load,
+       render, be free of console errors, or be screenshotted. The card starts
+       with the browser on; a mission that needs one and starts without it
+       fails its own criteria an hour later;
+     - director_model / worker_model, from MODELS AVAILABLE, with a one-line
+       model_rationale in terms of the work. The director plans, delegates and
+       verifies — give it a capable model. Workers implement — a fast or free
+       model is right when the work is mostly authoring or mechanical, and
+       wrong when it needs judgement across many files. Say which and why.
+       Omit both to inherit the project's defaults; never invent an id.
    Do not propose on the first message unless the human's request is already
    completely unambiguous. Do not propose the same thing twice; refine it.
    BUDGET, ANCHORED: one small file or a contained fix, $1-2. A feature across
@@ -86,7 +164,56 @@ How to behave:
 6. NEVER discuss Foreman's own server or oversight tooling as a work target.
 `;
 
+/** One model the planner may recommend — the server's list, trimmed to what a recommendation needs. */
+export interface PlannerModel {
+  id: string;
+  label: string;
+  providerId?: string;
+  providerLabel: string;
+  costBasis: 'priced' | 'free' | 'unpriced';
+  note?: string;
+}
+
+/**
+ * Does this mission need a browser? Decided from the words the planner
+ * itself wrote, so a planner that forgot to set `browser: true` cannot
+ * propose a mission whose criteria say "screenshots" with the browser off.
+ * The planner's explicit flag still wins when present; this is the net
+ * under it, not a replacement. Deliberately broad: a false positive costs a
+ * switch the human can flip off, a false negative cost an hour once.
+ */
+export function needsBrowser(mission: string, doneWhen: string[]): boolean {
+  const text = `${mission}\n${doneWhen.join('\n')}`.toLowerCase();
+  return /\b(screenshot|browser|console error|render(s|ed|ing)? (correctly|properly|in)|viewport|mobile width|playwright|opens? (correctly )?in a browser|no broken image)/.test(text);
+}
+
+/**
+ * Keeps a recommended model only if it is one the machine can actually run.
+ * A planner that hallucinates an id, or names one from a provider that has
+ * since gone away, gets "inherit" rather than a mission that fails at
+ * dispatch on a model nobody could have picked from the list.
+ */
+export function pickKnownModel(
+  id: string | undefined, models: PlannerModel[] | undefined,
+): PlannerModel | undefined {
+  if (!id || !models?.length) return undefined;
+  const want = id.trim().toLowerCase();
+  return models.find((m) => m.id.toLowerCase() === want || m.label.toLowerCase() === want);
+}
+
+/** The section appended to the charter so the planner can recommend real models. */
+function modelsSection(models: PlannerModel[] | undefined): string {
+  if (!models?.length) return '';
+  const lines = models.map((m) =>
+    `  - ${m.id} — ${m.providerLabel} · ${m.costBasis}${m.note ? ` · ${m.note}` : ''}`);
+  return `\nMODELS AVAILABLE ON THIS MACHINE (use these exact ids in propose_mission):\n${lines.join('\n')}\n`;
+}
+
 export interface PlanningTurn {
+  /** Keys the one question this project's planner may be parked on. */
+  projectId: string;
+  /** What the machine can run, so recommendations are real ids, not guesses. */
+  models?: PlannerModel[];
   /** Session to resume; absent starts a fresh conversation. */
   sessionId?: string;
   folder: string;
@@ -115,7 +242,11 @@ export interface PlanningResult {
  * redirects to a proposal instead of retrying a tool it will never get.
  */
 const canUseTool: CanUseTool = async (toolName, input): Promise<PermissionResult> => {
-  if (toolName === 'mcp__foreman__propose_mission' || PLANNER_TOOLS.includes(toolName)) {
+  if (
+    toolName === 'mcp__foreman__propose_mission'
+    || toolName === 'mcp__foreman__ask_user'
+    || PLANNER_TOOLS.includes(toolName)
+  ) {
     return { behavior: 'allow', updatedInput: input };
   }
   return {
@@ -151,14 +282,38 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
         'Completion criteria that can actually be checked by reading files or running commands'),
       budget_usd: z.number().describe('Suggested cap in US dollars, justified by the size of the work'),
       rationale: z.string().optional().describe('One short paragraph: why this shape and this budget'),
+      browser: z.boolean().optional().describe(
+        'True when the mission needs a browser: any DONE WHEN criterion about pages ' +
+        'loading, rendering, console errors or screenshots. The card starts with it on.'),
+      director_model: z.string().optional().describe(
+        'Recommended director, an exact id from MODELS AVAILABLE. Omit to inherit the project default.'),
+      worker_model: z.string().optional().describe(
+        'Recommended worker model, an exact id from MODELS AVAILABLE. Omit to inherit.'),
+      model_rationale: z.string().optional().describe(
+        'One line: why these two, in terms of the work (e.g. "workers on a fast model: mostly HTML/CSS authoring")'),
     },
-    async ({ mission, done_when, budget_usd, rationale }) => {
+    async ({ mission, done_when, budget_usd, rationale, browser, director_model, worker_model, model_rationale }) => {
+      // Real ids only. A recommendation the machine cannot run becomes
+      // "inherit", never a mission that fails at dispatch.
+      const director = pickKnownModel(director_model, turn.models);
+      const worker = pickKnownModel(worker_model, turn.models);
       proposal = {
         id: `mp-${Date.now().toString(36)}`,
         mission,
         doneWhen: done_when,
         budgetUsd: budget_usd,
         rationale,
+        // The planner's explicit flag, with a deterministic net under it: the
+        // criteria it just wrote are read back for "screenshot", "console
+        // error", "renders correctly" and the like. A mission whose DONE WHEN
+        // said "screenshots saved" once started with the browser off and lost
+        // an hour; that cannot depend on the model remembering a flag.
+        browser: browser === true || needsBrowser(mission, done_when) ? true : undefined,
+        directorModel: director?.id,
+        workerModel: worker?.id,
+        directorProviderId: director?.providerId,
+        workerProviderId: worker?.providerId,
+        modelRationale: director || worker ? model_rationale : undefined,
         createdAt: Date.now(),
       };
       turn.emit('mission_proposed', proposal);
@@ -169,6 +324,63 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
             'wait — they start it, or ask you to change it. Do not propose again unless asked.',
         }],
       };
+    },
+  );
+
+  /**
+   * A question with options, rendered as a picker in place of the input box.
+   *
+   * Blocks inside the turn until the human answers or the timeout fires. That
+   * is safe here where it would not be in a mission: the POST that started
+   * this turn already returned, the SSE stream carries the question, and the
+   * one cost of waiting is that the planner cannot start a second turn — which
+   * is also true while it is thinking.
+   */
+  const askUser = tool(
+    'ask_user',
+    'Ask the human one to three questions that each have a small set of sensible ' +
+    'answers. They see clickable options instead of a paragraph to reply to, and ' +
+    'you get exact answers back. Put your recommended option first. Not for ' +
+    'open-ended questions — ask those in prose.',
+    {
+      questions: z.array(z.object({
+        question: z.string().describe('One clear question'),
+        options: z.array(z.union([
+          z.string(),
+          z.object({
+            label: z.string(),
+            hint: z.string().optional().describe('One line: what choosing this implies'),
+          }),
+        ])).min(2).max(6).describe('Sensible answers, recommended first'),
+        multi: z.boolean().optional().describe('Allow choosing several'),
+      })).min(1).max(3),
+    },
+    async ({ questions: raw }) => {
+      const questions: AskQuestion[] = normaliseQuestions(raw);
+      const id = `q-${Date.now().toString(36)}`;
+      // A second question from the same turn replaces the first: the model
+      // moved on, and a stale card the human answers into nothing is worse
+      // than one that quietly disappeared.
+      dropPendingAsk(turn.projectId);
+
+      const answers = await new Promise<AskAnswers | null>((resolve) => {
+        const timer = armAskTimeout(PLANNER_ASK_TIMEOUT_MS, () => {
+          pendingAsks.delete(turn.projectId);
+          turn.emit('chat_question_timeout', { id, afterMs: PLANNER_ASK_TIMEOUT_MS });
+          resolve(null);
+        });
+        pendingAsks.set(turn.projectId, {
+          id, questions, askedAt: Date.now(), resolve, cancel: () => timer.cancel(),
+        });
+        turn.emit('chat_question', { id, questions });
+      });
+
+      const text = answers
+        ? `The human answered:\n${formatAnswers(questions, answers)}`
+        : `No answer after ${PLANNER_ASK_TIMEOUT_MS / 60_000} minutes — the human stepped away. ` +
+          'Proceed on your recommended options, and state each assumption plainly in your ' +
+          'reply and in any proposal so they can correct it when they return.';
+      return { content: [{ type: 'text' as const, text }] };
     },
   );
 
@@ -186,8 +398,14 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
         maxTurns: MAX_TURNS,
         tools: PLANNER_TOOLS,
         permissionMode: 'default',
-        systemPrompt: { type: 'preset', preset: 'claude_code', append: PLANNER_CHARTER },
-        mcpServers: { foreman: createSdkMcpServer({ name: 'foreman', tools: [proposeMission] }) },
+        // The model list rides on the system prompt rather than a tool: the
+        // planner should know what it can recommend before it starts
+        // thinking about the proposal, not discover it by asking.
+        systemPrompt: {
+          type: 'preset', preset: 'claude_code',
+          append: PLANNER_CHARTER + modelsSection(turn.models),
+        },
+        mcpServers: { foreman: createSdkMcpServer({ name: 'foreman', tools: [proposeMission, askUser] }) },
         canUseTool,
         ...turn.agentEnv,
       },
@@ -209,6 +427,9 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
   } catch (err) {
     return { sessionId, costUsd, proposal, error: String(err) };
   } finally {
+    // A turn that ended with a question still open — crash, interrupt, SDK
+    // error — must not leave a card the human can answer into nothing.
+    dropPendingAsk(turn.projectId);
     // The turn is over: dispose the subprocess rather than leaving one warm
     // per project. Continuity comes from the session id, not from a process.
     await (q as AsyncGenerator<SDKMessage> | undefined)?.return?.(undefined as never)

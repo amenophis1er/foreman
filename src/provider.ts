@@ -27,7 +27,9 @@ import { readFile } from 'node:fs/promises';
 import { defaultInstance } from './instance.js';
 import { codexHome, isStale, readCodexAuth, refreshCodexAuth } from './codex.js';
 import { getSecret } from './secrets.js';
-import type { ProviderRef, ClaudeInstanceRef } from './types.js';
+import { discoverModels } from './models.js';
+import type { ModelPrice } from './prices.js';
+import type { CostBasis, ProviderRef, ClaudeInstanceRef } from './types.js';
 
 /**
  * Anthropic's real endpoint. Set explicitly on gateway providers so a reused
@@ -108,12 +110,18 @@ export interface ResolvedProvider {
    */
   ownLogin?: boolean;
   /**
-   * Whether the SDK's `total_cost_usd` is a real number for this provider.
+   * What spending on this provider *is* — see {@link CostBasis}.
    *
    * The SDK prices every response with Anthropic's table. Through a gateway
    * the token counts are real but the prices are not, so a dollar cap would be
    * enforced against fiction — and it does not merely mislead, it terminates
-   * working runs. Unmetered providers cap on turns and wall-clock instead.
+   * working runs. Anything but `priced` caps on turns and wall-clock instead.
+   */
+  costBasis: CostBasis;
+  /**
+   * @deprecated Kept in step with {@link costBasis} for callers not yet moved
+   * over. `metered === false` is `costBasis !== 'priced'`, which is exactly
+   * the conflation the split exists to undo — do not branch on it.
    */
   metered: boolean;
   /** Why this provider cannot run right now, if it cannot. */
@@ -192,7 +200,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       return {
         kind: ref.kind,
         wire: 'anthropic-native',
-        metered: true,
+        ...basis('priced'),
         label: `Claude Code · ${configDir}${ref.ownLogin ? ' (its own login pays)' : ''}`,
         configDir,
         executable: clean(ref.executable) ?? base.executable,
@@ -205,7 +213,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       return {
         kind: ref.kind,
         wire: 'anthropic-native',
-        metered: true,
+        ...basis('priced'),
         label: `Anthropic API key · $${ref.apiKeyEnv}`,
         // Foreman-owned: an API-key provider has no business reading a user
         // install's settings, plugins or login.
@@ -230,7 +238,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       return {
         kind: ref.kind,
         wire: 'gateway-codex',
-        metered: false,
+        ...basis('unpriced'),
         label: `Codex · ${home}`,
         configDir: ownedConfigDir(root, ref.id),
         upstreamUrl: ref.upstreamUrl ?? 'https://chatgpt.com/backend-api',
@@ -251,7 +259,12 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       return {
         kind: ref.kind,
         wire: 'gateway-openai',
-        metered: false,
+        // An endpoint on this machine is the operator's own hardware and
+        // costs nothing per token. Anything reachable only over the network
+        // is somebody's paid service — unpriced until a price source says
+        // otherwise, never free by default, because guessing "free" about a
+        // billed endpoint is the error that costs money.
+        ...basis(isPrivateHost(hostOf(ref.baseUrl)) ? 'free' : 'unpriced'),
         label: `${ref.label ?? 'OpenAI-compatible'} · ${ref.baseUrl}`,
         configDir: ownedConfigDir(root, ref.id),
         upstreamUrl: normalizeOpenAiBaseUrl(ref.baseUrl),
@@ -304,6 +317,71 @@ export function normalizeOpenAiBaseUrl(url: string): string {
     base = `${isPrivateHost(base.split('/')[0]) ? 'http' : 'https'}://${base}`;
   }
   return base.replace(/\/+$/, '').replace(/\/v1$/, '');
+}
+
+/** What one agent role's spend is, and what it costs when that is knowable. */
+export interface RoleCost {
+  basis: CostBasis;
+  /**
+   * Per-token rates for the chosen model, when the endpoint publishes them.
+   *
+   * Present only where `basis` is `priced` *because of the endpoint* — an
+   * Anthropic-native role is also priced but carries no rates here, because
+   * the SDK already reports its real cost and Foreman should not second-guess
+   * it with a table.
+   */
+  price?: ModelPrice;
+}
+
+/**
+ * What a role actually costs: its basis, sharpened by the model it will run.
+ *
+ * Two facts come out of one lookup, because they come from one place.
+ *
+ *  - **The model can raise the endpoint's floor.** An Ollama daemon on this
+ *    machine is free, but the same daemon serves `:cloud` models that run on
+ *    paid servers and signs for them with the operator's own account. Loopback
+ *    is not proof a run is free, and that is the configuration Foreman is most
+ *    often used in.
+ *  - **The model can also carry a price.** Where the endpoint publishes
+ *    per-token rates (OpenRouter does, for essentially everything it serves),
+ *    the run becomes genuinely `priced` — with the bill-sender's own numbers,
+ *    not a table shipped inside Foreman.
+ *
+ * Discovery never throws: when it cannot answer, the provider's own basis
+ * stands with no price, which is the answer we had before asking.
+ */
+export async function roleCost(p: ResolvedProvider, model?: string): Promise<RoleCost> {
+  // An Anthropic-native role is already priced by the SDK, with real rates for
+  // real tokens. Nothing an endpoint listing says could improve on that.
+  if (p.wire === 'anthropic-native' || !p.upstreamUrl) return { basis: p.costBasis };
+  const chosen = model || p.model;
+  if (!chosen) return { basis: p.costBasis };
+
+  const found = await discoverModels(p.upstreamUrl, { apiKey: p.apiKey });
+  const m = found?.find((x) => x.id === chosen);
+  if (!m) return { basis: p.costBasis };
+  if (m.price) return { basis: 'priced', price: m.price };
+  // No published rates: real spend we cannot quantify, unless the endpoint is
+  // the operator's own hardware AND the model actually runs there.
+  return { basis: p.costBasis === 'free' && !m.remote ? 'free' : 'unpriced' };
+}
+
+/** The host[:port] of a base URL, however sloppily it was typed. */
+function hostOf(url: string): string {
+  const bare = url.trim().replace(/^https?:\/\//i, '');
+  return bare.split('/')[0] ?? '';
+}
+
+/**
+ * A cost basis and the deprecated boolean that shadows it, written together.
+ *
+ * They are set in one place so they cannot drift: a resolver that set one and
+ * forgot the other would leave a provider whose enforcement and whose display
+ * disagree, which is the failure this whole split exists to remove.
+ */
+function basis(costBasis: CostBasis): { costBasis: CostBasis; metered: boolean } {
+  return { costBasis, metered: costBasis === 'priced' };
 }
 
 /** Loopback, a private range, or a LAN name — somewhere https is unlikely. */
@@ -392,4 +470,23 @@ export function providerProblem(p: ResolvedProvider): string | null {
   if (p.problem) return p.problem;
   if (p.wire !== 'anthropic-native' && !p.apiKey) return GATEWAY_INVARIANT;
   return null;
+}
+
+/**
+ * A role's resolved provider, carrying the model the role will actually run.
+ *
+ * `providerEnv()` pins the SDK's three aliases — haiku, sonnet, opus — to the
+ * provider's `model`, because through a gateway an alias would otherwise go
+ * upstream as a literal `claude-*` id the endpoint has never heard of. A
+ * per-role provider (the machine's own Ollama, or Codex) arrives with no
+ * `model` of its own: the choice lives on the run, per role. So the aliases
+ * were left unpinned, and the one call that still used one — the run title,
+ * on the haiku alias — went out as `claude-haiku-4-5-…` and 404'd four times
+ * while the mission itself ran fine. The role's model is the right value for
+ * every alias on that role's gateway; an empty choice ("inherit") leaves the
+ * provider as it was.
+ */
+export function withRoleModel(p: ResolvedProvider, roleModel?: string): ResolvedProvider {
+  const model = p.model || (roleModel && roleModel.trim()) || undefined;
+  return model === p.model ? p : { ...p, model };
 }

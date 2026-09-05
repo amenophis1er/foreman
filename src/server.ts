@@ -20,6 +20,7 @@
  *   DELETE /projects/{id}        Unlink (history kept; active run blocks it)
  *   POST   /run                  Start a mission {projectId, mission, budgetUsd,
  *                                directorModel?, workerModel?, browserTools?}
+ *   PATCH  /run                  Change a live run's browser tools or budget
  *   POST   /runs/{id}/resume     Resume an interrupted/failed run
  *   POST   /permission           Resolve an approval {id, behavior, message?}
  *   POST   /answer               Answer a director question {id, text}
@@ -44,26 +45,31 @@ import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MissionRun } from './orchestrator.js';
-import { runPlanningTurn } from './planner.js';
+import {
+  DEFAULT_PLANNER_MODEL, answerChatQuestion, pendingChatQuestion, runPlanningTurn,
+} from './planner.js';
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
 import { defaultInstance, discoverInstances, effectiveConfigDir } from './instance.js';
 import {
-  normalizeOpenAiBaseUrl, providerEnv, providerOf, providerProblem, resolveProvider,
+  normalizeOpenAiBaseUrl, providerEnv, providerOf, providerProblem, resolveProvider, roleCost,
+  withRoleModel,
 } from './provider.js';
-import { ensureGateway, gatewayStatus, releaseGateways, stopGateways } from './gateway.js';
+import { ensureGateway, gatewayStatus, gatewayUsage, releaseGateways, stopGateways } from './gateway.js';
 import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
 import { deleteSecret, hasSecret, putSecret } from './secrets.js';
 import { ANTHROPIC_MODELS } from './anthropic-models.js';
 import { codexHome, codexModels, readCodexAuth } from './codex.js';
-import { describeModel, discoverModels } from './models.js';
+import { costRank, describeModel, discoverModels } from './models.js';
 import type { ResolvedProvider } from './provider.js';
+import type { ModelPrice } from './prices.js';
 import {
   dirHasCredentials, detectAuth, hasKeychainCredentials, readAccount, type AuthMode,
 } from './preflight.js';
+import { combineBasis } from './types.js';
 import type {
-  ChatMeta, ForemanEvent, ModelChoice, Project, ProviderRef, RunMeta, ToolPolicy,
+  ChatMeta, CostBasis, ForemanEvent, ModelChoice, Project, ProviderRef, RunMeta, ToolPolicy,
 } from './types.js';
 
 /**
@@ -182,6 +188,11 @@ function newProviderId(): string {
   return `pr-${crypto.randomBytes(4).toString('hex')}`;
 }
 
+/** A basis and the deprecated boolean that shadows it, so they cannot drift. */
+function basisOf(costBasis: CostBasis): { costBasis: CostBasis; metered: boolean } {
+  return { costBasis, metered: costBasis === 'priced' };
+}
+
 /** Billing modes the UI understands; a superset of the server's own AuthMode. */
 type BillingMode = AuthMode | 'local' | 'provider';
 
@@ -195,7 +206,9 @@ interface ModelOption {
   providerLabel: string;
   cost?: number;
   note?: string;
-  /** Whether spending on it is real money Foreman can price. */
+  /** What spending on this model is: priced, free, or real-but-unquantified. */
+  costBasis: CostBasis;
+  /** @deprecated Mirrors `costBasis === 'priced'` for older clients. */
   metered: boolean;
 }
 
@@ -217,7 +230,7 @@ async function availableModels(project: Project | null): Promise<{
   // Anthropic, via whichever Claude Code install or key the server resolves.
   // Always offered: it is the default, and the shipped configuration.
   for (const m of MODELS) {
-    out.push({ ...m, providerLabel: 'Anthropic', metered: true });
+    out.push({ ...m, providerLabel: 'Anthropic', costBasis: 'priced', metered: true });
   }
 
   // The project's own provider, when it is an endpoint of its own. Asked
@@ -233,8 +246,14 @@ async function availableModels(project: Project | null): Promise<{
       out.push({
         id: m.id, label: m.id, model: m.id,
         providerId: pinned.id, providerLabel: pinned.label ?? 'Custom endpoint',
-        cost: m.remote ? 2 : 0, note: describeModel(m),
-        metered: !isLoopback(resolved.upstreamUrl),
+        cost: costRank(m), note: describeModel(m),
+        // Three-way, in the order the facts outrank each other. A published
+        // rate settles it. Otherwise the endpoint sets the floor and the model
+        // can raise it: a daemon on this machine is free, but a `:cloud` model
+        // it merely proxies runs on somebody's paid servers, and calling that
+        // free is the error that costs money.
+        ...basisOf(m.price ? 'priced'
+          : m.remote || !isLoopback(resolved.upstreamUrl) ? 'unpriced' : 'free'),
       });
     }
   }
@@ -248,10 +267,11 @@ async function availableModels(project: Project | null): Promise<{
       out.push({
         id: m.id, label: m.id, model: m.id,
         providerId: 'ollama-local', providerLabel: 'Ollama',
-        cost: m.remote ? 2 : 0, note: describeModel(m),
-        // A model served from this machine costs nothing per token; a :cloud
-        // one is real spend Foreman cannot price. Neither is a dollar figure.
-        metered: false,
+        cost: costRank(m), note: describeModel(m),
+        // A model served from this machine costs nothing per token; a `:cloud`
+        // one is real spend Foreman cannot price. Neither gets a dollar
+        // figure, but they are not the same thing to tell someone.
+        ...basisOf(m.remote ? 'unpriced' : 'free'),
       });
     }
   }
@@ -265,7 +285,8 @@ async function availableModels(project: Project | null): Promise<{
         id, label: id, model: id,
         providerId: 'codex-local', providerLabel: 'Codex',
         cost: 2, note: 'Runs on your ChatGPT subscription.',
-        metered: false,
+        // A plan being drawn down, not a free lunch.
+        ...basisOf('unpriced'),
       });
     }
   }
@@ -409,13 +430,30 @@ function makeEmitter(runId: string, projectId: string) {
  * pointed at a closed port with a real credential in hand.
  */
 async function agentEnvFor(
-  resolved: ResolvedProvider, holder?: string,
+  resolved: ResolvedProvider, holder?: string, ledgerKey?: string,
 ): Promise<ReturnType<typeof providerEnv>> {
   await mkdir(resolved.configDir, { recursive: true }).catch(() => {});
   if (resolved.wire === 'anthropic-native') return providerEnv(resolved);
   // `holder` keeps the gateway alive for as long as this run needs it — see
   // the reaper in gateway.ts.
-  return providerEnv(resolved, await ensureGateway(resolved, holder));
+  const url = await ensureGateway(resolved, holder);
+  // The run key rides on the path, which the Agent SDK preserves (measured:
+  // it sends `POST /run/<key>/v1/messages`). That is what lets one gateway
+  // serving several runs still say which one spent what.
+  return providerEnv(resolved, ledgerKey ? `${url}/run/${encodeURIComponent(ledgerKey)}` : url);
+}
+
+/**
+ * The ledger bucket for this attempt at a run.
+ *
+ * The attempt number is part of the key on purpose. A gateway can outlive the
+ * run that started it, so a resumed run whose earlier tokens are already
+ * persisted in `meta.usage` would otherwise read them back out of the ledger
+ * and count them twice. A fresh bucket per attempt makes "persisted total plus
+ * what this attempt has spent" exactly right.
+ */
+function ledgerKeyFor(meta: RunMeta): string {
+  return `${meta.id}.${meta.resumes ?? 0}`;
 }
 
 /**
@@ -455,16 +493,35 @@ async function driveChatTurn(project: Project, text: string): Promise<void> {
   const emit = makeChatEmitter(project.id);
   const meta = await chatMetaOf(project.id);
   emit('chat_message', { text });
-  emit('chat_turn', { state: 'thinking' });
   try {
     const settings = await effectiveSettings(project.id);
     const resolved = await resolveProvider(providerOf(project), store.root);
+    // Who is answering, said on every turn. A planning conversation had no
+    // visible model or provider at all — the human was talking to "foreman"
+    // and could not tell whether that meant Sonnet on their subscription or a
+    // local model through a gateway, which decides both the quality of the
+    // advice and who is paying for it.
+    emit('chat_turn', {
+      state: 'thinking',
+      model: settings.plannerModel || DEFAULT_PLANNER_MODEL,
+      provider: resolved.label,
+      costBasis: resolved.costBasis,
+    });
     const problem = providerProblem(resolved);
     if (problem) {
       emit('chat_error', { error: `provider unavailable — ${problem}` });
       return;
     }
+    // What the machine can run, so a recommendation is a real id. Fetched
+    // per turn because it is per turn: a provider that came up or went away
+    // since the last message changes the answer.
+    const { models } = await availableModels(project).catch(() => ({ models: [] }));
     const result = await runPlanningTurn({
+      projectId: project.id,
+      models: models.map((m) => ({
+        id: m.id, label: m.label, providerId: m.providerId,
+        providerLabel: m.providerLabel, costBasis: m.costBasis, note: m.note,
+      })),
       sessionId: meta.sessionId,
       folder: project.folder,
       text,
@@ -543,28 +600,52 @@ async function driveRun(
     return;
   }
   let agentEnv;
-  let roleMetered = resolved.metered;
+  let roleBasis = resolved.costBasis;
+  let prices: { director?: ModelPrice; worker?: ModelPrice } = {};
+  let gatewayRoles = { director: false, worker: false };
   try {
     // Resolved per role. Where both roles share a provider this resolves once
     // and starts one gateway; where they differ, the supervisor already runs a
     // process per provider.
-    const directorProvider = meta.directorProviderId
+    const directorBase = meta.directorProviderId
       ? await resolveProvider(providerForRole(meta, meta.directorProviderId), store.root)
       : resolved;
-    const workerProvider = meta.workerProviderId === meta.directorProviderId
-      ? directorProvider
+    const workerBase = meta.workerProviderId === meta.directorProviderId
+      ? directorBase
       : await resolveProvider(providerForRole(meta, meta.workerProviderId), store.root);
+    // Each role's provider carries the model that role will run, so the
+    // SDK's aliases (haiku/sonnet/opus) resolve to something its gateway
+    // actually serves. Without this, the one call that still used an alias
+    // — the run title, on haiku — went upstream as a literal claude-* id and
+    // 404'd four times on a kimi gateway while the mission itself ran fine.
+    // Two roles on one provider with different models become two objects;
+    // they still share a gateway, since the gateway is keyed by upstream.
+    const directorProvider = withRoleModel(directorBase, meta.directorModel);
+    const workerProvider = withRoleModel(workerBase, meta.workerModel);
     for (const p of new Set([directorProvider, workerProvider])) {
       const roleProblem = providerProblem(p);
       if (roleProblem) throw new Error(roleProblem);
     }
+    const key = ledgerKeyFor(meta);
     agentEnv = {
-      director: await agentEnvFor(directorProvider, meta.id),
+      director: await agentEnvFor(directorProvider, meta.id, key),
       worker: directorProvider === workerProvider
-        ? await agentEnvFor(directorProvider, meta.id)
-        : await agentEnvFor(workerProvider, meta.id),
+        ? await agentEnvFor(directorProvider, meta.id, key)
+        : await agentEnvFor(workerProvider, meta.id, key),
     };
-    roleMetered = directorProvider.metered || workerProvider.metered;
+    // Only roles that actually go through a gateway are counted there; a
+    // native role's tokens arrive on the SDK's own result message, and adding
+    // both would double every one of them.
+    gatewayRoles = {
+      director: directorProvider.wire !== 'anthropic-native',
+      worker: workerProvider.wire !== 'anthropic-native',
+    };
+    const directorCost = await roleCost(directorProvider, meta.directorModel);
+    const workerCost = directorProvider === workerProvider && meta.directorModel === meta.workerModel
+      ? directorCost
+      : await roleCost(workerProvider, meta.workerModel);
+    roleBasis = combineBasis(directorCost.basis, workerCost.basis);
+    prices = { director: directorCost.price, worker: workerCost.price };
   } catch (err) {
     meta.status = 'error';
     meta.endedAt = Date.now();
@@ -579,10 +660,10 @@ async function driveRun(
   //
   // Decided by the ROLES, not the project's own provider. A run whose director
   // is on Codex and whose workers are on Ollama spends no real dollars, even
-  // though the project is nominally a Claude Code one — reading meteredness
+  // though the project is nominally a Claude Code one — reading the basis
   // off the project would show that run a dollar meter and arm a dollar cap
-  // over spend that never happens. Metered if ANY role bills real money, so
-  // the cap still protects a mixed run where part of the spend is genuine.
+  // over spend that never happens. See combineBasis() for how two roles fold
+  // into one answer.
   //
   // Recomputed on every dispatch, including a resume, rather than frozen once.
   // The inputs are already frozen — the role providers live in this run's own
@@ -590,8 +671,13 @@ async function driveRun(
   // it does allow is a run whose flag was computed by older, wrong code to
   // heal when it is resumed, instead of being permanently stuck against a cap
   // it should never have had.
-  meta.metered = roleMetered;
-  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv);
+  meta.costBasis = roleBasis;
+  // Written in step so a run started here still reads correctly if it is ever
+  // handled by a build from before the split.
+  meta.metered = roleBasis === 'priced';
+  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv, prices, {
+    key: ledgerKeyFor(meta), roles: gatewayRoles, read: gatewayUsage,
+  });
   activeByProject.set(projectId, run);
   try {
     if (changes?.directorChanged || changes?.workerChanged) {
@@ -1024,6 +1110,13 @@ const server = http.createServer(async (req, res) => {
           chatMetaOf(projectId),
           store.readChatEvents(projectId).catch(() => []),
         ]);
+        // Who answers here, for the bar's footer before any turn has run.
+        // Best-effort: a project whose provider cannot resolve still gets its
+        // transcript, and the first turn will say what went wrong.
+        const project = await store.getProject(projectId);
+        const settings = await effectiveSettings(projectId).catch(() => null);
+        const resolved = project
+          ? await resolveProvider(providerOf(project), store.root).catch(() => null) : null;
         json(res, 200, {
           events,
           costUsd: meta.costUsd,
@@ -1031,6 +1124,14 @@ const server = http.createServer(async (req, res) => {
           // A turn in flight is server state, not log state: a client that
           // loads mid-turn needs to know a reply is already on its way.
           thinking: chatTurns.has(projectId),
+          // Likewise a question the planner is parked on — it lives in the
+          // turn, not the log, and a reload must put the picker back.
+          question: pendingChatQuestion(projectId),
+          who: resolved ? {
+            model: settings?.plannerModel || DEFAULT_PLANNER_MODEL,
+            provider: resolved.label,
+            costBasis: resolved.costBasis,
+          } : null,
         });
 
       } else if (req.method === 'DELETE') {
@@ -1055,6 +1156,21 @@ const server = http.createServer(async (req, res) => {
         if (activeByProject.has(id)) {
           return json(res, 409, { error: 'this project has a mission running — steer the director instead' });
         }
+        // A turn parked on a question is still a turn — but a human who types
+        // instead of clicking is answering, not starting a new message. Route
+        // the text to the waiting question rather than refusing it: the
+        // picker's "something else" and the plain input box should mean the
+        // same thing.
+        const pending = pendingChatQuestion(id);
+        if (pending) {
+          const first = pending.questions[0]?.question ?? 'answer';
+          const emit = makeChatEmitter(id);
+          emit('chat_message', { text: message });
+          if (answerChatQuestion(id, pending.id, { [first]: message })) {
+            emit('chat_answered', { id: pending.id, answers: { [first]: message } });
+          }
+          return json(res, 200, { ok: true, answered: pending.id });
+        }
         // Check-and-set with no await in between, like reserveProject.
         if (chatTurns.has(id)) return json(res, 409, { error: 'the planner is still replying' });
         chatTurns.add(id);
@@ -1064,6 +1180,24 @@ const server = http.createServer(async (req, res) => {
       } else {
         json(res, 405, { error: 'method not allowed' });
       }
+
+    } else if (req.method === 'POST' && url.pathname === '/chat/answer') {
+      // The picker's answer to a planner ask_user. Resolves the tool call that
+      // is blocking the turn; the transcript records what was chosen so a
+      // reload shows the decision, not just the question.
+      const { projectId: id, id: questionId, answers } = await readBody(req);
+      if (typeof id !== 'string' || typeof questionId !== 'string' || !answers || typeof answers !== 'object') {
+        return json(res, 400, { error: 'projectId, id and answers are required' });
+      }
+      const clean: Record<string, string> = {};
+      for (const [k, v] of Object.entries(answers as Record<string, unknown>)) {
+        if (typeof v === 'string') clean[k] = v.slice(0, 2000);
+      }
+      if (!answerChatQuestion(id, questionId, clean)) {
+        return json(res, 404, { error: 'no question waiting under that id — it may have timed out' });
+      }
+      makeChatEmitter(id)('chat_answered', { id: questionId, answers: clean });
+      json(res, 200, { ok: true });
 
     } else if (req.method === 'POST' && url.pathname === '/permission') {
       const { id, behavior, message } = await readBody(req);
@@ -1091,6 +1225,25 @@ const server = http.createServer(async (req, res) => {
       if (!run.steer(trimmed)) return json(res, 409, { error: 'run is no longer accepting steers' });
       json(res, 200, { ok: true });
 
+    } else if (req.method === 'PATCH' && url.pathname === '/run') {
+      // Change a live mission's settings. Deliberately only the two that
+      // genuinely bind mid-run — see MissionRun.applySettings(). A field that
+      // needs a restart belongs on the resume path, not here, because a
+      // setting that silently does nothing until some later event is worse
+      // than one the UI never offered.
+      const { runId, browserTools, budgetUsd } = await readBody(req);
+      const run = activeRuns().find((r) => r.meta.id === runId);
+      if (!run) return json(res, 404, { error: 'no active run with that id' });
+      const patch: { browserTools?: boolean; budgetUsd?: number } = {};
+      if (typeof browserTools === 'boolean') patch.browserTools = browserTools;
+      if (typeof budgetUsd === 'number' && Number.isFinite(budgetUsd) && budgetUsd >= 0) {
+        patch.budgetUsd = budgetUsd;
+      }
+      if (!Object.keys(patch).length) return json(res, 400, { error: 'nothing to change' });
+      const changes = run.applySettings(patch);
+      await store.writeMeta(run.meta).catch(() => {});
+      json(res, 200, { ok: true, changes });
+
     } else if (req.method === 'POST' && url.pathname === '/interrupt') {
       const { runId } = await readBody(req);
       const run = activeRuns().find((r) => r.meta.id === runId);
@@ -1106,6 +1259,15 @@ const server = http.createServer(async (req, res) => {
     } else if (req.method === 'POST' && runResumeMatch) {
       const meta = await store.readMeta(runResumeMatch[1]).catch(() => null);
       if (!meta) return json(res, 404, { error: 'unknown run' });
+      // Resume already re-reads Settings; an explicit patch rides along for
+      // the things that are per-run rather than per-project. Browser tools
+      // matter here specifically: PATCH /run reaches future workers, but the
+      // director keeps the tool set its own query() opened with, so a resume
+      // is the only point at which the DIRECTOR can gain a browser.
+      const resumeBody: Record<string, unknown> = await readBody(req).catch(() => ({}));
+      if (typeof resumeBody.browserTools === 'boolean') {
+        meta.browserTools = resumeBody.browserTools || undefined;
+      }
       if (meta.status === 'running' || meta.status === 'done') {
         return json(res, 409, { error: `run is ${meta.status}; only interrupted or failed runs can resume` });
       }

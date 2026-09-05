@@ -210,8 +210,9 @@ function ModelRow({ m, selected, hover, onHover, onClick }) {
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.model}</span>
         </span>
         {/* `note` is server-written and already carries where it runs and
-            what it costs (or that nothing metered applies) — never
-            reconstructed here, so an unmetered row can't grow a dollar sign. */}
+            what it costs (or that no priced figure applies) — never
+            reconstructed here, so a row Foreman can't price never grows a
+            dollar sign. */}
         {m.note && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>{m.note}</span>}
       </span>
       <span style={{ paddingTop: 3 }}><CostMark cost={m.cost} /></span>

@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
 import { Button } from '../core/Button';
 import { Icon } from '../core/Icon';
+import { Field } from '../forms/Field';
 import { TextInput } from '../forms/TextInput';
+import { ModelSelect } from '../forms/ModelSelect';
+import { Switch } from '../forms/Switch';
 import { Banner } from '../status/Banner';
 
 /**
@@ -11,12 +14,33 @@ import { Banner } from '../status/Banner';
  * it states what will be done, how completion will be judged, and what it may
  * cost, and it never starts anything on its own.
  *
- * The brief and the budget are editable in place. Everything else is a
- * conversation away: to change the shape, say so and let the planner redraft.
+ * It carries every lever the composer has — budget, director, workers,
+ * browser — because a mission committed without the browser it needs, or on
+ * a model nobody chose, is the mistake that costs an hour to notice. The
+ * planner pre-sets `browser` when the DONE WHEN criteria need one; the human
+ * can still flip it. Models start at "inherit" (the project's Settings), the
+ * same default the composer uses.
+ *
+ * The brief and the budget are editable in place. To change the shape, say so
+ * and let the planner redraft.
  */
-export function ProposalCard({ mission, doneWhen = [], budgetUsd = 5, rationale, busy, error, onStart, onDismiss, style }) {
+export function ProposalCard({
+  mission, doneWhen = [], budgetUsd = 5, rationale, browser = false,
+  directorModel: suggestedDirector = '', workerModel: suggestedWorker = '',
+  directorProviderId: suggestedDirectorProvider, workerProviderId: suggestedWorkerProvider,
+  modelRationale,
+  models, modelsLoading, modelsNote, modelsInheritNote,
+  busy, error, onStart, onDismiss, style,
+}) {
   const [brief, setBrief] = useState(mission);
   const [budget, setBudget] = useState(budgetUsd);
+  const [browserTools, setBrowserTools] = useState(Boolean(browser));
+  // Pre-selected from the planner's recommendation when it made one — it has
+  // read the criteria and knows what the work is mostly made of. '' inherits.
+  const [directorModel, setDirectorModel] = useState(suggestedDirector || '');
+  const [workerModel, setWorkerModel] = useState(suggestedWorker || '');
+  const [directorProviderId, setDirectorProviderId] = useState(suggestedDirectorProvider);
+  const [workerProviderId, setWorkerProviderId] = useState(suggestedWorkerProvider);
   const edited = brief !== mission || Number(budget) !== Number(budgetUsd);
 
   return (
@@ -71,22 +95,52 @@ export function ProposalCard({ mission, doneWhen = [], budgetUsd = 5, rationale,
         </div>
       )}
 
+      {/* The planner's reason for its model picks, above the pickers it
+          filled: a suggestion with a reason reads as advice; a picker that
+          arrived already set reads as a setting nobody chose. */}
+      {modelRationale && (suggestedDirector || suggestedWorker) && (
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+          <Icon name="model" size={12} />
+          <span><span style={{ color: 'var(--ink-1)' }}>Suggested models —</span> {modelRationale}</span>
+        </div>
+      )}
+      {/* The same row the composer shows, in the same order, so the two ways
+          of starting a mission never disagree about what can be chosen. */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--sp-4)', flexWrap: 'wrap' }}>
+        <Field layout="stacked" label="Budget cap" hint="Hard stop; the run halts here.">
+          <TextInput type="number" prefix="$" min={0} step={1} width={96}
+            value={budget} onChange={setBudget} />
+        </Field>
+        <Field layout="stacked" label="Director" hint="Plans, delegates, verifies.">
+          <ModelSelect value={directorModel} models={models} loading={modelsLoading}
+            note={modelsNote} inheritNote={modelsInheritNote}
+            onChange={(id, m) => { setDirectorModel(id); setDirectorProviderId(m?.providerId); }} />
+        </Field>
+        <Field layout="stacked" label="Workers" hint="Implement. Cheaper models cut cost.">
+          <ModelSelect value={workerModel} models={models} loading={modelsLoading}
+            note={modelsNote} inheritNote={modelsInheritNote}
+            onChange={(id, m) => { setWorkerModel(id); setWorkerProviderId(m?.providerId); }} />
+        </Field>
+        <Field label="Browser"
+          hint={browser
+            ? 'The planner judged the criteria need a browser, so it starts on.'
+            : 'Headless Playwright for the agents — navigate, click, screenshot. Non-local URLs still ask you.'}>
+          <Switch checked={browserTools} onChange={setBrowserTools} label={browserTools ? 'on' : 'off'} />
+        </Field>
+      </div>
+
       {error && <Banner tone="error" inline>{error}</Banner>}
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--sp-2)', fontSize: 'var(--fs-sm)', color: 'var(--ink-1)' }}>
-          Budget cap
-          <TextInput type="number" prefix="$" min={0} step={1} width={110}
-            value={budget} onChange={setBudget} />
-        </label>
-        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 'var(--sp-2)' }}>
-          <Button variant="ghost" onClick={onDismiss} disabled={busy}>Not this one</Button>
-          <Button variant="primary" icon="orchestration" disabled={busy || !brief.trim()}
-            title="Starts the mission: a director plans it and workers do the work"
-            onClick={() => onStart?.({ mission: brief.trim(), budget: Number(budget) || budgetUsd })}>
-            {busy ? 'Starting…' : 'Start mission'}
-          </Button>
-        </span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--sp-2)' }}>
+        <Button variant="ghost" onClick={onDismiss} disabled={busy}>Not this one</Button>
+        <Button variant="primary" icon="orchestration" disabled={busy || !brief.trim()}
+          title="Starts the mission: a director plans it and workers do the work"
+          onClick={() => onStart?.({
+            mission: brief.trim(), budget: Number(budget) || budgetUsd,
+            directorModel, workerModel, directorProviderId, workerProviderId, browserTools,
+          })}>
+          {busy ? 'Starting…' : 'Start mission'}
+        </Button>
       </div>
     </section>
   );

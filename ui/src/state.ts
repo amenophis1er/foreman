@@ -11,6 +11,34 @@ import { onConnection, onSse, type Envelope } from './sse';
 
 export type Status = 'idle' | 'running' | 'done' | 'error' | 'interrupted';
 
+/**
+ * What a run's spend is. Mirrors `CostBasis` in src/types.ts.
+ *
+ *  - `priced`   — the dollar figure is real; show and cap in dollars.
+ *  - `free`     — the operator's own hardware; nothing is charged per token.
+ *  - `unpriced` — real spend of an amount nobody here can state.
+ *
+ * `free` and `unpriced` both hide the dollar figure and must never be shown
+ * with the same words: one of them is a reason to go and look at a bill.
+ */
+export type CostBasis = 'priced' | 'free' | 'unpriced';
+
+/**
+ * The basis on a wire payload, tolerating every vintage of it.
+ *
+ * Events replay from a log that outlives any deploy, so a run recorded before
+ * the split arrives carrying only `metered`. That meant "not priceable" —
+ * free and unpriced at once — and reads as `unpriced` here for the same
+ * reason the server does it: describing real spend as free is the error that
+ * costs someone money.
+ */
+export function basisOf(d: { costBasis?: string; metered?: boolean }): CostBasis {
+  if (d.costBasis === 'priced' || d.costBasis === 'free' || d.costBasis === 'unpriced') {
+    return d.costBasis;
+  }
+  return d.metered === false ? 'unpriced' : 'priced';
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -30,9 +58,17 @@ export type Entry = {
 export type Approval = {
   id: string; agent: string; toolName: string; input: unknown;
   title?: string; description?: string; decisionReason?: string;
+  /**
+   * Present when the ask was raised by the folder boundary: the directory
+   * "always" will open for the run. The card relabels its middle button on
+   * it, because there "Always" grants a path, not the tool.
+   */
+  escapedPath?: string;
+  /** Envelope ts of the request — the panel shows "waiting 12m" from it. */
+  since?: number;
 };
 
-export type Question = { id: string; question: string };
+export type Question = { id: string; question: string; since?: number };
 export type AgentInfo = { id: string; status: Status; task?: string };
 
 /** '' inherits; otherwise an id from GET /models or a full claude-* id. */
@@ -85,7 +121,9 @@ export type RunSummary = {
   directorModel?: string; workerModel?: string; resumes?: number;
   browserTools?: boolean;
   directorSessionId?: string;
-  /** False when `costUsd` is not real money — see src/provider.ts. */
+  /** What this run's spend is — see src/types.ts. Absent on older runs. */
+  costBasis?: CostBasis;
+  /** @deprecated Read `costBasis` through `basisOf()`. */
   metered?: boolean;
   usage?: TokenUsage;
   turns?: number;
@@ -111,11 +149,12 @@ export type RunView = {
   runStatus: Status;
   mission: string;
   /**
-   * Whether `costUsd` is real money. Through a gateway the SDK prices foreign
-   * tokens with Anthropic's table, so the figure is fiction and the meter must
-   * show what is true instead — tokens and turns.
+   * What this run's spend is. Through a gateway the SDK prices foreign tokens
+   * with Anthropic's table, so a dollar figure is fiction and the meter shows
+   * what is true instead — tokens and turns. `unpriced` additionally says the
+   * spend is real but untracked, which `free` must never be confused with.
    */
-  metered: boolean;
+  costBasis: CostBasis;
   usage: TokenUsage | null;
   /** Generated mission name, once `run_titled` arrives; '' until then. */
   title: string;
@@ -130,7 +169,7 @@ export type RunView = {
 };
 
 const emptyRun: RunView = {
-  runStatus: 'idle', mission: '', title: '', metered: true, usage: null, costUsd: 0, budgetUsd: 5,
+  runStatus: 'idle', mission: '', title: '', costBasis: 'priced', usage: null, costUsd: 0, budgetUsd: 5,
   agents: [], entries: [], approvals: [], questions: [], missionDoc: null,
 };
 
@@ -183,7 +222,7 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         // Read here rather than waiting for a `cost` event: a run that spends
         // no priceable dollars may never emit one, and the meter would show
         // the previous run's units until it did.
-        metered: d.metered !== false,
+        costBasis: basisOf(d),
         usage: d.usage ?? null,
         agents: [{ id: 'director', status: 'running' }],
       };
@@ -200,9 +239,9 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         mission: d.mission ?? s.mission,
         budgetUsd: d.budgetUsd ?? s.budgetUsd,
         costUsd: d.costUsd ?? s.costUsd,
-        // A resume can legitimately change this: the flag is recomputed at
-        // dispatch, so a run wrongly marked metered by older code heals here.
-        metered: d.metered !== undefined ? d.metered !== false : s.metered,
+        // A resume can legitimately change this: the basis is recomputed at
+        // dispatch, so a run wrongly classified by older code heals here.
+        costBasis: d.costBasis || d.metered !== undefined ? basisOf(d) : s.costBasis,
         usage: d.usage ?? s.usage,
         agents: [{ id: 'director', status: 'running' as Status }, ...others],
         entries: [...s.entries, {
@@ -234,13 +273,61 @@ function applyWire(s: RunView, e: WireEvent): RunView {
       };
     case 'run_error':
       return { ...s, entries: [...s.entries, { id: ++seq, ts, agent: 'system', kind: 'error', title: 'error', body: d.error }] };
+    case 'worker_stalled':
+      // Loud in the transcript on purpose. This exact situation — a worker
+      // silent for eight minutes while the director waited inside
+      // spawn_worker — looked from the outside like a healthy running
+      // mission, because nothing anywhere said otherwise.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.id ?? 'worker'), kind: 'error',
+          title: 'worker stalled',
+          body: String(d.text ?? 'Worker produced no output and was stopped.'),
+        }],
+      };
+    case 'worker_looping':
+      // The stall the silence clock cannot see: the worker was busy, so the
+      // meter kept moving, but it was running the same call over and over.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.id ?? 'worker'), kind: 'error',
+          title: 'worker looping',
+          body: String(d.text ?? `Worker repeated the identical ${String(d.toolName ?? 'tool')} call ${String(d.count ?? '?')} times and was stopped.`),
+        }],
+      };
+    case 'director_looping':
+      // The director is notified, not killed, so this may be followed by a
+      // recovery — or by a run_error if it loops again after being told.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'director', kind: 'error',
+          title: 'director looping',
+          body: String(d.text ?? `Director issued the identical ${String(d.toolName ?? 'tool')} call ${String(d.count ?? '?')} times in a row — notified.`),
+        }],
+      };
+    case 'settings_changed':
+      // Recorded in the transcript, not just applied. Foreman is a governance
+      // layer: who changed the rules mid-mission, and when, is exactly the
+      // kind of thing the run log exists to answer.
+      return {
+        ...s,
+        budgetUsd: typeof d.budgetUsd === 'number' ? d.budgetUsd : s.budgetUsd,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'steer',
+          title: 'settings changed',
+          body: (d.changes ?? []).join('\n'),
+        }],
+      };
     case 'run_titled':
       return { ...s, title: String(d.title ?? '') };
     case 'cost':
       return {
         ...s, costUsd: d.costUsd, budgetUsd: d.budgetUsd,
         usage: d.usage ?? s.usage,
-        metered: d.metered !== false,
+        costBasis: basisOf(d),
       };
     case 'message': {
       const extra: Partial<RunView> =
@@ -294,19 +381,138 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         }],
       };
     }
+    case 'worker_progress': {
+      // The worker's own account, which the crew tree shows as its current
+      // task in place of the brief's first line: once a worker has said where
+      // it is, that beats a 200-char echo of what it was asked. Loud enough
+      // in the transcript to be found, quiet enough (system, not error) that
+      // ten of them do not read as ten problems — a blocker is the one that
+      // should stand out, so it gets its own line.
+      const status = String(d.status ?? '');
+      const body = [
+        status,
+        ...(Array.isArray(d.done) && d.done.length ? [`done: ${d.done.join(', ')}`] : []),
+        ...(d.next ? [`next: ${String(d.next)}`] : []),
+        ...(d.blocked ? [`BLOCKED: ${String(d.blocked)}`] : []),
+      ].join('\n');
+      return {
+        ...s,
+        agents: s.agents.map((x) => (x.id === d.id ? { ...x, task: status || x.task } : x)),
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.id ?? 'worker'), kind: 'system',
+          title: d.blocked ? 'progress · blocked' : 'progress', body,
+        }],
+      };
+    }
     case 'worker_finished':
+      // Carries `report` too, deliberately not rendered: the worker's own
+      // messages already streamed into the transcript, and the report is the
+      // director's to read (via check_workers / wait_for_worker). Several
+      // workers may be 'running' at once; only this id's entry changes.
       return {
         ...s,
         agents: s.agents.map((x) => x.id === d.id ? { ...x, status: d.status as Status } : x),
       };
-    case 'permission_request':
-      return { ...s, approvals: [...s.approvals, d] };
-    case 'permission_resolved':
-      return { ...s, approvals: s.approvals.filter((x) => x.id !== d.id) };
-    case 'question':
-      return { ...s, questions: [...s.questions, d] };
-    case 'question_answered':
-      return { ...s, questions: s.questions.filter((x) => x.id !== d.id) };
+    case 'permission_request': {
+      // Marked in the transcript, not only queued in the side panel. A run
+      // once sat twelve minutes on an unanswered Write approval while the
+      // header read `running` and the transcript simply stopped — the ask
+      // was on screen, in a rail the human was not watching. "Waiting on a
+      // human" is a state of the run and belongs where the eyes are. Guarded
+      // by id so a replayed stream does not stamp the same wait twice.
+      if (s.approvals.some((x) => x.id === d.id)) return s;
+      return {
+        ...s,
+        approvals: [...s.approvals, { ...d, since: ts }],
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.agent ?? 'director'), kind: 'system',
+          title: 'waiting on you',
+          body: `${String(d.toolName ?? 'tool')}: ${String(d.description ?? d.decisionReason ?? d.title ?? 'needs your approval')}`,
+        }],
+      };
+    }
+    case 'permission_resolved': {
+      // Only a pending request earns a "resolved" line; a stray or replayed
+      // resolution for an id we never showed would otherwise invent a wait.
+      const pending = s.approvals.find((x) => x.id === d.id);
+      if (!pending) return s;
+      return {
+        ...s,
+        approvals: s.approvals.filter((x) => x.id !== d.id),
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(pending.agent ?? 'director'), kind: 'system',
+          title: 'resolved', body: String(d.behavior ?? 'resolved'),
+        }],
+      };
+    }
+    case 'question': {
+      // Same rule as permission_request: a blocked director is a blocked run.
+      if (s.questions.some((x) => x.id === d.id)) return s;
+      return {
+        ...s,
+        questions: [...s.questions, { ...d, since: ts }],
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'director', kind: 'system',
+          title: 'waiting on you', body: `question: ${String(d.question ?? '')}`,
+        }],
+      };
+    }
+    case 'question_answered': {
+      const pending = s.questions.find((x) => x.id === d.id);
+      if (!pending) return s;
+      return {
+        ...s,
+        questions: s.questions.filter((x) => x.id !== d.id),
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'director', kind: 'system', title: 'resolved', body: 'answered',
+        }],
+      };
+    }
+    case 'root_allowed':
+      // The human opened a directory for the run. Recorded because it is a
+      // widening of the job site, and the run log is where "who let the
+      // mission out of its folder, and to where" must be answerable.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.agent ?? 'director'), kind: 'system',
+          title: 'path allowed for run', body: String(d.path ?? ''),
+        }],
+      };
+    case 'auto_denied':
+      // A temp-dir write refused without a card. Quiet (system, not error):
+      // the agent was told where to go and the next call usually lands there.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.agent ?? 'director'), kind: 'system',
+          title: 'redirected to workspace', body: String(d.reason ?? ''),
+        }],
+      };
+    case 'permission_timeout':
+    case 'question_timeout': {
+      // The unattended default fired. Rendered as `error` — the loud kind —
+      // not because anything broke but because a human returning to the run
+      // must find, without scrolling for it, that a decision was made in
+      // their absence and what it was. Removed from the rail like a normal
+      // resolution; guarded by id like one too.
+      const isPerm = e.event === 'permission_timeout';
+      const pending = isPerm ? s.approvals.find((x) => x.id === d.id) : s.questions.find((x) => x.id === d.id);
+      if (!pending) return s;
+      const mins = Math.max(1, Math.round(Number(d.afterMs ?? 0) / 60_000));
+      return {
+        ...s,
+        approvals: isPerm ? s.approvals.filter((x) => x.id !== d.id) : s.approvals,
+        questions: isPerm ? s.questions : s.questions.filter((x) => x.id !== d.id),
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.agent ?? 'director'), kind: 'error',
+          title: isPerm ? 'auto-denied (unattended)' : 'auto-answered (unattended)',
+          body: isPerm
+            ? `${String(d.toolName ?? 'tool')} waited ${mins} min with no answer and was denied; the agent was told to redo the work inside .foreman/work/.`
+            : `The director's question waited ${mins} min with no answer; it was told to decide itself and record the decision in MISSION.md.`,
+        }],
+      };
+    }
     default:
       return s;
   }
@@ -400,6 +606,7 @@ function activityLine(event: string, d: any): string | null {
   }
   if (event === 'worker_started') return `${d.id} ${d.resumed ? 'resumed' : 'spawned'}`;
   if (event === 'worker_finished') return `${d.id} ${d.status}`;
+  if (event === 'worker_progress') return `${d.id}: ${d.blocked ? `BLOCKED — ${d.blocked}` : d.status}`;
   if (event === 'steer') return `you → ${d.to}: ${d.text}`;
   if (event === 'budget_alert') return d.text;
   if (event === 'question') return `director asks: ${d.question}`;
@@ -430,7 +637,8 @@ export function useFleet() {
       // stream but must never light up an idle card's ticker.
       if (env.chat) return;
       if (['run_started', 'run_resumed', 'run_finished', 'permission_request',
-        'permission_resolved', 'question', 'question_answered'].includes(event)) void refresh();
+        'permission_resolved', 'permission_timeout', 'question', 'question_answered',
+        'question_timeout'].includes(event)) void refresh();
       if (env.projectId) {
         if (event === 'run_finished') {
           setActivity((a) => {
@@ -487,8 +695,30 @@ export type MissionProposal = {
   doneWhen: string[];
   budgetUsd: number;
   rationale?: string;
+  /** The planner judged the criteria need a browser; the card starts with it on. */
+  browser?: boolean;
+  /** Planner-recommended models, validated server-side; the card pre-selects them. */
+  directorModel?: string;
+  workerModel?: string;
+  directorProviderId?: string;
+  workerProviderId?: string;
+  /** The planner's one line on why those two, shown beside the pickers. */
+  modelRationale?: string;
   createdAt: number;
 };
+
+/** One structured question from the planner. Mirrors `AskQuestion` in src/ask.ts. */
+export type ChatQuestion = {
+  question: string;
+  options: Array<{ label: string; hint?: string }>;
+  multi?: boolean;
+};
+
+/** A batch of questions the planner is parked on, answered together. */
+export type ChatAsk = { id: string; questions: ChatQuestion[]; askedAt?: number };
+
+/** Who is answering in this conversation — the thing the chat never showed. */
+export type ChatWho = { model: string; provider: string; costBasis: CostBasis };
 
 export type ChatView = {
   entries: Entry[];
@@ -498,9 +728,26 @@ export type ChatView = {
   proposal: MissionProposal | null;
   /** A turn is in flight — the planner is reading or writing its reply. */
   thinking: boolean;
+  /**
+   * A question the planner is waiting on. While set, the input box becomes a
+   * picker: clicking is faster than typing and the answer comes back exact.
+   * Typing still works — the server routes it to the same question.
+   */
+  question: ChatAsk | null;
+  /** Model and provider serving the planner, shown in the bar's footer. */
+  who: ChatWho | null;
 };
 
-const emptyChat: ChatView = { entries: [], costUsd: 0, proposal: null, thinking: false };
+const emptyChat: ChatView = {
+  entries: [], costUsd: 0, proposal: null, thinking: false, question: null, who: null,
+};
+
+/** "Stack → plain HTML · Imagery → stock photos": what the human chose, for the transcript. */
+function summariseAnswers(qs: ChatQuestion[], answers: Record<string, string>): string {
+  return qs
+    .map((q) => `${q.question.replace(/[?:]\s*$/, '')} → ${answers[q.question] || '(no answer)'}`)
+    .join('\n');
+}
 
 function applyChatWire(s: ChatView, e: WireEvent): ChatView {
   const ts = e.ts ?? Date.now();
@@ -519,8 +766,10 @@ function applyChatWire(s: ChatView, e: WireEvent): ChatView {
       // final `result` (which merely repeats the last assistant message) are
       // mission-transcript furniture; in a chat they read as the machine
       // talking to itself. A failed turn still surfaces, as `chat_error`.
+      // ask_user's tool pill is hidden too: the picker is its rendering, and a
+      // pill saying "ask_user" above a card full of options says nothing.
       const es = entriesFromSdkMessage('foreman', d.msg, ts)
-        .filter((e) => e.kind === 'text' || e.kind === 'tool');
+        .filter((e) => e.kind === 'text' || (e.kind === 'tool' && !/ask_user/.test(e.title)));
       return es.length ? { ...s, entries: [...s.entries, ...es] } : s;
     }
     case 'mission_proposed':
@@ -537,7 +786,50 @@ function applyChatWire(s: ChatView, e: WireEvent): ChatView {
     case 'chat_cost':
       return { ...s, costUsd: d.costUsd ?? s.costUsd };
     case 'chat_turn':
-      return { ...s, thinking: d.state === 'thinking' };
+      return {
+        ...s,
+        thinking: d.state === 'thinking',
+        // Said on every turn so a change of Settings mid-conversation shows
+        // up on the next reply, not after a reload.
+        who: typeof d.model === 'string' && typeof d.provider === 'string'
+          ? { model: d.model, provider: d.provider, costBasis: basisOf(d) }
+          : s.who,
+      };
+    case 'chat_question':
+      // The planner is parked on this until answered. Nothing is appended to
+      // the transcript here: the picker IS the rendering, and the answer
+      // becomes the transcript entry once it exists.
+      return Array.isArray(d.questions) && d.questions.length
+        ? { ...s, question: { id: String(d.id), questions: d.questions, askedAt: ts } }
+        : s;
+    case 'chat_answered': {
+      // Recorded as something *you* said, because it is: a click is an answer.
+      // The summary form ("Stack → plain HTML") is what the planner also
+      // received, so transcript and model agree on what was decided.
+      const open = s.question;
+      const qs = open && open.id === d.id ? open.questions : [];
+      const body = qs.length ? summariseAnswers(qs, d.answers ?? {})
+        : Object.entries(d.answers ?? {}).map(([q, a]) => `${q} → ${a}`).join('\n');
+      return {
+        ...s,
+        question: s.question?.id === d.id ? null : s.question,
+        entries: body ? [...s.entries, {
+          id: ++seq, ts, agent: 'you', kind: 'steer', title: 'you chose', body,
+        }] : s.entries,
+      };
+    }
+    case 'chat_question_timeout':
+      // Loud, and honest about what happened: the planner went on without an
+      // answer, and its next reply states the assumptions it made.
+      return {
+        ...s,
+        question: s.question?.id === d.id ? null : s.question,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'error', title: 'no answer (unattended)',
+          body: `No answer after ${Math.round((d.afterMs ?? 0) / 60000)} minutes — the planner ` +
+            'is proceeding on its recommended options and will state the assumptions.',
+        }],
+      };
     case 'chat_error':
       return {
         ...s,
@@ -572,6 +864,8 @@ function chatReducer(s: ChatView, a: ChatAction): ChatView {
  */
 export function useChat(projectId: string | null): ChatView & {
   send: (text: string) => Promise<string | null>;
+  /** Answer the planner's pending question with the picker's choices. */
+  answer: (id: string, answers: Record<string, string>) => Promise<string | null>;
   clear: () => Promise<void>;
   dismissProposal: () => void;
 } {
@@ -583,6 +877,7 @@ export function useChat(projectId: string | null): ChatView & {
     if (!r?.ok) return null;
     return await r.json() as {
       events: WireEvent[]; costUsd: number; proposal: MissionProposal | null; thinking: boolean;
+      question: ChatAsk | null; who: ChatWho | null;
     };
   }, []);
 
@@ -607,6 +902,11 @@ export function useChat(projectId: string | null): ChatView & {
           ...emptyChat, costUsd: data.costUsd, proposal: data.proposal, thinking: data.thinking,
         };
         for (const e of data.events) view = applyChatWire(view, e);
+        // The pending question is server state, not log state: the log holds
+        // every question ever asked, and replaying it would resurrect one that
+        // was answered or timed out. Only what the server says is still open
+        // gets a picker.
+        view = { ...view, question: data.question ?? null, who: data.who ?? view.who };
         dispatch({ t: 'load', view });
       }
       // Live frames that arrived during the fetch are applied after it, so a
@@ -630,11 +930,20 @@ export function useChat(projectId: string | null): ChatView & {
     dispatch({ t: 'reset' });
   }, [projectId]);
 
+  // The picker's answer. The server resolves the tool call and echoes
+  // `chat_answered` on the stream, which is what clears the picker here — so
+  // a second tab answering the same question clears this one too.
+  const answer = useCallback(async (id: string, answers: Record<string, string>): Promise<string | null> => {
+    if (!projectId) return 'no project';
+    const r = await post('/chat/answer', { projectId, id, answers });
+    return r.ok ? null : ((await r.json().catch(() => ({}))).error ?? 'could not deliver the answer');
+  }, [projectId]);
+
   // Local-only: the human said "not this one" without spending a turn saying
   // so. The server still holds it, and the next proposal replaces it.
   const dismissProposal = useCallback(() => dispatch({ t: 'dismiss' }), []);
 
-  return { ...state, send, clear, dismissProposal };
+  return { ...state, send, answer, clear, dismissProposal };
 }
 
 /** Hash router: '#/' → fleet, '#/p/<projectId>' → project view,
@@ -718,6 +1027,19 @@ export const api = {
   answer: (id: string, text: string) => post('/answer', { id, text }),
   steer: (runId: string, text: string) => post('/steer', { runId, text }),
   interrupt: (runId: string) => post('/interrupt', { runId }),
+  /**
+   * Change a live run's settings. Only the fields that genuinely bind
+   * mid-run are accepted — the server rejects anything else rather than
+   * appearing to apply it.
+   */
+  updateRun: (runId: string, patch: { browserTools?: boolean; budgetUsd?: number }) =>
+    fetch('/run', {
+      method: 'PATCH', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ runId, ...patch }),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+      return r.json() as Promise<{ changes: string[] }>;
+    }),
   /** Stores a provider's key. There is no read counterpart, by design. */
   setProviderKey: (providerId: string, key: string) =>
     fetch(`/providers/${encodeURIComponent(providerId)}/key`, {

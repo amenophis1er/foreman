@@ -11,10 +11,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import http from 'node:http';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import {
   ANTHROPIC_NATIVE_BASE_URL, GATEWAY_INVARIANT, normalizeOpenAiBaseUrl,
-  ownedConfigDir, providerEnv, providerFromLegacy, providerOf, providerProblem, resolveProvider,
+  ownedConfigDir, providerEnv, providerFromLegacy, providerOf, providerProblem, resolveProvider, roleCost, withRoleModel,
 } from './provider.js';
 import type { ProviderRef } from './types.js';
 
@@ -235,4 +236,131 @@ test('a resolvable gateway provider reports no problem', async () => {
   const p = await resolveProvider(
     { kind: 'openai-compatible', id: 'ollama', baseUrl: 'http://127.0.0.1:11434' }, ROOT);
   assert.equal(providerProblem(p), null);
+});
+
+// ---------------------------------------------------------------------------
+// What each provider's spend actually is
+// ---------------------------------------------------------------------------
+
+test('each provider kind resolves to the cost basis that is true of it', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'foreman-basis-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const basis = async (ref: ProviderRef) => (await resolveProvider(ref, root)).costBasis;
+
+  // Anthropic prices its own tokens, so the SDK figure is the real one.
+  assert.equal(await basis({ kind: 'claude-code' }), 'priced');
+  assert.equal(await basis({
+    kind: 'anthropic-api', id: 'a', apiKeyEnv: 'NOPE',
+  }), 'priced');
+
+  // A ChatGPT plan is drawn down rather than billed per token — real, finite,
+  // and not something Foreman can put a number on.
+  assert.equal(await basis({ kind: 'codex', id: 'c', codexHome: path.join(root, 'codex') }), 'unpriced');
+
+  // The operator's own hardware, whether on this machine or their LAN.
+  assert.equal(await basis({
+    kind: 'openai-compatible', id: 'o', baseUrl: 'http://127.0.0.1:11434',
+  }), 'free');
+  assert.equal(await basis({
+    kind: 'openai-compatible', id: 'o', baseUrl: 'http://192.168.1.9:11434',
+  }), 'free');
+
+  // Somebody's paid service. Unpriced, never free — guessing free about a
+  // billed endpoint is the error that costs money.
+  assert.equal(await basis({
+    kind: 'openai-compatible', id: 'o', baseUrl: 'https://openrouter.ai/api',
+  }), 'unpriced');
+  assert.equal(await basis({
+    kind: 'openai-compatible', id: 'o', baseUrl: 'https://ollama.com',
+  }), 'unpriced');
+});
+
+test('the deprecated metered boolean never disagrees with the basis', async (t) => {
+  // Both are written by one helper precisely so they cannot drift; if that
+  // ever stops being true, a run's enforcement and its display disagree.
+  const root = await mkdtemp(path.join(os.tmpdir(), 'foreman-basis-drift-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const refs: ProviderRef[] = [
+    { kind: 'claude-code' },
+    { kind: 'anthropic-api', id: 'a', apiKeyEnv: 'NOPE' },
+    { kind: 'codex', id: 'c', codexHome: path.join(root, 'codex') },
+    { kind: 'openai-compatible', id: 'o', baseUrl: 'http://127.0.0.1:11434' },
+    { kind: 'openai-compatible', id: 'p', baseUrl: 'https://openrouter.ai/api' },
+  ];
+  for (const ref of refs) {
+    const p = await resolveProvider(ref, root);
+    assert.equal(p.metered, p.costBasis === 'priced', `${ref.kind} drifted`);
+  }
+});
+
+test('a cloud model behind a local daemon is not free', async (t) => {
+  // The configuration Foreman is most often used in, and the one the endpoint
+  // alone gets wrong: `glm-…:cloud` reaches 127.0.0.1, but runs on paid
+  // servers the daemon signs for with the operator's own Ollama account.
+  const root = await mkdtemp(path.join(os.tmpdir(), 'foreman-refine-'));
+  const daemon = http.createServer((req, res) => {
+    if (req.url !== '/api/tags') { res.writeHead(404); res.end(); return; }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ models: [
+      { name: 'qwen3:8b', details: { parameter_size: '8B' } },
+      { name: 'glm-5.3-flash:cloud', remote_model: true, remote_host: 'https://ollama.com' },
+    ] }));
+  });
+  await new Promise<void>((r) => daemon.listen(0, '127.0.0.1', r));
+  const port = (daemon.address() as { port: number }).port;
+  t.after(async () => {
+    await new Promise<void>((r) => daemon.close(() => r()));
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const p = await resolveProvider(
+    { kind: 'openai-compatible', id: 'o', baseUrl: `http://127.0.0.1:${port}` }, root);
+  assert.equal(p.costBasis, 'free', 'the endpoint alone says free');
+
+  assert.equal((await roleCost(p, 'qwen3:8b')).basis, 'free');
+  assert.equal((await roleCost(p, 'glm-5.3-flash:cloud')).basis, 'unpriced',
+    'a model the daemon merely proxies is somebody else’s bill');
+});
+
+test('refining never downgrades a basis, and survives an endpoint that will not answer', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'foreman-refine-2-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  // A priced or unpriced endpoint does not become free because of its model,
+  // so refining must not even ask.
+  const priced = await resolveProvider({ kind: 'claude-code' }, root);
+  assert.equal((await roleCost(priced, 'anything')).basis, 'priced');
+  const paid = await resolveProvider(
+    { kind: 'openai-compatible', id: 'o', baseUrl: 'https://openrouter.ai/api' }, root);
+  assert.equal((await roleCost(paid, 'anything')).basis, 'unpriced');
+
+  // Nothing listening: discovery returns null rather than throwing, and the
+  // provider's own answer stands. Port 1 is reserved and never bound.
+  const dead = await resolveProvider(
+    { kind: 'openai-compatible', id: 'o', baseUrl: 'http://127.0.0.1:1' }, root);
+  assert.equal((await roleCost(dead, 'whatever')).basis, 'free');
+});
+
+test('a role provider carries the role’s model, so every alias resolves on its gateway', async (t) => {
+  // The run title asked for the haiku alias on a kimi worker's gateway and
+  // went upstream as claude-haiku-4-5 — four 404s, no title — because the
+  // per-role Ollama provider had no model of its own to pin the aliases to.
+  const root = await mkdtemp(path.join(os.tmpdir(), 'foreman-rolemodel-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bare = await resolveProvider(
+    { kind: 'openai-compatible', id: 'ollama-local', baseUrl: 'http://127.0.0.1:11434' }, root);
+  assert.equal(bare.model, undefined);
+
+  const pinned = withRoleModel(bare, 'kimi-k3:cloud');
+  const { env } = providerEnv(pinned, 'http://127.0.0.1:9');
+  assert.equal(env?.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'kimi-k3:cloud');
+  assert.equal(env?.ANTHROPIC_DEFAULT_SONNET_MODEL, 'kimi-k3:cloud');
+  assert.equal(env?.ANTHROPIC_DEFAULT_OPUS_MODEL, 'kimi-k3:cloud');
+
+  // A provider that already names a model keeps it; "inherit" changes nothing.
+  assert.equal(withRoleModel({ ...bare, model: 'qwen3:8b' }, 'kimi-k3:cloud').model, 'qwen3:8b');
+  assert.equal(withRoleModel(bare, '').model, undefined);
+  assert.equal(withRoleModel(bare, undefined), bare, 'no change returns the same object');
 });
