@@ -17,6 +17,7 @@
  * Neither throws. A picker that cannot reach its endpoint shows an empty list
  * and says so; it does not fail a page.
  */
+import { parsePricing, type ModelPrice } from './prices.js';
 
 export interface EndpointModel {
   /** Exactly what the API expects as a model id. */
@@ -27,6 +28,14 @@ export interface EndpointModel {
   remote: boolean;
   /** Where a remote model actually runs, e.g. `https://ollama.com`. */
   host?: string;
+  /**
+   * Per-token rates, where the endpoint publishes them (OpenRouter does).
+   *
+   * This is the only price Foreman will ever put a dollar sign on for a
+   * gateway run: it comes from the party that sends the bill. Absent means
+   * unpriced, and unpriced is left saying so — see prices.ts.
+   */
+  price?: ModelPrice;
 }
 
 export interface DiscoverOptions {
@@ -62,14 +71,19 @@ function fromOllamaTags(body: unknown): EndpointModel[] | null {
   return out;
 }
 
-/** The OpenAI-compatible `/v1/models` listing: ids and nothing else. */
+/**
+ * The OpenAI-compatible `/v1/models` listing: ids, and rates where the
+ * endpoint volunteers them. OpenAI's own listing carries none; OpenRouter's
+ * carries a full `pricing` object per model.
+ */
 function fromOpenAiList(body: unknown): EndpointModel[] | null {
   const data = (body as { data?: unknown })?.data;
   if (!Array.isArray(data)) return null;
   const out: EndpointModel[] = [];
   for (const m of data as Array<Record<string, any>>) {
     if (typeof m?.id !== 'string' || !m.id) continue;
-    out.push({ id: m.id, remote: false });
+    const price = parsePricing(m.pricing);
+    out.push({ id: m.id, remote: false, ...(price ? { price } : {}) });
   }
   return out;
 }

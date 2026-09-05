@@ -176,3 +176,82 @@ test('the plan section cannot mask an unfinished criterion', async () => {
     '## Plan', '- [x] every plan step ticked',
   ].join('\n')), ['the one that matters']);
 });
+
+// ---------------------------------------------------------------------------
+// Pricing a run from the endpoint's own rates
+// ---------------------------------------------------------------------------
+
+const RATES = { input: 0.000002, output: 0.00001 };
+
+test('a role with published rates is billed from its own tokens', () => {
+  const run = new MissionRun(meta({ costBasis: 'priced' }), () => {}, () => {}, noopAgentEnv,
+    { director: RATES }) as unknown as { addUsage(raw: unknown, role?: string): void; meta: RunMeta };
+
+  run.addUsage({ input_tokens: 1000, output_tokens: 500 });
+  assert.ok(Math.abs(run.meta.costUsd - 0.007) < 1e-9, `got ${run.meta.costUsd}`);
+});
+
+test('each turn is billed for its own tokens, never for the running total', () => {
+  // Charging the per-token rate against the accumulated figure would bill
+  // every turn for every turn before it — a cost curve that looks like real
+  // spend and is quadratic in the number of turns.
+  const run = new MissionRun(meta({ costBasis: 'priced' }), () => {}, () => {}, noopAgentEnv,
+    { director: RATES }) as unknown as { addUsage(raw: unknown, role?: string): void; meta: RunMeta };
+
+  for (let i = 0; i < 3; i++) run.addUsage({ input_tokens: 1000 });
+  assert.ok(Math.abs(run.meta.costUsd - 0.006) < 1e-9, `got ${run.meta.costUsd}`);
+  assert.equal(run.meta.usage!.inputTokens, 3000);
+});
+
+test('the SDK figure is ignored for a role Foreman prices itself', () => {
+  // The double-count trap. The SDK prices every response with Anthropic's
+  // table, so on a gateway role its number is fiction; adding it to a total
+  // computed from the endpoint's own rates would corrupt the honest figure.
+  const run = new MissionRun(meta({ costBasis: 'priced' }), () => {}, () => {}, noopAgentEnv,
+    { director: RATES }) as unknown as {
+      addUsage(raw: unknown, role?: string): void;
+      addCost(usd: number | undefined, role?: string): void;
+      meta: RunMeta;
+    };
+
+  run.addUsage({ input_tokens: 1000 });
+  run.addCost(4.20);
+  assert.ok(Math.abs(run.meta.costUsd - 0.002) < 1e-9, `SDK fiction leaked in: ${run.meta.costUsd}`);
+});
+
+test('a role with no published rates still uses the SDK figure', () => {
+  // An Anthropic-native role: the SDK's number is the real one, and Foreman
+  // must not stop trusting it just because the other half of the run is on a
+  // gateway.
+  const run = new MissionRun(meta({ costBasis: 'priced' }), () => {}, () => {}, noopAgentEnv,
+    { worker: RATES }) as unknown as {
+      addCost(usd: number | undefined, role?: string): void; meta: RunMeta;
+    };
+
+  run.addCost(0.5, 'director');
+  assert.equal(run.meta.costUsd, 0.5);
+});
+
+test('a mixed run bills each role with its own rates', () => {
+  const run = new MissionRun(meta({ costBasis: 'priced' }), () => {}, () => {}, noopAgentEnv, {
+    director: { input: 0.00001, output: 0.00001 },
+    worker: { input: 0.000001, output: 0.000001 },
+  }) as unknown as { addUsage(raw: unknown, role?: string): void; meta: RunMeta };
+
+  run.addUsage({ input_tokens: 1000 }, 'director');   // 0.01
+  run.addUsage({ input_tokens: 1000 }, 'worker');     // 0.001
+  assert.ok(Math.abs(run.meta.costUsd - 0.011) < 1e-9, `got ${run.meta.costUsd}`);
+});
+
+test('a priced gateway run still arms the budget cap', () => {
+  // The point of pricing it: a real figure is a figure the cap may act on.
+  const events: Array<{ event: string; data: any }> = [];
+  const run = new MissionRun(
+    meta({ costBasis: 'priced', budgetUsd: 0.01 }), (event, data) => events.push({ event, data }),
+    () => {}, noopAgentEnv, { director: RATES },
+  ) as unknown as { addUsage(raw: unknown, role?: string): void };
+
+  run.addUsage({ output_tokens: 2000 }); // 0.02 — past 125% of a $0.01 cap
+  assert.ok(events.some((e) => e.event === 'budget_alert' && e.data.level === 'exceeded'),
+    'a real overrun on real rates must still stop the run');
+});

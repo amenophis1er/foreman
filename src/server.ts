@@ -50,7 +50,7 @@ import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
 import { defaultInstance, discoverInstances, effectiveConfigDir } from './instance.js';
 import {
-  normalizeOpenAiBaseUrl, providerEnv, providerOf, providerProblem, refineBasis, resolveProvider,
+  normalizeOpenAiBaseUrl, providerEnv, providerOf, providerProblem, resolveProvider, roleCost,
 } from './provider.js';
 import { ensureGateway, gatewayStatus, releaseGateways, stopGateways } from './gateway.js';
 import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
@@ -59,6 +59,7 @@ import { ANTHROPIC_MODELS } from './anthropic-models.js';
 import { codexHome, codexModels, readCodexAuth } from './codex.js';
 import { describeModel, discoverModels } from './models.js';
 import type { ResolvedProvider } from './provider.js';
+import type { ModelPrice } from './prices.js';
 import {
   dirHasCredentials, detectAuth, hasKeychainCredentials, readAccount, type AuthMode,
 } from './preflight.js';
@@ -558,6 +559,7 @@ async function driveRun(
   }
   let agentEnv;
   let roleBasis = resolved.costBasis;
+  let prices: { director?: ModelPrice; worker?: ModelPrice } = {};
   try {
     // Resolved per role. Where both roles share a provider this resolves once
     // and starts one gateway; where they differ, the supervisor already runs a
@@ -578,10 +580,12 @@ async function driveRun(
         ? await agentEnvFor(directorProvider, meta.id)
         : await agentEnvFor(workerProvider, meta.id),
     };
-    roleBasis = combineBasis(
-      await refineBasis(directorProvider, meta.directorModel),
-      await refineBasis(workerProvider, meta.workerModel),
-    );
+    const directorCost = await roleCost(directorProvider, meta.directorModel);
+    const workerCost = directorProvider === workerProvider && meta.directorModel === meta.workerModel
+      ? directorCost
+      : await roleCost(workerProvider, meta.workerModel);
+    roleBasis = combineBasis(directorCost.basis, workerCost.basis);
+    prices = { director: directorCost.price, worker: workerCost.price };
   } catch (err) {
     meta.status = 'error';
     meta.endedAt = Date.now();
@@ -611,7 +615,7 @@ async function driveRun(
   // Written in step so a run started here still reads correctly if it is ever
   // handled by a build from before the split.
   meta.metered = roleBasis === 'priced';
-  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv);
+  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv, prices);
   activeByProject.set(projectId, run);
   try {
     if (changes?.directorChanged || changes?.workerChanged) {

@@ -86,6 +86,7 @@ import { makePolicy, type PendingPermission } from './policy.js';
 import type { AgentEnv } from './provider.js';
 import { generateRunTitle } from './title.js';
 import { costBasisOf, isPriced } from './types.js';
+import { priceUsage, type ModelPrice } from './prices.js';
 import type { RunMeta, TokenUsage, WorkerMeta } from './types.js';
 
 /** A run's usage before its first `result` message. */
@@ -103,13 +104,31 @@ function emptyUsage(): TokenUsage {
  * error or a poisoned NaN that a partial sum would otherwise carry forever.
  */
 export function accumulateUsage(current: TokenUsage, raw: unknown): TokenUsage {
+  const d = normalizeUsage(raw);
+  return {
+    inputTokens: current.inputTokens + d.inputTokens,
+    outputTokens: current.outputTokens + d.outputTokens,
+    cacheReadTokens: current.cacheReadTokens + d.cacheReadTokens,
+    cacheWriteTokens: current.cacheWriteTokens + d.cacheWriteTokens,
+  };
+}
+
+/**
+ * One SDK `usage` object as token counts — the delta a single result message
+ * reports, before it is folded into the run total.
+ *
+ * Separate from accumulateUsage() because pricing needs the delta on its own:
+ * charging a per-token rate against the running total would bill every turn
+ * for every turn before it.
+ */
+export function normalizeUsage(raw: unknown): TokenUsage {
   const u = (raw ?? {}) as Record<string, unknown>;
   const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
   return {
-    inputTokens: current.inputTokens + num(u.input_tokens),
-    outputTokens: current.outputTokens + num(u.output_tokens),
-    cacheReadTokens: current.cacheReadTokens + num(u.cache_read_input_tokens),
-    cacheWriteTokens: current.cacheWriteTokens + num(u.cache_creation_input_tokens),
+    inputTokens: num(u.input_tokens),
+    outputTokens: num(u.output_tokens),
+    cacheReadTokens: num(u.cache_read_input_tokens),
+    cacheWriteTokens: num(u.cache_creation_input_tokens),
   };
 }
 
@@ -137,6 +156,9 @@ const LOCAL_IGNORE_LINES = ['settings.local.json', '.gitignore'];
 // a metered one that dollars already stop.
 const DEFAULT_MAX_TURNS = 150;
 const DEFAULT_MAX_SECONDS = 4 * 60 * 60;
+
+/** Which half of the crew spent something. Roles can be on different providers. */
+type AgentRole = 'director' | 'worker';
 
 /** Broadcasts to SSE clients and appends to the run's event log. */
 export type Emitter = (event: string, data: unknown) => void;
@@ -251,6 +273,14 @@ export class MissionRun {
      * agent can authenticate as; see provider.ts.
      */
     private readonly agentEnv: { director: AgentEnv; worker: AgentEnv },
+    /**
+     * Per-token rates per role, where the endpoint that will send the bill
+     * published them (see prices.ts). Absent for an Anthropic-native role —
+     * the SDK already reports its real cost — and absent for any endpoint that
+     * publishes nothing, which is what keeps that run honestly `unpriced`
+     * rather than priced from a table Foreman made up.
+     */
+    private readonly prices: { director?: ModelPrice; worker?: ModelPrice } = {},
   ) {
     this.meta = meta;
     // Usage and turns are counted from zero on a fresh run, but a resumed one
@@ -646,8 +676,17 @@ export class MissionRun {
   }
 
 
-  private addCost(usd: number | undefined): void {
+  /**
+   * Fold in the SDK's own dollar figure for a role.
+   *
+   * Ignored outright where Foreman holds that role's real rates: the SDK
+   * prices every response with Anthropic's table, so on a gateway role its
+   * number is fiction — and adding fiction to a figure computed from the
+   * endpoint's own published rates would corrupt the one honest total.
+   */
+  private addCost(usd: number | undefined, role: AgentRole = 'director'): void {
     if (typeof usd !== 'number') return;
+    if (this.prices[role]) return;
     this.meta.costUsd += usd;
     this.saveMeta(this.meta);
     this.emitEconomics();
@@ -677,11 +716,18 @@ export class MissionRun {
     });
   }
 
-  private addUsage(raw: unknown): void {
+  private addUsage(raw: unknown, role: AgentRole = 'director'): void {
+    const delta = normalizeUsage(raw);
     this.meta.usage = accumulateUsage(this.meta.usage ?? emptyUsage(), raw);
     this.meta.turns = this.turns;
+    // Where the endpoint published rates, this is the run's real cost: its
+    // own tokens at its own prices, accumulated per role so a mixed run bills
+    // each half correctly instead of applying one table to both.
+    const price = this.prices[role];
+    if (price) this.meta.costUsd += priceUsage(price, delta);
     this.saveMeta(this.meta);
     this.emitEconomics();
+    if (price) this.enforceBudget();
   }
 
   /**
@@ -884,8 +930,8 @@ export class MissionRun {
           this.noteUsageLimit(report);
           // Same ordering rule as the director loop: the cost event carries
           // usage, so usage has to be current before it is emitted.
-          this.addUsage(m.usage);
-          this.addCost(m.total_cost_usd as number | undefined);
+          this.addUsage(m.usage, 'worker');
+          this.addCost(m.total_cost_usd as number | undefined, 'worker');
           w.costUsd += (m.total_cost_usd as number | undefined) ?? 0;
         }
         this.emit('message', { agent: workerId, msg });

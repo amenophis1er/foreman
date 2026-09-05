@@ -15,8 +15,7 @@ import http from 'node:http';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import {
   ANTHROPIC_NATIVE_BASE_URL, GATEWAY_INVARIANT, normalizeOpenAiBaseUrl,
-  ownedConfigDir, providerEnv, providerFromLegacy, providerOf, providerProblem, refineBasis,
-  resolveProvider,
+  ownedConfigDir, providerEnv, providerFromLegacy, providerOf, providerProblem, resolveProvider, roleCost,
 } from './provider.js';
 import type { ProviderRef } from './types.js';
 
@@ -320,8 +319,8 @@ test('a cloud model behind a local daemon is not free', async (t) => {
     { kind: 'openai-compatible', id: 'o', baseUrl: `http://127.0.0.1:${port}` }, root);
   assert.equal(p.costBasis, 'free', 'the endpoint alone says free');
 
-  assert.equal(await refineBasis(p, 'qwen3:8b'), 'free');
-  assert.equal(await refineBasis(p, 'glm-5.3-flash:cloud'), 'unpriced',
+  assert.equal((await roleCost(p, 'qwen3:8b')).basis, 'free');
+  assert.equal((await roleCost(p, 'glm-5.3-flash:cloud')).basis, 'unpriced',
     'a model the daemon merely proxies is somebody else’s bill');
 });
 
@@ -332,14 +331,14 @@ test('refining never downgrades a basis, and survives an endpoint that will not 
   // A priced or unpriced endpoint does not become free because of its model,
   // so refining must not even ask.
   const priced = await resolveProvider({ kind: 'claude-code' }, root);
-  assert.equal(await refineBasis(priced, 'anything'), 'priced');
+  assert.equal((await roleCost(priced, 'anything')).basis, 'priced');
   const paid = await resolveProvider(
     { kind: 'openai-compatible', id: 'o', baseUrl: 'https://openrouter.ai/api' }, root);
-  assert.equal(await refineBasis(paid, 'anything'), 'unpriced');
+  assert.equal((await roleCost(paid, 'anything')).basis, 'unpriced');
 
   // Nothing listening: discovery returns null rather than throwing, and the
   // provider's own answer stands. Port 1 is reserved and never bound.
   const dead = await resolveProvider(
     { kind: 'openai-compatible', id: 'o', baseUrl: 'http://127.0.0.1:1' }, root);
-  assert.equal(await refineBasis(dead, 'whatever'), 'free');
+  assert.equal((await roleCost(dead, 'whatever')).basis, 'free');
 });

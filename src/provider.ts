@@ -28,6 +28,7 @@ import { defaultInstance } from './instance.js';
 import { codexHome, isStale, readCodexAuth, refreshCodexAuth } from './codex.js';
 import { getSecret } from './secrets.js';
 import { discoverModels } from './models.js';
+import type { ModelPrice } from './prices.js';
 import type { CostBasis, ProviderRef, ClaudeInstanceRef } from './types.js';
 
 /**
@@ -318,30 +319,52 @@ export function normalizeOpenAiBaseUrl(url: string): string {
   return base.replace(/\/+$/, '').replace(/\/v1$/, '');
 }
 
+/** What one agent role's spend is, and what it costs when that is knowable. */
+export interface RoleCost {
+  basis: CostBasis;
+  /**
+   * Per-token rates for the chosen model, when the endpoint publishes them.
+   *
+   * Present only where `basis` is `priced` *because of the endpoint* — an
+   * Anthropic-native role is also priced but carries no rates here, because
+   * the SDK already reports its real cost and Foreman should not second-guess
+   * it with a table.
+   */
+  price?: ModelPrice;
+}
+
 /**
- * Sharpen a provider's basis with the model actually chosen.
+ * What a role actually costs: its basis, sharpened by the model it will run.
  *
- * An Ollama daemon on this machine is free — but the very same daemon will
- * happily serve a `:cloud` model that runs on somebody's paid servers and
- * signs for it with the operator's own Ollama account. The endpoint sets the
- * floor and the model can raise it, so a loopback provider is not proof that
- * a run costs nothing. That is exactly the configuration Foreman is most
- * often used in, which is why it earns a lookup at dispatch.
+ * Two facts come out of one lookup, because they come from one place.
  *
- * Discovery is a call to an endpoint already about to serve the whole
- * mission, and it never throws: when it cannot answer, the provider's own
- * basis stands. That fallback only ever says `free` about an endpoint already
- * on this machine or this LAN, so the worst case is the answer we had before
- * asking.
+ *  - **The model can raise the endpoint's floor.** An Ollama daemon on this
+ *    machine is free, but the same daemon serves `:cloud` models that run on
+ *    paid servers and signs for them with the operator's own account. Loopback
+ *    is not proof a run is free, and that is the configuration Foreman is most
+ *    often used in.
+ *  - **The model can also carry a price.** Where the endpoint publishes
+ *    per-token rates (OpenRouter does, for essentially everything it serves),
+ *    the run becomes genuinely `priced` — with the bill-sender's own numbers,
+ *    not a table shipped inside Foreman.
+ *
+ * Discovery never throws: when it cannot answer, the provider's own basis
+ * stands with no price, which is the answer we had before asking.
  */
-export async function refineBasis(p: ResolvedProvider, model?: string): Promise<CostBasis> {
-  // Only `free` can be wrong in the direction that matters. A priced or
-  // unpriced endpoint does not become free because of which model it serves.
-  if (p.costBasis !== 'free' || !p.upstreamUrl) return p.costBasis;
+export async function roleCost(p: ResolvedProvider, model?: string): Promise<RoleCost> {
+  // An Anthropic-native role is already priced by the SDK, with real rates for
+  // real tokens. Nothing an endpoint listing says could improve on that.
+  if (p.wire === 'anthropic-native' || !p.upstreamUrl) return { basis: p.costBasis };
   const chosen = model || p.model;
-  if (!chosen) return p.costBasis;
+  if (!chosen) return { basis: p.costBasis };
+
   const found = await discoverModels(p.upstreamUrl, { apiKey: p.apiKey });
-  return found?.some((m) => m.id === chosen && m.remote) ? 'unpriced' : p.costBasis;
+  const m = found?.find((x) => x.id === chosen);
+  if (!m) return { basis: p.costBasis };
+  if (m.price) return { basis: 'priced', price: m.price };
+  // No published rates: real spend we cannot quantify, unless the endpoint is
+  // the operator's own hardware AND the model actually runs there.
+  return { basis: p.costBasis === 'free' && !m.remote ? 'free' : 'unpriced' };
 }
 
 /** The host[:port] of a base URL, however sloppily it was typed. */
