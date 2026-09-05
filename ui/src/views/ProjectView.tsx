@@ -173,6 +173,7 @@ const SPINE_COL: React.CSSProperties = { width: '100%', maxWidth: 'var(--spine-m
 export type TranscriptOrder = 'newest' | 'oldest';
 
 const ORDER_KEY = 'foreman.transcriptOrder';
+const TIMELINE_KEY = 'foreman.timeline';
 
 /**
  * Reading order for the transcript, remembered across runs and reloads.
@@ -509,7 +510,15 @@ export function ProjectView({
   const toggleFilter = (a: string) => { setFilter(filter === a ? null : a); setTab('transcript'); };
   const [resuming, setResuming] = useState(false);
   const [order, setOrder] = useTranscriptOrder();
-  const [showTimeline, setShowTimeline] = useState(false);
+  // Open unless this browser closed it: the swimlanes are the run's shape at a
+  // glance, and the human asked for them up front. Remembered like the order.
+  const [showTimeline, setShowTimelineState] = useState<boolean>(() => {
+    try { return localStorage.getItem(TIMELINE_KEY) !== 'closed'; } catch { return true; }
+  });
+  const setShowTimeline = (v: boolean) => {
+    setShowTimelineState(v);
+    try { localStorage.setItem(TIMELINE_KEY, v ? 'open' : 'closed'); } catch { /* private mode */ }
+  };
   const [showDoc, setShowDoc] = useState(false);
   const [showDoneWhen, setShowDoneWhen] = useState(false);
   const [headerErr, setHeaderErr] = useState('');

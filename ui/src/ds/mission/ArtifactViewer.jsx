@@ -1,0 +1,96 @@
+import React, { useEffect, useState } from 'react';
+import { Icon } from '../core/Icon';
+import { Button } from '../core/Button';
+import { IconButton } from '../core/IconButton';
+import { RichText } from '../core/RichText';
+
+const TEXT_CAP = 512 * 1024;
+
+/**
+ * An artifact, looked at in place. Images fit the viewport; text and code
+ * come as a mono block (Markdown rendered); PDFs use the browser's viewer in
+ * a frame; anything else says so and offers the file. Escape and the
+ * backdrop close it; "Open in a new tab" is still there for the person who
+ * wants the raw file, so nothing is lost — only the detour.
+ */
+export function ArtifactViewer({ artifact, url, onClose }) {
+  const [text, setText] = useState(null);
+  const [err, setErr] = useState(null);
+  const kind = artifact?.kind;
+  const name = artifact?.path?.split('/').pop() ?? '';
+  const isMd = /\.md$/i.test(name);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    setText(null); setErr(null);
+    if (kind !== 'text') return;
+    let live = true;
+    fetch(url).then(async (r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const t = await r.text();
+      if (live) setText(t.length > TEXT_CAP ? `${t.slice(0, TEXT_CAP)}\n\n[… ${t.length - TEXT_CAP} more characters — open in a new tab for the whole file]` : t);
+    }).catch((e) => { if (live) setErr(String(e.message || e)); });
+    return () => { live = false; };
+  }, [url, kind]);
+
+  if (!artifact) return null;
+  const size = artifact.size >= 1024 * 1024 ? `${(artifact.size / 1024 / 1024).toFixed(1)} MB`
+    : artifact.size >= 1024 ? `${(artifact.size / 1024).toFixed(1)} KB` : `${artifact.size} B`;
+
+  let body;
+  if (kind === 'image') {
+    body = <img src={url} alt={artifact.path} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block', margin: 'auto', background: 'var(--bg-inset)' }} />;
+  } else if (kind === 'pdf') {
+    body = <iframe title={artifact.path} src={url} style={{ width: '100%', height: '100%', border: 'none', background: 'var(--bg-inset)' }} />;
+  } else if (kind === 'text') {
+    body = err ? <div style={{ padding: 'var(--sp-3)', color: 'var(--status-critical)' }}>Could not load it: {err}</div>
+      : text === null ? <div style={{ padding: 'var(--sp-3)', color: 'var(--ink-2)' }}>Loading…</div>
+      : isMd ? <div style={{ padding: 'var(--sp-3) var(--sp-4)', maxWidth: '72ch', margin: '0 auto' }}><RichText text={text} slots={false} /></div>
+      : <pre style={{
+          margin: 0, padding: 'var(--sp-3) var(--sp-4)', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)',
+          lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--ink-0)', tabSize: 2,
+        }}>{text}</pre>;
+  } else {
+    body = (
+      <div style={{ margin: 'auto', textAlign: 'center', color: 'var(--ink-2)', display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)', alignItems: 'center' }}>
+        <Icon name="file" size={28} color="var(--ink-3)" />
+        <span>No preview for this kind of file.</span>
+        <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--brand)' }}>Download {name}</a>
+      </div>
+    );
+  }
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label={artifact.path} onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.55)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'var(--sp-4)',
+    }}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        width: 'min(1200px, 100%)', height: 'min(900px, 100%)', display: 'flex', flexDirection: 'column',
+        background: 'var(--bg-card)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-md)',
+        boxShadow: '0 24px 64px rgba(0,0,0,0.35)', overflow: 'hidden',
+      }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', padding: '6px var(--sp-2) 6px var(--sp-3)',
+          borderBottom: '1px solid var(--line)', background: 'var(--bg-panel)', flex: '0 0 auto', minWidth: 0,
+        }}>
+          <Icon name={kind === 'image' ? 'Image' : kind === 'text' ? 'transcript' : 'file'} size={14} color="var(--ink-2)" />
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }} title={artifact.path}>{artifact.path}</span>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }}>{size}</span>
+          <a href={url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none', flex: '0 0 auto' }}>
+            <Button variant="ghost" size="sm">Open in a new tab</Button>
+          </a>
+          <IconButton icon="close" label="Close (Esc)" onClick={onClose} size="sm" />
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex', flexDirection: 'column', background: kind === 'image' ? 'var(--bg-inset)' : 'var(--bg-card)' }}>
+          {body}
+        </div>
+      </div>
+    </div>
+  );
+}

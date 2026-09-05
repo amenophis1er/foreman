@@ -352,3 +352,16 @@ test('handleDeckRoute: matches only its two routes, 404s unknown runs and bad pa
     await rm(folder, { recursive: true, force: true });
   }
 });
+
+test('readArtifact: code reads as text, unknown extensions are sniffed, binaries download', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'deck-mime-'));
+  await writeFile(path.join(dir, 'page.yml'), 'a: 1\n');
+  await writeFile(path.join(dir, 'notes.weird'), 'plain words, no extension anyone knows\n');
+  await writeFile(path.join(dir, 'blob.bin'), Buffer.from([0x89, 0x00, 0x01, 0x02]));
+  const yml = await readArtifact(dir, 'page.yml');
+  const weird = await readArtifact(dir, 'notes.weird');
+  const bin = await readArtifact(dir, 'blob.bin');
+  assert.match(yml?.mime ?? '', /^text\/plain/);
+  assert.match(weird?.mime ?? '', /^text\/plain/);
+  assert.equal(bin?.mime, 'application/octet-stream');
+});

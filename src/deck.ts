@@ -112,6 +112,9 @@ const ARTIFACT_EXTS = new Set([
   'png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'pdf', 'md', 'html', 'txt', 'log', 'json', 'csv',
 ]);
 
+/** Files a run typically leaves in its work dir that a person wants to read, not download. */
+const CODE_EXTS = ['yml', 'yaml', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'css', 'py', 'sh', 'toml', 'xml', 'ini', 'sql', 'rb', 'go', 'rs', 'java', 'kt', 'swift', 'c', 'h', 'cpp', 'hpp', 'diff', 'patch', 'env', 'conf', 'cfg', 'lock', 'gitignore', 'txt'];
+
 const MIME: Record<string, string> = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
   gif: 'image/gif', svg: 'image/svg+xml', pdf: 'application/pdf',
@@ -121,7 +124,11 @@ const MIME: Record<string, string> = {
   html: 'text/plain; charset=utf-8',
   txt: 'text/plain; charset=utf-8', log: 'text/plain; charset=utf-8',
   json: 'application/json; charset=utf-8', csv: 'text/csv; charset=utf-8',
+  // Code and config read as text too. Served as plain text, never as a
+  // script or stylesheet type: the deck shows work, it does not load it.
+  ...Object.fromEntries(CODE_EXTS.map((e) => [e, 'text/plain; charset=utf-8'])),
 };
+
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -142,7 +149,7 @@ function artifactKind(p: string): DeckArtifact['kind'] {
   const e = ext(p);
   if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'].includes(e)) return 'image';
   if (e === 'pdf') return 'pdf';
-  if (['md', 'html', 'txt', 'log', 'json', 'csv'].includes(e)) return 'text';
+  if (['md', 'html', 'txt', 'log', 'json', 'csv', ...CODE_EXTS].includes(e)) return 'text';
   return 'other';
 }
 
@@ -770,7 +777,17 @@ export async function readArtifact(
     if (absPath !== root && !absPath.startsWith(root + path.sep)) return null;
     const st = await stat(absPath);
     if (!st.isFile() || st.size > MAX_ARTIFACT_BYTES) return null;
-    return { absPath, mime: MIME[ext(absPath)] ?? 'application/octet-stream', size: st.size };
+    let mime = MIME[ext(absPath)];
+    if (!mime) {
+      // Unknown extension: look, don't guess. A file with no NUL in its first
+      // 8K is text a person can read in the viewer; anything else downloads.
+      const head = Buffer.alloc(SNIFF_BYTES);
+      const fh = await open(absPath, 'r');
+      let n = 0;
+      try { n = (await fh.read(head, 0, SNIFF_BYTES, 0)).bytesRead; } finally { await fh.close(); }
+      mime = n > 0 && isText(head.subarray(0, n)) ? 'text/plain; charset=utf-8' : 'application/octet-stream';
+    }
+    return { absPath, mime, size: st.size };
   } catch {
     return null;
   }

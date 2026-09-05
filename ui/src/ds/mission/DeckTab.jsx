@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Icon } from '../core/Icon';
 import { Empty } from '../core/Empty';
 import { SectionTitle } from '../core/SectionTitle';
+import { ArtifactViewer } from './ArtifactViewer';
 
 const STATUS_LABEL = { added: 'added', modified: 'modified', deleted: 'deleted', renamed: 'renamed' };
 const STATUS_COLOR = {
@@ -101,6 +102,8 @@ function FileRow({ f }) {
  */
 export function DeckTab({ runId, deck, loading, error, missing, style }) {
   const now = Date.now();
+  // The artifact being looked at, in place. One at a time; null when none.
+  const [viewing, setViewing] = useState(null);
   const wrap = { padding: 'var(--sp-3)', display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)', ...style };
 
   if (error) {
@@ -151,33 +154,37 @@ export function DeckTab({ runId, deck, loading, error, missing, style }) {
         {images.length > 0 && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: 'var(--sp-2)', marginBottom: others.length ? 'var(--sp-3)' : 0 }}>
             {images.map((a) => (
-              <a key={a.path} href={artifactUrl(runId, a.path)} target="_blank" rel="noopener noreferrer"
+              <button key={a.path} type="button" onClick={() => setViewing(a)}
                 title={`${a.path} · ${fmtSize(a.size)} · ${fmtAgo(a.mtimeMs, now)}`}
-                style={{ display: 'block', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', overflow: 'hidden', background: 'var(--bg-inset)', color: 'inherit', textDecoration: 'none' }}>
+                style={{ display: 'block', padding: 0, width: '100%', textAlign: 'left', cursor: 'pointer', font: 'inherit', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', overflow: 'hidden', background: 'var(--bg-inset)', color: 'inherit' }}>
                 <img src={artifactUrl(runId, a.path)} alt={a.path} loading="lazy"
                   style={{ display: 'block', width: '100%', aspectRatio: '16 / 10', objectFit: 'cover' }} />
                 <div style={{
                   padding: '4px 6px', fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--ink-1)',
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>{a.path.split('/').pop()}</div>
-              </a>
+              </button>
             ))}
           </div>
         )}
         {others.map((a) => (
-          <a key={a.path} href={artifactUrl(runId, a.path)} target="_blank" rel="noopener noreferrer"
+          <button key={a.path} type="button" onClick={() => setViewing(a)}
             style={{
-              display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', padding: '4px 0',
-              fontSize: 'var(--fs-sm)', color: 'inherit', textDecoration: 'none', minWidth: 0,
+              display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', padding: '4px 0', width: '100%',
+              fontSize: 'var(--fs-sm)', color: 'inherit', minWidth: 0, background: 'none', border: 'none',
+              cursor: 'pointer', font: 'inherit', textAlign: 'left',
             }}>
             <Icon name={a.kind === 'pdf' ? 'file' : a.kind === 'text' ? 'transcript' : 'file'} size={13} color="var(--ink-2)" />
             <span style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>{a.path}</span>
             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }}>
               {fmtSize(a.size)} · {fmtAgo(a.mtimeMs, now)}
             </span>
-          </a>
+          </button>
         ))}
       </section>
+      {viewing && (
+        <ArtifactViewer artifact={viewing} url={artifactUrl(runId, viewing.path)} onClose={() => setViewing(null)} />
+      )}
     </div>
   );
 }
