@@ -814,7 +814,8 @@ function applyChatWire(s: ChatView, e: WireEvent): ChatView {
         ...s,
         question: s.question?.id === d.id ? null : s.question,
         entries: body ? [...s.entries, {
-          id: ++seq, ts, agent: 'you', kind: 'steer', title: 'you chose', body,
+          id: ++seq, ts, agent: 'you', kind: 'steer',
+          title: d.source ? `you chose · via ${d.source}` : 'you chose', body,
         }] : s.entries,
       };
     }

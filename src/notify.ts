@@ -18,18 +18,23 @@
  *    needs them, something stalled, something was decided for them, a run
  *    ended. The existing Settings toggles (needs you / run finished / budget)
  *    are the filter, so a channel obeys the same preferences the tab does.
- *  - **Never a second answer pipeline.** Phase A only notifies; a message is
- *    edited when the thing it announced is resolved, so a phone shows the
- *    outcome, not a stale question. Answering from the channel (Phase B) will
- *    go through the exact routes the picker uses.
+ *  - **Never a second answer pipeline.** Answering from the channel (Phase B)
+ *    produces the same calls the picker and the approval card make — the
+ *    server resolves them, emits the same events, and the transcript shows
+ *    the same entry, tagged with where it came from. A message is edited
+ *    when the thing it announced is resolved, whichever side resolved it.
  */
+
+/** One inline button. `data` must round-trip through the channel (Telegram caps it at 64 bytes). */
+export interface Button { label: string; data: string }
 
 /** A delivery channel. Never throws; a failed delivery is a lost tap, not a lost run. */
 export interface Transport {
   readonly name: string;
   /** Returns an opaque message id if the channel supports editing later. */
-  send(text: string): Promise<string | null>;
-  edit(id: string, text: string): Promise<void>;
+  send(text: string, opts?: { buttons?: Button[][] }): Promise<string | null>;
+  /** Replaces the text and drops any buttons unless new ones are given. */
+  edit(id: string, text: string, opts?: { buttons?: Button[][] }): Promise<void>;
 }
 
 /** The same envelope the SSE clients get, plus the event name. */
@@ -59,6 +64,12 @@ export interface NotifyContext {
   runLabel?: (runId: string) => string | undefined;
 }
 
+/** What the channel can answer, in the shape the server's resolve routes take. */
+export type Answer =
+  | { kind: 'perm'; id: string; behavior: 'allow' | 'deny' }
+  | { kind: 'q'; id: string; text: string }
+  | { kind: 'cq'; projectId: string; id: string; answers: Record<string, string> };
+
 /** How long an identical announcement is suppressed. */
 export const DEDUPE_TTL_MS = 60_000;
 
@@ -76,6 +87,45 @@ export interface Shaped {
   /** Which preference gates it. */
   gate: keyof NotifyPrefs;
   text: string;
+  buttons?: Button[][];
+}
+
+interface AskQuestion { question: string; options: Array<{ label: string; hint?: string }>; multi?: boolean }
+
+/**
+ * A pending ask the channel may answer. Kept by the hub so a tap can be
+ * turned back into the exact call the tab would have made.
+ */
+interface PendingAsk {
+  key: string;
+  projectId: string;
+  messageId?: string;
+  transport?: Transport;
+  kind: 'perm' | 'q' | 'cq';
+  id: string;
+  /** cq only: the questions, the answers collected so far, and which is being shown. */
+  questions?: AskQuestion[];
+  answers?: Record<string, string>;
+  index?: number;
+  head?: string;
+}
+
+/** Keyboard for one planner question: one option per row so long labels stay readable. */
+function optionRows(askId: string, qi: number, q: AskQuestion): Button[][] {
+  return (q.options ?? []).slice(0, 6).map((o, oi) => [{
+    label: `${oi + 1}. ${clip(o.label, 40)}${oi === 0 ? ' ★' : ''}`,
+    data: `cq|${askId}|${qi}|${oi}`,
+  }]);
+}
+
+/** Text for a planner question step: which question, its options with hints, progress. */
+function cqStep(head: string, qs: AskQuestion[], qi: number, answers: Record<string, string>): string {
+  const q = qs[qi];
+  const done = qs.slice(0, qi).map((p) => `✓ ${esc(clip(p.question, 60))} → <b>${esc(answers[p.question])}</b>`).join('\n');
+  const opts = (q.options ?? []).slice(0, 6).map((o, oi) =>
+    `${oi + 1}. <b>${esc(o.label)}</b>${oi === 0 ? ' ★' : ''}${o.hint ? ` — <i>${esc(clip(o.hint, 90))}</i>` : ''}`).join('\n');
+  return `${head}${done ? `\n${done}` : ''}\n\n${qs.length > 1 ? `<b>${qi + 1}/${qs.length}</b> · ` : ''}${esc(q.question)}\n${opts}` +
+    `\n<i>Tap an option, or reply with your own answer.</i>`;
 }
 
 /**
@@ -104,19 +154,24 @@ export function shape(env: Envelope, ctx: NotifyContext): Shaped | null {
         text: `${head('Needs you — approval')}${runLine}\n${esc(d.agent)} wants <code>${esc(d.toolName)}</code>` +
           (d.description ? `\n${esc(clip(d.description))}` : '') +
           `\n<i>Auto-denied if unanswered in 10 min.</i>${foot}`,
+        // Allow and deny only. "Always" grants a path or a tool for the whole
+        // run, and that is a decision for a screen showing what it opens.
+        buttons: [[{ label: '✓ Allow', data: `p|${d.id}|allow` }, { label: '✗ Deny', data: `p|${d.id}|deny` }]],
       };
     case 'question':
       return {
         key: `q:${d.id}`, gate: 'needsYou',
         text: `${head('Needs you — director asks')}${runLine}\n${esc(clip(d.question, 300))}` +
-          `\n<i>Answered "decide yourself" if unanswered in 10 min.</i>${foot}`,
+          `\n<i>Reply to this message to answer. "Decide yourself" if unanswered in 10 min.</i>${foot}`,
       };
     case 'chat_question': {
-      const qs = Array.isArray(d.questions) ? d.questions as Array<{ question: string }> : [];
+      const qs = Array.isArray(d.questions) ? d.questions as AskQuestion[] : [];
+      if (!qs.length) return null;
+      const h = head('Needs you — the planner asks');
       return {
         key: `cq:${d.id}`, gate: 'needsYou',
-        text: `${head('Needs you — the planner asks')}\n` +
-          qs.map((q, i) => `${i + 1}. ${esc(clip(q.question, 120))}`).join('\n') + foot,
+        text: cqStep(h, qs, 0, {}) + foot,
+        buttons: optionRows(String(d.id), 0, qs[0]),
       };
     }
 
@@ -169,24 +224,29 @@ export function shape(env: Envelope, ctx: NotifyContext): Shaped | null {
 /**
  * Events that close something announced earlier. The earlier message is
  * edited rather than a new one sent: a phone should show the outcome, not a
- * stale question above the answer to it.
+ * stale question above the answer to it. Editing also drops the buttons.
  */
 export function resolution(env: Envelope): { key: string; suffix: string } | null {
   const d = env.data ?? {};
+  const via = d.source ? ` · via ${esc(d.source)}` : '';
   switch (env.event) {
     case 'permission_resolved':
-      return { key: `perm:${d.id}`, suffix: `\n\n✓ ${esc(d.behavior ?? 'resolved')}` };
+      return { key: `perm:${d.id}`, suffix: `\n\n✓ ${esc(d.behavior ?? 'resolved')}${via}` };
     case 'question_answered':
-      return { key: `q:${d.id}`, suffix: '\n\n✓ answered' };
-    case 'chat_answered':
-      return { key: `cq:${d.id}`, suffix: '\n\n✓ answered' };
+      return { key: `q:${d.id}`, suffix: `\n\n✓ answered${via}` };
+    case 'chat_answered': {
+      const a = (d.answers ?? {}) as Record<string, string>;
+      const lines = Object.entries(a).map(([q, v]) => `✓ ${esc(clip(q, 60))} → <b>${esc(v)}</b>`).join('\n');
+      return { key: `cq:${d.id}`, suffix: `\n\n${lines || '✓ answered'}${via}` };
+    }
     default:
       return null;
   }
 }
 
 /**
- * The hub: one per server. Attach transports; feed it every envelope.
+ * The hub: one per server. Attach transports; feed it every envelope; hand
+ * it the channel's taps and replies, and it hands back {@link Answer}s.
  *
  * Deliveries are fire-and-forget and never awaited by the emitter — a slow
  * or dead channel must not slow a run. Failures are counted, not thrown.
@@ -195,6 +255,9 @@ export class NotifyHub {
   private transports: Transport[] = [];
   private recent = new Map<string, number>();
   private sent = new Map<string, { transport: Transport; id: string; text: string }>();
+  private pending = new Map<string, PendingAsk>();
+  private byMessage = new Map<string, string>(); // messageId -> ask key
+  private answerHandler: ((a: Answer) => void) | null = null;
   public failures = 0;
   public delivered = 0;
 
@@ -203,6 +266,9 @@ export class NotifyHub {
   attach(t: Transport): void { this.transports.push(t); }
   detach(name: string): void { this.transports = this.transports.filter((t) => t.name !== name); }
   get active(): string[] { return this.transports.map((t) => t.name); }
+
+  /** The server registers the one function that turns an answer into a resolve. */
+  onAnswer(fn: (a: Answer) => void): void { this.answerHandler = fn; }
 
   /** Called from the broadcaster. Synchronous by design; work happens off the emitter's path. */
   handle(env: Envelope): void {
@@ -219,10 +285,102 @@ export class NotifyHub {
     // re-asking agent, and one tap is enough.
     if (last && now - last < DEDUPE_TTL_MS && !/timeout$/.test(env.event)) return;
     this.recent.set(s.key, now);
-    void this.deliver(s.key, s.text);
+    this.remember(env, s);
+    void this.deliver(s.key, s.text, s.buttons);
   }
 
-  private async deliver(key: string, text: string): Promise<void> {
+  /** Keep what a tap will need, so the channel never has to know Foreman's routes. */
+  private remember(env: Envelope, s: Shaped): void {
+    const d = env.data ?? {};
+    if (env.event === 'permission_request') {
+      this.pending.set(s.key, { key: s.key, projectId: env.projectId, kind: 'perm', id: String(d.id) });
+    } else if (env.event === 'question') {
+      this.pending.set(s.key, { key: s.key, projectId: env.projectId, kind: 'q', id: String(d.id) });
+    } else if (env.event === 'chat_question') {
+      const qs = d.questions as AskQuestion[];
+      const project = this.ctx().projectName?.(env.projectId) ?? env.projectId;
+      this.pending.set(s.key, {
+        key: s.key, projectId: env.projectId, kind: 'cq', id: String(d.id),
+        questions: qs, answers: {}, index: 0,
+        head: `<b>Needs you — the planner asks</b> · ${esc(project)}`,
+      });
+    } else if (/timeout$/.test(env.event)) {
+      this.pending.delete(s.key);
+    }
+  }
+
+  /**
+   * A button was tapped. `data` is what {@link shape} put on the button;
+   * anything else — a stale message, a forged payload — is ignored.
+   */
+  handleCallback(data: string, messageId?: string): boolean {
+    const [kind, id, a, b] = data.split('|');
+    if (kind === 'p' && (a === 'allow' || a === 'deny')) {
+      const ask = this.pending.get(`perm:${id}`);
+      if (!ask) return false;
+      // Dispatched once. The resolution event that follows still edits the
+      // message; a second tap on the same buttons must find nothing to do.
+      this.pending.delete(ask.key);
+      this.answerHandler?.({ kind: 'perm', id, behavior: a });
+      return true;
+    }
+    if (kind === 'cq') {
+      const ask = this.pending.get(`cq:${id}`);
+      if (!ask || !ask.questions || ask.answers === undefined || ask.index === undefined) return false;
+      const qi = Number(a), oi = Number(b);
+      if (qi !== ask.index) return false; // a tap on an earlier step's buttons
+      const q = ask.questions[qi]; const opt = q?.options[oi];
+      if (!q || !opt) return false;
+      ask.answers[q.question] = opt.label;
+      return this.advance(ask, messageId);
+    }
+    return false;
+  }
+
+  /**
+   * Free text arrived. A reply to a known message answers that ask; otherwise
+   * it answers the one director question pending, or the current step of the
+   * one planner question pending — the same "something else" the picker has.
+   */
+  handleText(text: string, replyToMessageId?: string): boolean {
+    const t = text.trim();
+    if (!t) return false;
+    let ask: PendingAsk | undefined;
+    if (replyToMessageId) ask = this.pending.get(this.byMessage.get(replyToMessageId) ?? '');
+    if (!ask) {
+      const open = [...this.pending.values()].filter((p) => p.kind !== 'perm');
+      if (open.length === 1) ask = open[0];
+    }
+    if (!ask) return false;
+    if (ask.kind === 'q') {
+      this.pending.delete(ask.key);
+      this.answerHandler?.({ kind: 'q', id: ask.id, text: t });
+      return true;
+    }
+    if (ask.kind === 'cq' && ask.questions && ask.answers && ask.index !== undefined) {
+      ask.answers[ask.questions[ask.index].question] = t;
+      return this.advance(ask, ask.messageId);
+    }
+    return false;
+  }
+
+  /** Next planner question, or the finished answer set. */
+  private advance(ask: PendingAsk, messageId?: string): boolean {
+    const qs = ask.questions!, answers = ask.answers!;
+    ask.index = (ask.index ?? 0) + 1;
+    if (ask.index < qs.length) {
+      const text = cqStep(ask.head ?? '', qs, ask.index, answers);
+      const m = this.sent.get(ask.key);
+      const id = messageId ?? m?.id;
+      if (m && id) void m.transport.edit(id, text, { buttons: optionRows(ask.id, ask.index, qs[ask.index]) }).catch(() => { this.failures++; });
+      return true;
+    }
+    this.pending.delete(ask.key);
+    this.answerHandler?.({ kind: 'cq', projectId: ask.projectId, id: ask.id, answers });
+    return true;
+  }
+
+  private async deliver(key: string, text: string, buttons?: Button[][]): Promise<void> {
     for (const t of this.transports) {
       try {
         const existing = this.sent.get(key);
@@ -231,22 +389,30 @@ export class NotifyHub {
           await t.edit(existing.id, text);
           existing.text = text;
         } else {
-          const id = await t.send(text);
-          if (id) this.sent.set(key, { transport: t, id, text });
+          const id = await t.send(text, buttons ? { buttons } : undefined);
+          if (id) {
+            this.sent.set(key, { transport: t, id, text });
+            this.byMessage.set(id, key);
+            const ask = this.pending.get(key);
+            if (ask) { ask.messageId = id; ask.transport = t; }
+          }
         }
         this.delivered++;
       } catch { this.failures++; }
     }
     if (this.sent.size > 500) {
-      for (const k of [...this.sent.keys()].slice(0, 100)) this.sent.delete(k);
+      for (const k of [...this.sent.keys()].slice(0, 100)) { this.sent.delete(k); this.pending.delete(k); }
     }
   }
 
   private async resolve(key: string, suffix: string): Promise<void> {
+    this.pending.delete(key);
     const m = this.sent.get(key);
     if (!m) return;
+    // Edited without buttons: an answered question offers nothing to tap.
     try { await m.transport.edit(m.id, m.text + suffix); } catch { this.failures++; }
     this.sent.delete(key);
+    this.byMessage.delete(m.id);
   }
 
   /** Send something outside the event flow — the Settings "test" button. */

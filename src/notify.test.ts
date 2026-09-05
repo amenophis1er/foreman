@@ -207,3 +207,98 @@ test('the deep link opens the bot with the code pre-filled, whatever form the us
   // Telegram delivers that payload as the message "/start W55TMZ" — exactly
   // what linkByCode waits for, so scanning is the same act as typing.
 });
+
+// ---------------------------------------------------------------------------
+// Phase B: answering from the channel
+// ---------------------------------------------------------------------------
+
+function buttonTransport() {
+  const t = fakeTransport('tg') as ReturnType<typeof fakeTransport> & { buttons: Array<unknown> ; editButtons: Array<unknown> };
+  t.buttons = []; t.editButtons = [];
+  const send = t.send.bind(t), edit = t.edit.bind(t);
+  t.send = async (text, opts) => { t.buttons.push(opts?.buttons ?? null); return send(text); };
+  t.edit = async (id, text, opts) => { t.editButtons.push(opts?.buttons ?? null); return edit(id, text); };
+  return t;
+}
+
+test('an approval carries Allow/Deny buttons, and a tap resolves it — never "always"', async () => {
+  const t = buttonTransport();
+  const answers: unknown[] = [];
+  const hub = new NotifyHub(ctx()); hub.attach(t); hub.onAnswer((a) => answers.push(a));
+  hub.handle(env('permission_request', { id: 'toolu_1', agent: 'director', toolName: 'Bash' }));
+  await tick();
+  const rows = t.buttons[0] as Array<Array<{ label: string; data: string }>>;
+  assert.equal(rows.length, 1);
+  assert.deepEqual(rows[0].map((b) => b.data), ['p|toolu_1|allow', 'p|toolu_1|deny']);
+  assert.ok(rows.flat().every((b) => !/always/i.test(b.label)));
+  assert.equal(hub.handleCallback('p|toolu_1|deny', '1'), true);
+  assert.deepEqual(answers, [{ kind: 'perm', id: 'toolu_1', behavior: 'deny' }]);
+});
+
+test('a forged or stale tap is ignored', () => {
+  const hub = new NotifyHub(ctx()); hub.attach(fakeTransport());
+  assert.equal(hub.handleCallback('p|nope|allow'), false);
+  assert.equal(hub.handleCallback('garbage'), false);
+  assert.equal(hub.handleCallback('cq|nope|0|0'), false);
+});
+
+test('planner questions step through one message; the last tap answers them all', async () => {
+  const t = buttonTransport();
+  const answers: unknown[] = [];
+  const hub = new NotifyHub(ctx()); hub.attach(t); hub.onAnswer((a) => answers.push(a));
+  hub.handle(env('chat_question', { id: 'q-1', questions: [
+    { question: 'Stack?', options: [{ label: 'Static HTML' }, { label: 'React' }] },
+    { question: 'Imagery?', options: [{ label: 'Stock photos', hint: 'Unsplash' }, { label: 'Placeholders' }] },
+  ] }, { runId: null, chat: true }));
+  await tick();
+  assert.match(t.sent[0], /1\/2/);
+  const first = t.buttons[0] as Array<Array<{ data: string; label: string }>>;
+  assert.deepEqual(first.map((r) => r[0].data), ['cq|q-1|0|0', 'cq|q-1|0|1']);
+  assert.match(first[0][0].label, /★/, 'the recommended option is starred');
+
+  // A tap on step 2's buttons before step 2 exists is stale and ignored.
+  assert.equal(hub.handleCallback('cq|q-1|1|0', '1'), false);
+  // Tap step 1 → the message is edited to step 2 with step 2's buttons.
+  assert.equal(hub.handleCallback('cq|q-1|0|1', '1'), true);
+  await tick();
+  assert.equal(answers.length, 0, 'not answered until every question has a value');
+  assert.match(t.edits.at(-1)!.text, /✓ Stack\? → <b>React<\/b>[\s\S]*2\/2[\s\S]*Imagery\?/);
+  const second = t.editButtons.at(-1) as Array<Array<{ data: string }>>;
+  assert.deepEqual(second.map((r) => r[0].data), ['cq|q-1|1|0', 'cq|q-1|1|1']);
+  // Tap step 2 → the whole set is answered, in the picker's shape.
+  hub.handleCallback('cq|q-1|1|0', '1');
+  assert.deepEqual(answers, [{ kind: 'cq', projectId: 'p1', id: 'q-1', answers: { 'Stack?': 'React', 'Imagery?': 'Stock photos' } }]);
+});
+
+test('a typed reply is the picker’s "something else", and a director question takes free text', async () => {
+  const answers: unknown[] = [];
+  const hub = new NotifyHub(ctx()); hub.attach(fakeTransport()); hub.onAnswer((a) => answers.push(a));
+  hub.handle(env('question', { id: 'dq', question: 'Ship to prod?' }));
+  await tick();
+  assert.equal(hub.handleText('  yes, but after the tests  '), true);
+  assert.deepEqual(answers.at(-1), { kind: 'q', id: 'dq', text: 'yes, but after the tests' });
+  // With nothing pending, text is not an answer to anything.
+  assert.equal(hub.handleText('hello?'), false);
+});
+
+test('the bot dispatches taps and texts from the linked chat only, and acknowledges every tap', async (t) => {
+  const { TelegramBot } = await import('./notify/telegram.js');
+  const tg = await stubTelegram({ updates: [[
+    { update_id: 10, callback_query: { id: 'cb1', data: 'p|x|allow', from: { id: 999 }, message: { message_id: 5, chat: { id: 999 } } } },
+    { update_id: 11, callback_query: { id: 'cb2', data: 'p|x|deny', from: { id: 555 }, message: { message_id: 6, chat: { id: 555 } } } },
+    { update_id: 12, message: { message_id: 7, text: 'from a stranger', chat: { id: 999 } } },
+    { update_id: 13, message: { message_id: 8, text: 'from me', chat: { id: 555 }, reply_to_message: { message_id: 6 } } },
+  ]] });
+  t.after(() => tg.close());
+  const taps: unknown[] = []; const texts: unknown[] = [];
+  const bot = new TelegramBot('123:abc', tg.base, '555', {
+    onCallback: (d, m) => taps.push([d, m]), onText: (x, r) => texts.push([x, r]),
+  });
+  bot.start();
+  for (let i = 0; i < 40 && taps.length + texts.length < 2; i++) await tick();
+  bot.stop();
+  assert.deepEqual(taps, [['p|x|deny', '6']], 'only the linked chat’s tap is dispatched');
+  assert.deepEqual(texts, [['from me', '6']]);
+  const acks = tg.calls.filter((c) => c.method === 'answerCallbackQuery').map((c) => c.body.callback_query_id);
+  assert.deepEqual(acks.sort(), ['cb1', 'cb2'], 'a stranger’s tap is acknowledged too, so their spinner stops');
+});

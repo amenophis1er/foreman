@@ -60,7 +60,7 @@ import { ensureGateway, gatewayStatus, gatewayUsage, releaseGateways, stopGatewa
 import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
 import { deleteSecret, getSecret, hasSecret, putSecret } from './secrets.js';
 import { NotifyHub } from './notify.js';
-import { getMe, linkByCode, linkCode, telegramStartLink, telegramTransport } from './notify/telegram.js';
+import { TelegramBot, getMe, linkCode, telegramStartLink, telegramTransport } from './notify/telegram.js';
 import QRCode from 'qrcode';
 import { ANTHROPIC_MODELS } from './anthropic-models.js';
 import { codexHome, codexModels, readCodexAuth } from './codex.js';
@@ -542,15 +542,48 @@ const notifyHub = new NotifyHub(() => {
 const projectsCache = new Map<string, { name: string }>();
 const runLabelCache = new Map<string, { title?: string; mission?: string }>();
 
-/** Attach (or replace) the Telegram transport from stored token + linked chat. */
+/**
+ * The one reader of the bot's updates — link codes, button taps, replies.
+ * Created whenever a token exists (linking needs it before any chat is
+ * linked); the transport is attached only once a chat is.
+ */
+let telegramBot: TelegramBot | null = null;
+
+/** (Re)build the Telegram side from the stored token and linked chat. */
 async function reattachTelegram(): Promise<boolean> {
   notifyHub.detach('telegram');
   const s = await notifySettings();
   const token = await getSecret(store.root, 'telegram');
-  if (!token || !s.telegramChatId) return false;
+  if (!token) { void telegramBot?.stop(); telegramBot = null; return false; }
+  if (!telegramBot) {
+    telegramBot = new TelegramBot(token, undefined, s.telegramChatId ?? null, {
+      // Taps and replies from the linked chat become the same calls the tab
+      // makes, through the hub — the channel never learns Foreman's routes.
+      onCallback: (data, messageId) => notifyHub.handleCallback(data, messageId),
+      onText: (text, replyTo) => notifyHub.handleText(text, replyTo),
+    });
+    telegramBot.start();
+  }
+  telegramBot.linkedChatId = s.telegramChatId ?? null;
+  if (!s.telegramChatId) return false;
   notifyHub.attach(telegramTransport(token, s.telegramChatId));
   return true;
 }
+
+// An answer from the channel resolves exactly as one from the tab would. The
+// orchestrator emits the same events, the transcript shows the same entry,
+// and the phone's message is edited by that event like any other resolution.
+notifyHub.onAnswer((a) => {
+  if (a.kind === 'perm') {
+    activeRuns().some((r) => r.resolvePermission(a.id, a.behavior));
+  } else if (a.kind === 'q') {
+    activeRuns().some((r) => r.answerQuestion(a.id, a.text));
+  } else if (a.kind === 'cq') {
+    if (answerChatQuestion(a.projectId, a.id, a.answers)) {
+      makeChatEmitter(a.projectId)('chat_answered', { id: a.id, answers: a.answers, source: 'telegram' });
+    }
+  }
+});
 
 /** One linking attempt at a time; a new code cancels the previous wait. */
 let telegramLink: { code: string; abort(): void; startedAt: number } | null = null;
@@ -1222,6 +1255,7 @@ const server = http.createServer(async (req, res) => {
         await deleteSecret(store.root, 'telegram');
         await patchGlobalSettings({ telegramBot: undefined, telegramChatId: undefined, telegramChatLabel: undefined });
         notifyHub.detach('telegram');
+        void telegramBot?.stop(); telegramBot = null;
         json(res, 200, { ok: true });
       } else {
         json(res, 405, { error: 'method not allowed' });
@@ -1231,9 +1265,11 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST') {
         const token = await getSecret(store.root, 'telegram');
         if (!token) return json(res, 409, { error: 'store a bot token first' });
+        if (!telegramBot) await reattachTelegram();
+        if (!telegramBot) return json(res, 409, { error: 'could not start the Telegram reader' });
         telegramLink?.abort();
         const code = linkCode();
-        const link = linkByCode(token, code);
+        const link = telegramBot.link(code);
         telegramLink = { code, abort: link.abort, startedAt: Date.now() };
         // Resolves in the background; the UI polls GET /notify for the result.
         void link.done.then(async (chat) => {
