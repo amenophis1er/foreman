@@ -7,7 +7,7 @@ import {
   DEFAULT_REPEAT_LIMIT, DIRECTOR_CHARTER, MissionRun, RECENT_LINES, WORKER_CHARTER, WORK_DIR, accumulateUsage,
   activityHint, ensureIgnoreLines, loopingWorkerReport,
   stalledWorkerReport, workerStatusBlock,
-  watchRepeats, watchSilence,
+  watchRepeats, watchSilence, REPEAT_EXEMPT, observeToolUse,
   DEFAULT_ASK_TIMEOUT_MS, armAskTimeout, unattendedAnswer, unattendedDenyMessage,
 } from './orchestrator.js';
 import { makePolicy, type PendingPermission } from './policy.js';
@@ -955,4 +955,29 @@ test('the unattended messages and the temp-dir denial say where to go, and the c
   assert.ok(WORKER_CHARTER.includes('denied outright'));
   assert.ok(!DIRECTOR_CHARTER.includes('prompts the human and stalls'), 'the old sentence is gone');
   assert.ok(!WORKER_CHARTER.includes('prompts the human and stalls'));
+});
+
+// ---------------------------------------------------------------------------
+// Supervision is not a loop
+// ---------------------------------------------------------------------------
+
+test('polling check_workers with identical input never counts as a loop', () => {
+  // Fired 27 seconds into the first mixed-provider run: a director calling
+  // check_workers five times while a worker built. That is a director doing
+  // its job; a second streak would have interrupted a healthy mission.
+  let fired = 0;
+  const r = watchRepeats(DEFAULT_REPEAT_LIMIT, () => fired++);
+  for (let i = 0; i < 20; i++) observeToolUse(r, 'mcp__foreman__check_workers', {});
+  for (let i = 0; i < 20; i++) observeToolUse(r, 'mcp__foreman__wait_for_worker', { workerId: 'worker-1' });
+  for (let i = 0; i < 20; i++) observeToolUse(r, 'mcp__foreman__report_progress', { status: 'building' });
+  assert.equal(fired, 0, 'status reads carry their information in when they are made, not in their input');
+  for (const name of REPEAT_EXEMPT) assert.match(name, /^mcp__foreman__/, 'only Foreman’s own supervision tools are exempt');
+});
+
+test('a real repeat still fires through the same path', () => {
+  // The exemption must not have quietly disabled the detector.
+  let fired = 0;
+  const r = watchRepeats(3, () => fired++);
+  for (let i = 0; i < 3; i++) observeToolUse(r, 'Bash', { command: 'npm test' });
+  assert.equal(fired, 1);
 });

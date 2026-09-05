@@ -349,6 +349,32 @@ export function stalledWorkerReport(
 export const DEFAULT_REPEAT_LIMIT = 5;
 
 /**
+ * Tools whose identical repetition is supervision, not a loop.
+ *
+ * `check_workers` takes no arguments and answers differently each time a
+ * worker moves; calling it five times in a row while a worker builds is a
+ * director doing its job. The detector fired on exactly that, twenty-seven
+ * seconds into the first mixed-provider run — and a second streak would have
+ * interrupted a healthy mission for the crime of watching its crew. A status
+ * read carries its information in *when* it is made, so sameness of input
+ * says nothing; these are exempt, and the charter steers polling toward
+ * `wait_for_worker` instead, which blocks until something has changed.
+ */
+export const REPEAT_EXEMPT: ReadonlySet<string> = new Set([
+  'mcp__foreman__check_workers',
+  'mcp__foreman__wait_for_worker',
+  'mcp__foreman__report_progress',
+]);
+
+/** Feed a tool use to a repeat watcher, unless it is one whose repetition is the point. */
+export function observeToolUse(
+  repeats: { observe(toolName: string, input: unknown): void }, toolName: string, input: unknown,
+): void {
+  if (REPEAT_EXEMPT.has(toolName)) return;
+  repeats.observe(toolName, input);
+}
+
+/**
  * JSON with keys sorted at every depth, so two inputs that differ only in
  * key order compare equal. Models emit the same arguments in a different
  * order from one turn to the next often enough that plain JSON.stringify
@@ -564,8 +590,10 @@ directing worker agents. Non-negotiable rules, in priority order:
    tasks together so they run in parallel, and never spawn two workers on the
    same files. Supervise with mcp__foreman__check_workers — it shows each
    worker's age, recent activity and finished report — rather than waiting
-   blind; use mcp__foreman__wait_for_worker only when you need a result before
-   you can proceed (it is bounded, and tells you if the worker is still going).
+   blind. Do not poll check_workers in a tight loop — each call is a turn you
+   pay for and it will not change faster than the worker does; to wait for a
+   result, call mcp__foreman__wait_for_worker, which blocks until something
+   has changed (it is bounded, and tells you if the worker is still going).
    Use mcp__foreman__message_worker to send follow-ups or corrections to a
    finished worker. You may read files and run verification commands yourself,
    but implementation edits belong to workers. A worker's report is a claim to
@@ -1097,7 +1125,7 @@ export class MissionRun {
       for await (const msg of this.directorQ as AsyncIterable<SDKMessage>) {
         const m = msg as Record<string, unknown>;
         if (typeof m.session_id === 'string') this.meta.directorSessionId = m.session_id;
-        for (const t of toolUsesOf(m)) repeats.observe(t.name, t.input);
+        for (const t of toolUsesOf(m)) observeToolUse(repeats, t.name, t.input);
         if (m.type === 'result') {
           // Cumulative per query() call — record only the delta per turn.
           const total = m.total_cost_usd as number | undefined;
@@ -1758,7 +1786,7 @@ export class MissionRun {
         const m = msg as Record<string, unknown>;
         if (typeof m.session_id === 'string') w.sessionId = m.session_id;
         this.noteActivity(w, m);
-        for (const t of toolUsesOf(m)) repeats.observe(t.name, t.input);
+        for (const t of toolUsesOf(m)) observeToolUse(repeats, t.name, t.input);
         if (m.type === 'result') {
           report = String(m.result ?? '');
           isError = Boolean(m.is_error);
