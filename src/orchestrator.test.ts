@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import {
-  DEFAULT_REPEAT_LIMIT, MissionRun, accumulateUsage, loopingWorkerReport, stalledWorkerReport,
+  DEFAULT_REPEAT_LIMIT, MissionRun, RECENT_LINES, accumulateUsage, activityHint, loopingWorkerReport,
+  stalledWorkerReport, workerStatusBlock,
   watchRepeats, watchSilence,
 } from './orchestrator.js';
 import type { AgentEnv } from './provider.js';
@@ -416,4 +417,198 @@ test('the looping report steers the director away from resending the brief', () 
   assert.match(r, /not a task that failed/);
   assert.doesNotMatch(r, /Output before/);
   assert.match(loopingWorkerReport('worker-3', 'Bash', 5, 'ran tests'), /Output before it was stopped:\nran tests/);
+});
+
+// ---------------------------------------------------------------------------
+// Spawning is asynchronous; the director supervises instead of waiting
+// ---------------------------------------------------------------------------
+
+type Outcome = { report: string; isError: boolean };
+type ToolSurface = {
+  runWorker(id: string, prompt: string, resume?: string): Promise<Outcome>;
+  capReached(): string | null;
+  spawnWorkerTool(a: { task: string }): string;
+  checkWorkersTool(a?: { workerId?: string }): string;
+  waitForWorkerTool(a?: { workerId?: string; timeoutSeconds?: number }): Promise<string>;
+  messageWorkerTool(a: { worker_id: string; message: string }): Promise<string>;
+  workers: Map<string, { status: string; sessionId?: string; recent?: string[]; toolCalls?: number }>;
+};
+
+/**
+ * A run whose workers are simulated: launchWorker() does the bookkeeping
+ * (record, events, done promise, stored report) around a runWorker() that
+ * here just sleeps and answers, so the tool handlers can be driven without an
+ * SDK session behind them.
+ */
+function stubbedRun(script: (id: string, prompt: string) => Promise<Outcome>) {
+  const events: Array<{ event: string; data: any }> = [];
+  const run = new MissionRun(meta(), (event, data) => events.push({ event, data }), () => {}, noopAgentEnv);
+  const t = run as unknown as ToolSurface;
+  t.runWorker = script;
+  return { run, t, events };
+}
+
+const slowWorker = (ms: number, report = 'did the thing') =>
+  async (id: string) => { await sleep(ms); return { report: `${id}: ${report}`, isError: false }; };
+
+test('spawn_worker returns before the worker resolves', async () => {
+  const { t, events } = stubbedRun(slowWorker(80));
+  const before = Date.now();
+  const reply = t.spawnWorkerTool({ task: 'build it' });
+  assert.ok(Date.now() - before < 50, 'the director must not be held for the worker');
+  assert.match(reply, /worker-1/);
+  assert.match(reply, /running/);
+  assert.match(reply, /check_workers/);
+  assert.match(reply, /wait_for_worker/);
+  // The record and its start event exist by the time the reply is built.
+  assert.equal(t.workers.get('worker-1')?.status, 'running');
+  assert.ok(events.some((e) => e.event === 'worker_started' && e.data.id === 'worker-1'));
+  await t.waitForWorkerTool({ workerId: 'worker-1' });
+});
+
+test('two spawns run concurrently and both show as running', async () => {
+  const { t } = stubbedRun(slowWorker(100));
+  t.spawnWorkerTool({ task: 'a' });
+  t.spawnWorkerTool({ task: 'b' });
+  const view = t.checkWorkersTool();
+  assert.match(view, /worker-1  running/);
+  assert.match(view, /worker-2  running/);
+  // Concurrent, not sequential: both finish in about one worker's time.
+  const start = Date.now();
+  await t.waitForWorkerTool({ workerId: 'worker-1' });
+  await t.waitForWorkerTool({ workerId: 'worker-2' });
+  assert.ok(Date.now() - start < 180, `took ${Date.now() - start}ms — workers ran one after the other`);
+});
+
+test('check_workers shows a finished report, and shows it again on the next call', async () => {
+  const { t, events } = stubbedRun(slowWorker(10, 'wrote index.html'));
+  t.spawnWorkerTool({ task: 'x' });
+  await t.waitForWorkerTool({ workerId: 'worker-1' });
+  const first = t.checkWorkersTool();
+  assert.match(first, /worker-1  done/);
+  assert.match(first, /report:\n\s+worker-1: wrote index\.html/);
+  // Already shown is not deleted: the director may need to re-read it.
+  assert.match(t.checkWorkersTool({ workerId: 'worker-1' }), /wrote index\.html/);
+  // The footer appears once for the whole response, not per worker.
+  assert.equal(first.match(/\[Run cost so far/g)?.length, 1);
+  const finished = events.find((e) => e.event === 'worker_finished');
+  assert.equal(finished?.data.status, 'done');
+  assert.match(finished?.data.report, /wrote index\.html/);
+});
+
+test('wait_for_worker returns the report on finish', async () => {
+  const { t } = stubbedRun(slowWorker(30, 'tests pass'));
+  t.spawnWorkerTool({ task: 'x' });
+  const out = await t.waitForWorkerTool({ workerId: 'worker-1' });
+  assert.match(out, /^\[worker-1 finished\] worker-1: tests pass/);
+  assert.match(out, /Run cost so far/);
+  // Asking again for a worker that has already finished answers immediately.
+  assert.match(await t.waitForWorkerTool({ workerId: 'worker-1' }), /tests pass/);
+});
+
+test('wait_for_worker on timeout reports still-running and does not throw', async () => {
+  const { t } = stubbedRun(slowWorker(150));
+  t.spawnWorkerTool({ task: 'x' });
+  const out = await t.waitForWorkerTool({ workerId: 'worker-1', timeoutSeconds: 0.02 });
+  assert.match(out, /worker-1  running/);
+  assert.match(out, /Still running/);
+  assert.match(out, /call wait_for_worker again/i);
+  assert.equal(t.workers.get('worker-1')?.status, 'running');
+  await t.waitForWorkerTool({ workerId: 'worker-1' });
+});
+
+test('wait_for_worker with no id returns when the first of two finishes', async () => {
+  const { t } = stubbedRun(async (id) => {
+    await sleep(id === 'worker-2' ? 20 : 200);
+    return { report: `${id} done`, isError: false };
+  });
+  t.spawnWorkerTool({ task: 'slow' });
+  t.spawnWorkerTool({ task: 'fast' });
+  const start = Date.now();
+  const out = await t.waitForWorkerTool();
+  assert.ok(Date.now() - start < 150, 'must not wait for the slow one');
+  assert.match(out, /^\[worker-2 finished\] worker-2 done/);
+  assert.equal(t.workers.get('worker-1')?.status, 'running');
+  await t.waitForWorkerTool({ workerId: 'worker-1' });
+  assert.match(await t.waitForWorkerTool(), /No worker is running/);
+});
+
+test('a failed worker is reported as FAILED and kept as error', async () => {
+  const { t } = stubbedRun(async () => ({ report: 'BLOCKED: which port?', isError: true }));
+  t.spawnWorkerTool({ task: 'x' });
+  const out = await t.waitForWorkerTool({ workerId: 'worker-1' });
+  assert.match(out, /^\[worker-1 FAILED\] BLOCKED/);
+  assert.equal(t.workers.get('worker-1')?.status, 'error');
+});
+
+test('the spawn gate still refuses once a cap is reached', () => {
+  const { t } = stubbedRun(slowWorker(10));
+  t.capReached = () => 'TURN CAP REACHED: 150 director turns.';
+  const reply = t.spawnWorkerTool({ task: 'one more' });
+  assert.match(reply, /Do not start new work/);
+  assert.equal(t.workers.size, 0, 'no worker may be started past the cap');
+});
+
+test('message_worker refuses a worker that is still running rather than forking its session', async () => {
+  const { t } = stubbedRun(async (id) => {
+    t.workers.get(id)!.sessionId = 'sess-1';
+    await sleep(60);
+    return { report: 'ok', isError: false };
+  });
+  t.spawnWorkerTool({ task: 'x' });
+  await sleep(5);
+  assert.match(await t.messageWorkerTool({ worker_id: 'worker-1', message: 'also do y' }), /still running/);
+  await t.waitForWorkerTool({ workerId: 'worker-1' });
+  // Finished: the follow-up resumes it, alongside whatever else is running.
+  t.spawnWorkerTool({ task: 'other' });
+  const out = await t.messageWorkerTool({ worker_id: 'worker-1', message: 'also do y' });
+  assert.match(out, /^\[worker-1 finished\] ok/);
+  await t.waitForWorkerTool({ workerId: 'worker-2' });
+});
+
+test('a worker persisted as running is not resurrected as running on resume', () => {
+  const run = new MissionRun(meta({ workers: [
+    { id: 'worker-1', status: 'running', costUsd: 0, task: 'x', sessionId: 's' },
+  ] }), () => {}, () => {}, noopAgentEnv) as unknown as ToolSurface;
+  const view = run.checkWorkersTool({ workerId: 'worker-1' });
+  assert.match(view, /worker-1  error/);
+  assert.match(view, /restarted/);
+});
+
+test('activityHint names the argument that identifies the call', () => {
+  assert.equal(activityHint('Bash', { command: 'npm test', description: 'run tests' }), 'Bash npm test');
+  assert.equal(activityHint('Read', { file_path: 'src/a.ts' }), 'Read src/a.ts');
+  assert.equal(activityHint('Custom', { whatever: 42 }), 'Custom');
+  assert.equal(activityHint('Custom', { note: 'a\n  multi   line' }), 'Custom a multi line');
+  assert.ok(activityHint('Bash', { command: 'x'.repeat(200) }).length < 70);
+});
+
+test('workerStatusBlock reads as one glance: age, last activity, calls, recent, report', () => {
+  const now = 1_000_000;
+  const running = workerStatusBlock({
+    id: 'worker-1', status: 'running', costUsd: 0, task: 't',
+    startedAt: now - 134_000, lastActivityAt: now - 3_000, toolCalls: 12, recent: ['Read a.ts', 'Bash npm test'],
+  }, now);
+  assert.match(running, /^worker-1  running  age 2m14s  last activity 3s ago  12 tool calls/);
+  assert.match(running, /recent:\n    Read a\.ts\n    Bash npm test/);
+  assert.doesNotMatch(running, /report/);
+  const done = workerStatusBlock({
+    id: 'worker-2', status: 'error', costUsd: 0, task: 't', isError: true, report: 'line1\nline2',
+  }, now);
+  assert.match(done, /report \(FAILED\):\n    line1\n    line2/);
+});
+
+test('the recent window is bounded and counts tool calls', () => {
+  const run = new MissionRun(meta(), () => {}, () => {}, noopAgentEnv) as unknown as {
+    noteActivity(w: any, m: any): void;
+  };
+  const w: any = { id: 'w', status: 'running', costUsd: 0, task: 't' };
+  for (let i = 0; i < RECENT_LINES + 4; i++) {
+    run.noteActivity(w, { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: `c${i}` } }] } });
+  }
+  run.noteActivity(w, { type: 'assistant', message: { content: [{ type: 'text', text: 'Now I will run the tests.' }] } });
+  assert.equal(w.toolCalls, RECENT_LINES + 4);
+  assert.equal(w.recent.length, RECENT_LINES);
+  assert.equal(w.recent.at(-1), '"Now I will run the tests."');
+  assert.ok(typeof w.lastActivityAt === 'number');
 });

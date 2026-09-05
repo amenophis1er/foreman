@@ -374,6 +374,10 @@ function applyWire(s: RunView, e: WireEvent): RunView {
       };
     }
     case 'worker_finished':
+      // Carries `report` too, deliberately not rendered: the worker's own
+      // messages already streamed into the transcript, and the report is the
+      // director's to read (via check_workers / wait_for_worker). Several
+      // workers may be 'running' at once; only this id's entry changes.
       return {
         ...s,
         agents: s.agents.map((x) => x.id === d.id ? { ...x, status: d.status as Status } : x),

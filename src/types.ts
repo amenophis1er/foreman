@@ -208,6 +208,27 @@ export interface WorkerMeta {
   sessionId?: string;
   /** First 500 chars of the task brief, for run-history display. */
   task: string;
+  /**
+   * The worker's final report, kept on the record rather than handed back
+   * once and forgotten: spawning is asynchronous, so the director reads
+   * results through check_workers / wait_for_worker — possibly more than
+   * once, possibly after a restart — and a report that lived only in a
+   * returned promise would be gone by then.
+   */
+  report?: string;
+  isError?: boolean;
+  startedAt?: number;
+  endedAt?: number;
+  /** Last SDK message seen; what "seconds since last activity" is measured from. */
+  lastActivityAt?: number;
+  toolCalls?: number;
+  /**
+   * Rolling window of the last few activity lines (tool name + a short arg
+   * hint, or the head of an assistant message). The director cannot see a
+   * worker's transcript; this is the glance that tells "reading tests" apart
+   * from "re-running the same failing command".
+   */
+  recent?: string[];
 }
 
 /**

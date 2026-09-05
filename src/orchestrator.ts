@@ -3,10 +3,14 @@
  *
  * Responsibilities:
  *  - Spawn the director session with its charter and in-process MCP tools
- *    (spawn_worker / message_worker / ask_human).
- *  - Run workers as separate, resumable SDK sessions; a worker call blocks
- *    inside the director's tool call, so its report lands in the director's
- *    context as an ordinary tool result.
+ *    (spawn_worker / check_workers / wait_for_worker / message_worker /
+ *    ask_human).
+ *  - Run workers as separate, resumable SDK sessions, concurrently with the
+ *    director's own turn: spawn_worker returns as soon as the worker exists,
+ *    and the director reads progress and results back through check_workers
+ *    and wait_for_worker. Nothing holds the director's turn open longer than
+ *    a bounded wait, so it can run several workers at once and notice one
+ *    while another is still working.
  *  - Enforce the per-run budget before any new worker work starts.
  *  - Emit every observable event through the injected {@link Emitter}, which
  *    both broadcasts to live clients and persists to the run's event log.
@@ -342,6 +346,81 @@ function toolUsesOf(m: Record<string, unknown>): Array<{ name: string; input: un
 }
 const DEFAULT_MAX_SECONDS = 4 * 60 * 60;
 
+/**
+ * How long wait_for_worker may hold the director's turn.
+ *
+ * The default is long enough that a director waiting on the one thing it
+ * needs is not woken for nothing every few seconds; the hard maximum exists
+ * so that no argument the director passes can recreate the blocked-forever
+ * turn that synchronous spawning was. A worker that outlives the wait is
+ * still running — the director is told so and asked again, and every such
+ * return is a turn boundary at which the caps get to bind.
+ */
+export const DEFAULT_WAIT_SECONDS = 300;
+export const MAX_WAIT_SECONDS = 600;
+
+/** How many activity lines a worker record keeps. Enough to see a pattern. */
+export const RECENT_LINES = 8;
+
+/**
+ * One line of a worker's activity, as the director will see it.
+ *
+ * A tool name alone says "Bash"; the director needs "Bash npm test" to tell
+ * verification from a loop. The hint is the argument that identifies what the
+ * call was about — the same handful of keys across the harness's tools — or,
+ * failing that, the first string in the input. Kept short because eight of
+ * these sit in every check_workers block for every worker.
+ */
+export function activityHint(toolName: string, input: unknown): string {
+  const o = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  const keys = ['command', 'file_path', 'path', 'pattern', 'url', 'query', 'prompt', 'description'];
+  let arg = keys.map((k) => o[k]).find((v): v is string => typeof v === 'string' && v.length > 0);
+  if (arg === undefined) arg = Object.values(o).find((v): v is string => typeof v === 'string' && v.length > 0);
+  const hint = arg ? oneLine(arg, 60) : '';
+  return hint ? `${toolName} ${hint}` : toolName;
+}
+
+/** The head of a piece of text, flattened to one line, cut to `max` chars. */
+function oneLine(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/** "2m14s" for a duration; what a person reads at a glance. */
+function fmtAge(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, '0')}s`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`;
+}
+
+/**
+ * The compact status block check_workers shows for one worker.
+ *
+ * Exported for the same reason as the watchdogs: it is the director's only
+ * view of a running worker, and what it shows — age, time since the last
+ * message, call count, the recent lines, the report once there is one — is a
+ * rule worth pinning without an SDK behind it. `withReport` is false when the
+ * caller is about to print the report itself.
+ */
+export function workerStatusBlock(w: WorkerMeta, now = Date.now(), withReport = true): string {
+  const head = [`${w.id}  ${w.status}`];
+  if (w.startedAt) head.push(`age ${fmtAge((w.endedAt ?? now) - w.startedAt)}`);
+  if (w.status === 'running' && w.lastActivityAt) head.push(`last activity ${fmtAge(now - w.lastActivityAt)} ago`);
+  head.push(`${w.toolCalls ?? 0} tool calls`);
+  const lines = [head.join('  ')];
+  if (w.recent?.length) {
+    lines.push('  recent:');
+    for (const r of w.recent) lines.push(`    ${r}`);
+  }
+  if (withReport && w.status !== 'running') {
+    lines.push(`  report${w.isError ? ' (FAILED)' : ''}:`);
+    lines.push(`    ${(w.report || '(no report)').split('\n').join('\n    ')}`);
+  }
+  return lines.join('\n');
+}
+
 /** Which half of the crew spent something. Roles can be on different providers. */
 type AgentRole = 'director' | 'worker';
 
@@ -370,19 +449,26 @@ directing worker agents. Non-negotiable rules, in priority order:
    its length is not.
 2. DELEGATE IMPLEMENTATION. Use mcp__foreman__spawn_worker to have a worker do
    the building/editing. Give each worker one well-scoped, self-contained task
-   with full context (paths, constraints, expected result). Use
-   mcp__foreman__message_worker to send follow-ups or corrections to an
-   existing worker. You may read files and run verification commands yourself,
-   but implementation edits belong to workers.
-   A WORKER THAT STALLS IS NOT A WORKER THAT FAILED. If a worker comes back
-   reporting it produced nothing and was stopped, the endpoint serving it is
+   with full context (paths, constraints, expected result). spawn_worker
+   RETURNS IMMEDIATELY; the worker runs in the background. Spawn independent
+   tasks together so they run in parallel, and never spawn two workers on the
+   same files. Supervise with mcp__foreman__check_workers — it shows each
+   worker's age, recent activity and finished report — rather than waiting
+   blind; use mcp__foreman__wait_for_worker only when you need a result before
+   you can proceed (it is bounded, and tells you if the worker is still going).
+   Use mcp__foreman__message_worker to send follow-ups or corrections to a
+   finished worker. You may read files and run verification commands yourself,
+   but implementation edits belong to workers. A worker's report is a claim to
+   verify, not a fact.
+   A WORKER THAT STALLS IS NOT A WORKER THAT FAILED. If a worker's report says
+   it produced nothing and was stopped, the endpoint serving it is
    the likely cause, not the task. Respawning the same brief is then the one
    response guaranteed to waste the same minutes again. Do the piece yourself,
    or cut it into a smaller brief, and if a second worker stalls the same way
    say so to the human via mcp__foreman__ask_human rather than continuing to
    spend the run on silence. Record it in the log either way: a mission that
    quietly lost half an hour to a dead endpoint should say so.
-   A WORKER THAT LOOPS IS THE SAME CASE. If a worker comes back reporting it
+   A WORKER THAT LOOPS IS THE SAME CASE. If a worker's report says it
    repeated one call many times and was stopped, it hit a wall it could not
    see. Do not send the same brief back; look at what it was repeating, and
    change the approach or the brief.
@@ -432,9 +518,25 @@ const PLAYWRIGHT_MCP_CLI = fileURLToPath(
 /** Claude subscription/quota exhaustion — an external pause, not a failure. */
 const USAGE_LIMIT_RE = /out of usage credits|usage limit reached|upgrade to increase your usage/i;
 
+/** One worker's outcome, as runWorker hands it back. */
+interface WorkerOutcome { report: string; isError: boolean }
+
+/**
+ * A worker record plus the in-process handles that must never be persisted:
+ * the live query (for interrupts), the run promise (so nothing is left
+ * floating), and the `done` promise wait_for_worker races against a timer.
+ * Everything here is stripped by syncWorkersMeta().
+ */
 interface WorkerRuntime extends WorkerMeta {
   q?: Query;
+  promise?: Promise<WorkerOutcome>;
+  done?: Promise<void>;
+  settle?: () => void;
+  /** The report has been returned to the director at least once. Never deletes it. */
+  reportShown?: boolean;
 }
+
+const RUNTIME_ONLY: ReadonlyArray<keyof WorkerRuntime> = ['q', 'promise', 'done', 'settle', 'reportShown'];
 
 export class MissionRun {
   readonly meta: RunMeta;
@@ -517,7 +619,20 @@ export class MissionRun {
     // workers, new worker ids never collide with old ones, and "always
     // allow" grants survive.
     for (const w of meta.workers) {
-      this.workers.set(w.id, { ...w });
+      const r: WorkerRuntime = { ...w };
+      // A worker persisted as 'running' has no process behind it any more: the
+      // one that was driving it died with the previous Foreman. Left as
+      // 'running', wait_for_worker would have nothing to wait on and
+      // check_workers would show a worker that is never going to finish.
+      // Its session may still be resumable, and the record says so.
+      if (r.status === 'running') {
+        r.status = 'error';
+        r.isError = true;
+        r.endedAt = r.endedAt ?? Date.now();
+        r.report = r.report ?? 'Foreman restarted while this worker was running; its result was lost. ' +
+          'Verify what it left on disk, then message_worker it to continue or spawn a fresh one.';
+      }
+      this.workers.set(w.id, r);
       const n = Number(w.id.match(/^worker-(\d+)$/)?.[1] ?? 0);
       if (n > this.workerSeq) this.workerSeq = n;
     }
@@ -1207,8 +1322,8 @@ export class MissionRun {
    *
    * Runs on a timer rather than at a turn boundary, because the situation it
    * exists for is precisely one where turn boundaries have stopped happening:
-   * a director waiting inside spawn_worker on a worker that will never
-   * answer. Only time is enforced here — turns and budget can only advance
+   * a director waiting inside a tool call — message_worker, ask_human — on
+   * something that will never answer. Only time is enforced here — turns and budget can only advance
    * *at* a turn boundary, so if none are happening neither can move.
    */
   private enforceCapsFromOutside(): void {
@@ -1295,18 +1410,78 @@ export class MissionRun {
     );
   }
 
-  private async runWorker(workerId: string, prompt: string, resumeSessionId?: string):
-    Promise<{ report: string; isError: boolean }> {
+  /**
+   * Starts a worker and returns at once; the session runs in the background.
+   *
+   * The split between this and {@link runWorker} is the asynchronous design in
+   * one place: everything the director can observe about a worker — the record
+   * in the map, `worker_started`, the `done` promise wait_for_worker races, the
+   * stored report and `worker_finished` at the end — is settled here, around a
+   * runWorker that only drives the SDK session. The promise is kept on the
+   * record rather than dropped, so a worker is never a floating promise, and
+   * the outcome is written onto the record rather than returned once, because
+   * the director now reads it back whenever it asks.
+   *
+   * Synchronous up to the point runWorker takes over: by the time this returns
+   * the record exists and `worker_started` has been emitted, which is exactly
+   * the guarantee spawn_worker's immediate reply relies on.
+   */
+  private launchWorker(workerId: string, prompt: string, resumeSessionId?: string): WorkerRuntime {
     const existing = this.workers.get(workerId);
     const w: WorkerRuntime = existing ?? {
       id: workerId, status: 'running', costUsd: 0, task: prompt.slice(0, 500),
     };
+    const now = Date.now();
+    // A resumed worker is a new episode: fresh clock, fresh report. Its call
+    // count and recent lines carry over, since they are the history the
+    // director may be following.
     w.status = 'running';
+    w.startedAt = now;
+    w.lastActivityAt = now;
+    w.endedAt = undefined;
+    w.report = undefined;
+    w.isError = undefined;
+    w.reportShown = false;
+    w.toolCalls ??= 0;
+    w.recent ??= [];
+    w.done = new Promise<void>((resolve) => { w.settle = resolve; });
     this.workers.set(workerId, w);
     this.syncWorkersMeta();
     this.emit('worker_started', {
       id: workerId, task: prompt.slice(0, 200), resumed: Boolean(resumeSessionId),
     });
+
+    w.promise = this.runWorker(workerId, prompt, resumeSessionId)
+      // runWorker catches its own failures; this is the belt for anything it
+      // could not, because an unsettled `done` would hang a wait_for_worker.
+      .catch((err): WorkerOutcome => ({ report: `Worker crashed: ${String(err)}`, isError: true }))
+      .then((out) => {
+        w.q = undefined;
+        w.report = out.report;
+        w.isError = out.isError;
+        w.status = out.isError ? 'error' : 'done';
+        w.endedAt = Date.now();
+        this.syncWorkersMeta();
+        this.emit('worker_finished', {
+          id: workerId, status: w.status, sessionId: w.sessionId, report: out.report,
+        });
+        w.settle?.();
+        return out;
+      });
+    return w;
+  }
+
+  /**
+   * Drives one worker session to its end and hands back the outcome. Does not
+   * touch the record's status or report — that is {@link launchWorker}'s
+   * job, once, for every path this can exit by — but it does keep the
+   * record's live activity fields current, because those are what
+   * check_workers shows while this is still running.
+   */
+  private async runWorker(workerId: string, prompt: string, resumeSessionId?: string):
+    Promise<WorkerOutcome> {
+    const w = this.workers.get(workerId);
+    if (!w) throw new Error(`runWorker: no record for ${workerId}; launchWorker creates it`);
 
     const q = query({
       prompt,
@@ -1327,11 +1502,11 @@ export class MissionRun {
     let report = '';
     let isError = false;
 
-    // The stall watchdog. A worker that has gone quiet blocks the director
-    // inside spawn_worker, and the director's own caps are only checked at
-    // turn boundaries it can no longer reach — so without this, one silent
-    // worker holds an entire mission open until the run's wall clock expires
-    // hours later. Every message resets it; only silence trips it.
+    // The stall watchdog. A silent worker no longer blocks the director, but
+    // it still occupies a slot the director believes is working, still counts
+    // toward the run's wall clock, and still ends up in a wait_for_worker
+    // sooner or later — so it is stopped and reported rather than left to the
+    // run's time cap hours later. Every message resets it; only silence trips it.
     const silenceMs = this.meta.workerSilenceMs ?? DEFAULT_WORKER_SILENCE_MS;
     let stalled = false;
     const watchdog = watchSilence(silenceMs, (quietFor) => {
@@ -1365,6 +1540,7 @@ export class MissionRun {
         watchdog.touch();
         const m = msg as Record<string, unknown>;
         if (typeof m.session_id === 'string') w.sessionId = m.session_id;
+        this.noteActivity(w, m);
         for (const t of toolUsesOf(m)) repeats.observe(t.name, t.input);
         if (m.type === 'result') {
           report = String(m.result ?? '');
@@ -1384,9 +1560,6 @@ export class MissionRun {
     } finally {
       watchdog.stop();
       w.q = undefined;
-      w.status = isError || stalled || looping ? 'error' : 'done';
-      this.syncWorkersMeta();
-      this.emit('worker_finished', { id: workerId, status: w.status, sessionId: w.sessionId });
     }
 
     // Told to the director as a fact plus its options, not as an order: it is
@@ -1400,9 +1573,126 @@ export class MissionRun {
     return { report, isError };
   }
 
+  /**
+   * Folds one SDK message into the record's live view: the activity clock,
+   * the call count, and the rolling `recent` window. Tool calls get a line
+   * each; an assistant message with only text gets its opening words, which
+   * is usually the worker saying what it is about to do.
+   */
+  private noteActivity(w: WorkerRuntime, m: Record<string, unknown>): void {
+    w.lastActivityAt = Date.now();
+    const uses = toolUsesOf(m);
+    const lines = uses.map((t) => activityHint(t.name, t.input));
+    if (uses.length) w.toolCalls = (w.toolCalls ?? 0) + uses.length;
+    else if (m.type === 'assistant') {
+      const content = (m.message as { content?: unknown } | undefined)?.content;
+      const textBlock = Array.isArray(content)
+        ? content.find((b) => b && (b as { type?: unknown }).type === 'text') as { text?: unknown } | undefined
+        : undefined;
+      if (typeof textBlock?.text === 'string' && textBlock.text.trim()) lines.push(`"${oneLine(textBlock.text, 80)}"`);
+    }
+    if (!lines.length) return;
+    w.recent = [...(w.recent ?? []), ...lines].slice(-RECENT_LINES);
+  }
+
   private syncWorkersMeta(): void {
-    this.meta.workers = [...this.workers.values()].map(({ q: _q, ...w }) => w);
+    this.meta.workers = [...this.workers.values()].map((w) => {
+      const copy: Partial<WorkerRuntime> = { ...w };
+      for (const k of RUNTIME_ONLY) delete copy[k];
+      return copy as WorkerMeta;
+    });
     this.saveMeta(this.meta);
+  }
+
+  // -- director tools ---------------------------------------------------------
+  //
+  // Handler bodies live on the class and return plain text; makeTools() only
+  // wraps them in MCP definitions. That keeps the director's tool surface
+  // testable without an MCP server — the tests stub runWorker and drive these
+  // directly — and keeps the rule (what the director is told, when) apart from
+  // the plumbing (how it gets there).
+
+  /** `[worker-3 finished] <report>` — the shape every result reaches the director in. */
+  private reportLine(w: WorkerRuntime): string {
+    w.reportShown = true;
+    return `[${w.id}${w.isError ? ' FAILED' : ' finished'}] ${w.report || '(no report)'}`;
+  }
+
+  private spawnWorkerTool({ task }: { task: string }): string {
+    const stop = this.overBudget();
+    if (stop) return stop;
+    const id = `worker-${++this.workerSeq}`;
+    this.launchWorker(id, task);
+    return `[${id} started] status: running. It works in the background — use check_workers ` +
+      `to watch it, and wait_for_worker when you need its result.`;
+  }
+
+  private async messageWorkerTool({ worker_id, message }: { worker_id: string; message: string }): Promise<string> {
+    const stop = this.overBudget();
+    if (stop) return stop;
+    const w = this.workers.get(worker_id);
+    if (!w?.sessionId) return `No resumable worker "${worker_id}".`;
+    // Two sessions resuming the same id at once would interleave on one
+    // transcript; the message waits for the worker, not the other way round.
+    if (w.status === 'running') {
+      return `${worker_id} is still running — wait_for_worker it first, then send the follow-up.`;
+    }
+    const run = this.launchWorker(worker_id, message, w.sessionId);
+    await run.promise;
+    return `${this.reportLine(run)}${this.costFooter()}`;
+  }
+
+  private checkWorkersTool({ workerId }: { workerId?: string } = {}): string {
+    if (workerId) {
+      const w = this.workers.get(workerId);
+      if (!w) return `No worker "${workerId}".${this.costFooter()}`;
+      w.reportShown = w.reportShown || w.status !== 'running';
+      return `${workerStatusBlock(w)}${this.costFooter()}`;
+    }
+    const all = [...this.workers.values()];
+    if (!all.length) return `No workers have been spawned in this run.${this.costFooter()}`;
+    const now = Date.now();
+    for (const w of all) if (w.status !== 'running') w.reportShown = true;
+    return `${all.map((w) => workerStatusBlock(w, now)).join('\n\n')}${this.costFooter()}`;
+  }
+
+  private async waitForWorkerTool(
+    { workerId, timeoutSeconds }: { workerId?: string; timeoutSeconds?: number } = {},
+  ): Promise<string> {
+    const secs = Math.min(MAX_WAIT_SECONDS, Math.max(0,
+      typeof timeoutSeconds === 'number' && Number.isFinite(timeoutSeconds) ? timeoutSeconds : DEFAULT_WAIT_SECONDS));
+
+    let targets: WorkerRuntime[];
+    if (workerId) {
+      const w = this.workers.get(workerId);
+      if (!w) return `No worker "${workerId}".${this.costFooter()}`;
+      if (w.status !== 'running') return `${this.reportLine(w)}${this.costFooter()}`;
+      targets = [w];
+    } else {
+      targets = [...this.workers.values()].filter((w) => w.status === 'running');
+      if (!targets.length) {
+        return `No worker is running. ${this.workers.size ? 'check_workers shows the finished ones.' : ''}`.trim() +
+          this.costFooter();
+      }
+    }
+
+    // Raced against a timer, and the timer is cleared on both exits: a stray
+    // timeout outliving the run would keep the event loop, and with it the
+    // process, alive for up to ten minutes after the last mission ended.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), secs * 1000); });
+    const first = await Promise.race<WorkerRuntime | null>([
+      ...targets.map((w) => (w.done ?? Promise.resolve()).then(() => w)),
+      timeout,
+    ]).finally(() => clearTimeout(timer));
+
+    if (!first) {
+      const now = Date.now();
+      return `${targets.map((w) => workerStatusBlock(w, now)).join('\n\n')}\n\n` +
+        `Still running after ${secs}s. Call wait_for_worker again to keep waiting, or ` +
+        `check_workers to look without waiting.${this.costFooter()}`;
+    }
+    return `${this.reportLine(first)}${this.costFooter()}`;
   }
 
   private makeTools() {
@@ -1410,36 +1700,45 @@ export class MissionRun {
 
     const spawnWorker = tool(
       'spawn_worker',
-      'Spawn a worker agent to execute one self-contained implementation task in the ' +
-      'working directory. Blocks until the worker finishes and returns its final report. ' +
-      'Include all context the worker needs: it does not see your conversation.',
+      'Start a worker agent on one self-contained implementation task in the working ' +
+      'directory. Returns immediately with the worker id; the worker runs in the background. ' +
+      'Spawn independent tasks together so they run in parallel. Follow with check_workers ' +
+      'to supervise and wait_for_worker to collect the result. Include all context the ' +
+      'worker needs: it does not see your conversation.',
       { task: z.string().describe('Full task description with context, paths, and the expected result') },
-      async ({ task }) => {
-        const stop = this.overBudget();
-        if (stop) return text(stop);
-        const id = `worker-${++this.workerSeq}`;
-        const { report, isError } = await this.runWorker(id, task);
-        return text(`[${id}${isError ? ' FAILED' : ' finished'}] ${report || '(no report)'}${this.costFooter()}`);
+      async (args) => text(this.spawnWorkerTool(args)),
+    );
+
+    const checkWorkers = tool(
+      'check_workers',
+      'Show every worker (or one): status, age, seconds since its last activity, tool calls ' +
+      'so far, its most recent actions, and — once finished — its full report. Does not wait.',
+      { workerId: z.string().optional().describe('One worker id, e.g. "worker-2"; omit for all') },
+      async (args) => text(this.checkWorkersTool(args)),
+    );
+
+    const waitForWorker = tool(
+      'wait_for_worker',
+      'Wait until a worker finishes (or, with no id, until any running worker finishes) and ' +
+      `return its report. Bounded: default ${DEFAULT_WAIT_SECONDS}s, at most ${MAX_WAIT_SECONDS}s; ` +
+      'on timeout it returns the current status and you may call it again.',
+      {
+        workerId: z.string().optional().describe('The worker to wait for; omit to wait for whichever finishes first'),
+        timeoutSeconds: z.number().optional().describe(`Seconds to wait (default ${DEFAULT_WAIT_SECONDS}, max ${MAX_WAIT_SECONDS})`),
       },
+      async (args) => text(await this.waitForWorkerTool(args)),
     );
 
     const messageWorker = tool(
       'message_worker',
-      'Send a follow-up message to an existing worker (correction, next step, answer to a ' +
+      'Send a follow-up message to a finished worker (correction, next step, answer to a ' +
       "BLOCKED question). Resumes that worker's session with its prior context intact. " +
       'Blocks until the worker finishes and returns its report.',
       {
         worker_id: z.string().describe('The worker id, e.g. "worker-1"'),
         message: z.string().describe('The follow-up instruction or answer'),
       },
-      async ({ worker_id, message }) => {
-        const stop = this.overBudget();
-        if (stop) return text(stop);
-        const w = this.workers.get(worker_id);
-        if (!w?.sessionId) return text(`No resumable worker "${worker_id}".`);
-        const { report, isError } = await this.runWorker(worker_id, message, w.sessionId);
-        return text(`[${worker_id}${isError ? ' FAILED' : ' finished'}] ${report || '(no report)'}${this.costFooter()}`);
-      },
+      async (args) => text(await this.messageWorkerTool(args)),
     );
 
     const askHuman = tool(
@@ -1456,6 +1755,9 @@ export class MissionRun {
       },
     );
 
-    return createSdkMcpServer({ name: 'foreman', tools: [spawnWorker, messageWorker, askHuman] });
+    return createSdkMcpServer({
+      name: 'foreman',
+      tools: [spawnWorker, checkWorkers, waitForWorker, messageWorker, askHuman],
+    });
   }
 }
