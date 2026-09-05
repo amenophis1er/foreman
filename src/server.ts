@@ -48,7 +48,8 @@ import { preflight, reportPreflight } from './preflight.js';
 import { defaultInstance, discoverInstances, effectiveConfigDir } from './instance.js';
 import { providerEnv, providerOf, providerProblem, resolveProvider } from './provider.js';
 import { ensureGateway, gatewayStatus, stopGateways } from './gateway.js';
-import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
+import { discoverOllama, ollamaHost } from './ollama.js';
+import { describeModel, discoverModels } from './models.js';
 import type { ResolvedProvider } from './provider.js';
 import {
   dirHasCredentials, detectAuth, hasKeychainCredentials, readAccount, type AuthMode,
@@ -554,21 +555,26 @@ const server = http.createServer(async (req, res) => {
       const project = forProject ? await store.getProject(forProject) : null;
       const provider = project ? providerOf(project) : null;
       if (provider && provider.kind === 'openai-compatible') {
-        const local = await discoverOllama();
-        // Both kinds are offered plainly, with the trade named: a cloud model
-        // is fast enough to direct a mission and bills an Ollama account; a
-        // local one is free and private but slow on a director's long prompt.
-        const models = local
-          ? local.map((m) => ({
-              id: m.id, label: m.id, model: m.id, cost: m.remote ? 2 : 0,
-              note: m.remote
-                ? `Runs on ${m.host ?? 'Ollama’s servers'}, not this machine. Fast; billed to your Ollama account.`
-                : `Local${m.size ? ` · ${m.size}` : ''}. Free and private, but slow on long prompts.`,
-            }))
-          : [];
-        return json(res, 200, { models, provider: provider.kind });
+        // Ask the project's OWN endpoint. A project pointed at a daemon on
+        // another machine must be offered that machine's models; asking the
+        // server's local Ollama would list things the run cannot reach.
+        const resolved = await resolveProvider(provider, store.root);
+        const found = await discoverModels(resolved.upstreamUrl ?? provider.baseUrl, {
+          apiKey: provider.apiKeyEnv ? resolved.apiKey : undefined,
+        });
+        return json(res, 200, {
+          provider: provider.kind,
+          endpoint: provider.baseUrl,
+          // null means unreachable, which is not the same as "has no models" —
+          // the picker should say so rather than showing an empty list.
+          reachable: found !== null,
+          models: (found ?? []).map((m) => ({
+            id: m.id, label: m.id, model: m.id, cost: m.remote ? 2 : 0,
+            note: describeModel(m),
+          })),
+        });
       }
-      json(res, 200, { models: MODELS, provider: provider?.kind ?? 'claude-code' });
+      json(res, 200, { models: MODELS, provider: provider?.kind ?? 'claude-code', reachable: true });
 
     } else if (req.method === 'GET' && url.pathname === '/projects') {
       const [projects, allRuns, auth] = await Promise.all([

@@ -1,15 +1,13 @@
 /**
- * Local Ollama discovery.
+ * Local Ollama — where it is, and how to point a project at it.
  *
  * Ollama serves an OpenAI-compatible `/v1`, so it is not a provider kind of
- * its own — it is `openai-compatible` pointed at a loopback port. This module
- * only answers "is one running, and what has it pulled", which is the same
- * question `discoverInstances()` answers for Claude Code installs.
- *
- * The goal is zero configuration: if Ollama is up when Foreman starts, its
- * models appear in the picker and a mission can run on one without anybody
- * typing a URL.
+ * its own: it is `openai-compatible` pointed at a daemon. Listing models is
+ * every endpoint's business rather than Ollama's alone, so that lives in
+ * models.ts; what is genuinely Ollama-specific is only this — the default
+ * host, and the zero-config provider for a daemon that is already running.
  */
+import { discoverModels, type EndpointModel } from './models.js';
 import type { ProviderRef } from './types.js';
 
 /** Where Ollama listens. Honours its own env var rather than assuming a port. */
@@ -21,66 +19,30 @@ export function ollamaHost(): string {
   return `http://${raw.replace(/\/+$/, '')}`;
 }
 
-export interface OllamaModel {
-  /** Exactly what the API expects as a model id, e.g. `qwen3.8:27b-q8_0`. */
-  id: string;
-  /** Parameter count as Ollama reports it; absent for some remote models. */
-  size?: string;
-  /**
-   * A `:cloud` model, which runs on Ollama's servers rather than this machine.
-   * Both kinds are first-class here — the distinction is what you are trading:
-   * a cloud model is fast enough to direct a mission and is billed to an
-   * Ollama account, a local one is free and private but slow on the long
-   * prompts a director sends.
-   */
-  remote: boolean;
-  /** Where a cloud model actually runs, e.g. `https://ollama.com`. */
-  host?: string;
+/**
+ * Models the server's own Ollama offers, or null if none is running.
+ *
+ * This is the *server default* view, for preflight and the instances screen.
+ * A project pinned to another daemon is asked about its own host — see
+ * discoverModels().
+ */
+export function discoverOllama(timeoutMs = 1500): Promise<EndpointModel[] | null> {
+  return discoverModels(ollamaHost(), { timeoutMs });
 }
 
 /**
- * Models a running Ollama has available, or null if none is running.
+ * The provider for an Ollama daemon.
  *
- * Never throws and never waits long: this runs during preflight, and a machine
- * without Ollama is the common case, not an error.
+ * `apiKeyEnv` is deliberately absent: a daemon needs no credential — including
+ * for `:cloud` models, which it signs for itself with its own key — and the
+ * placeholder that satisfies the gateway invariant comes from
+ * resolveProvider() rather than being invented here.
  */
-export async function discoverOllama(timeoutMs = 1500): Promise<OllamaModel[] | null> {
-  const host = ollamaHost();
-  const ctl = AbortSignal.timeout(timeoutMs);
-  const res = await fetch(`${host}/api/tags`, { signal: ctl }).catch(() => null);
-  if (!res?.ok) return null;
-  const body = await res.json().catch(() => null) as {
-    models?: Array<{
-      name?: string; remote_model?: string; remote_host?: string;
-      details?: { parameter_size?: string };
-    }>;
-  } | null;
-  if (!body?.models) return null;
-  return body.models
-    .filter((m): m is { name: string } & typeof m => typeof m.name === 'string' && m.name.length > 0)
-    .map((m) => ({
-      id: m.name,
-      size: m.details?.parameter_size || undefined,
-      remote: Boolean(m.remote_model),
-      host: m.remote_host || undefined,
-    }))
-    // Plain alphabetical: cloud models are not a lesser option to be listed
-    // after the real ones, they are the ones fast enough to direct with.
-    .sort((a, b) => a.id.localeCompare(b.id));
-}
-
-/**
- * The provider for a discovered local Ollama.
- *
- * `apiKeyEnv` is deliberately absent: a local Ollama needs no credential, and
- * the placeholder that satisfies the gateway invariant is supplied by
- * resolveProvider() rather than invented here.
- */
-export function ollamaProvider(model?: string): ProviderRef {
+export function ollamaProvider(model?: string, host?: string): Extract<ProviderRef, { kind: 'openai-compatible' }> {
   return {
     kind: 'openai-compatible',
     id: 'ollama-local',
-    baseUrl: ollamaHost(),
+    baseUrl: host ?? ollamaHost(),
     label: 'Ollama',
     model,
   };
