@@ -13,6 +13,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const gw = require("./llm-gateway.cjs") as {
   anthropicToOpenAIRequest: (b: unknown) => any;
+  hoistSystemMessages: (m: unknown[]) => unknown[];
   openAIToAnthropicResponse: (b: unknown, m: string) => any;
   makeStreamTranslator: (m: string) => { push: (c: unknown) => string[]; end: () => string[] };
   mapFinishReason: (r: string | null) => string;
@@ -432,4 +433,46 @@ test("foldAnthropicSSE (non-streaming collapse) · reassembles text + usage into
   assert.deepEqual(msg.content, [{ type: "text", text: "hello" }]);
   assert.equal(msg.stop_reason, "end_turn");
   assert.deepEqual(msg.usage, { input_tokens: 2, output_tokens: 1 });
+});
+
+// ---------------------------------------------------------------------------
+// Foreman divergences from the upstream file
+// ---------------------------------------------------------------------------
+
+test('llm-gateway · folds a stray system turn into the leading one', () => {
+  // Qwen3's chat template rejects the whole request with "system message must
+  // be at the beginning" if one appears at any later index — which is what a
+  // real director hits partway through a mission. OpenAI itself is lenient,
+  // which is why upstream never needed this.
+  const oa = gw.anthropicToOpenAIRequest({
+    model: 'm', system: 'charter',
+    messages: [
+      { role: 'user', content: 'a' },
+      { role: 'system', content: 'injected later' },
+      { role: 'user', content: 'b' },
+    ],
+  });
+  assert.deepEqual(oa.messages.map((m: any) => m.role), ['system', 'user', 'user']);
+  assert.equal(oa.messages[0].content, 'charter\n\ninjected later');
+});
+
+test('llm-gateway · creates a leading system turn when there was none', () => {
+  const oa = gw.anthropicToOpenAIRequest({
+    model: 'm',
+    messages: [{ role: 'user', content: 'a' }, { role: 'system', content: 'late' }],
+  });
+  assert.deepEqual(oa.messages.map((m: any) => m.role), ['system', 'user']);
+  assert.equal(oa.messages[0].content, 'late');
+});
+
+test('llm-gateway · leaves a well-formed conversation untouched', () => {
+  const oa = gw.anthropicToOpenAIRequest({
+    model: 'm', system: 's',
+    messages: [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'W', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] },
+    ],
+  });
+  assert.deepEqual(oa.messages.map((m: any) => m.role), ['system', 'user', 'assistant', 'tool']);
 });

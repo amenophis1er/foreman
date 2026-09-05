@@ -109,6 +109,40 @@ function translateMessage(msg, out) {
   }
 }
 
+/**
+ * FOREMAN DIVERGENCE from the upstream copy of this file — see
+ * docs/provider-model-tracker.md, Divergences. Re-apply after any re-sync.
+ *
+ * Folds every system message into a single leading one.
+ *
+ * OpenAI itself accepts a system message anywhere in the array, so upstream
+ * never had to care. Chat templates are stricter: Qwen3's rejects the whole
+ * request with `system message must be at the beginning` if one appears at any
+ * later index — which is what a real Claude Code director hits partway through
+ * a mission, since the harness can put a system-role turn into `messages`.
+ *
+ * Merging rather than dropping keeps the instruction; putting it first is what
+ * every template expects anyway. Mutates `messages` in place.
+ */
+function hoistSystemMessages(messages) {
+  const later = [];
+  for (let i = messages.length - 1; i > 0; i--) {
+    if (messages[i] && messages[i].role === "system") {
+      later.unshift(String(messages[i].content ?? ""));
+      messages.splice(i, 1);
+    }
+  }
+  if (later.length === 0) return messages;
+
+  const text = later.filter(Boolean).join("\n\n");
+  if (messages[0] && messages[0].role === "system") {
+    messages[0].content = [messages[0].content, text].filter(Boolean).join("\n\n");
+  } else {
+    messages.unshift({ role: "system", content: text });
+  }
+  return messages;
+}
+
 /** Anthropic tool_result `content` (string | block[]) -> plain string. */
 function toolResultText(content) {
   if (typeof content === "string") return content;
@@ -138,6 +172,7 @@ function anthropicToOpenAIRequest(body) {
   const system = systemToText(body.system);
   if (system) messages.push({ role: "system", content: system });
   for (const m of body.messages || []) translateMessage(m, messages);
+  hoistSystemMessages(messages);
 
   const oa = {
     model: body.model,
@@ -1349,6 +1384,7 @@ function startServer() {
 
 module.exports = {
   anthropicToOpenAIRequest,
+  hoistSystemMessages,
   openAIToAnthropicResponse,
   makeStreamTranslator,
   systemToText,
