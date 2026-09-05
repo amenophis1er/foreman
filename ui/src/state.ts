@@ -144,6 +144,15 @@ export type ProjectSummary = {
   } | null;
   /** The planner is parked on a question for this project — counted in pendingQuestions too. */
   plannerQuestion?: boolean;
+  /**
+   * Every open ask, with enough to answer it from the board. Same ids the
+   * tab's cards resolve; for `planner`, `text` is the first question string
+   * verbatim, because it is also the answers key.
+   */
+  needs?: Array<{
+    kind: 'permission' | 'question' | 'planner';
+    id: string; runId?: string; text: string; options?: string[]; toolName?: string; since?: number;
+  }>;
   /** When this project last did anything; the server sorts the fleet by it. */
   lastActivityAt?: number;
   /** Whether a key is on file for this project's provider. Never the key. */

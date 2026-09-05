@@ -1,11 +1,14 @@
 import { useState } from 'react';
-import { api, basisOf, providerHome, type ProjectSummary } from '../state';
+import { api, basisOf, type ProjectSummary } from '../state';
 import { AppHeader } from '../ds/shell/AppHeader';
 import { BillingBadge, type BillingMode } from '../ds/status/BillingBadge';
 import { Button } from '../ds/core/Button';
 import { Empty } from '../ds/core/Empty';
+import { SectionTitle } from '../ds/core/SectionTitle';
 import { Banner } from '../ds/status/Banner';
-import { ProjectCard } from '../ds/fleet/ProjectCard';
+import { NeedsBoard, summaryText, type NeedItem } from '../ds/fleet/NeedsBoard';
+import { FleetRunRow } from '../ds/fleet/FleetRunRow';
+import { OutcomeTile } from '../ds/fleet/OutcomeTile';
 import { LinkProjectCard } from '../ds/fleet/LinkProjectCard';
 import { FleetSearch } from '../ds/fleet/FleetSearch';
 import { FolderPicker } from '../ds/overlay/FolderPicker';
@@ -15,11 +18,27 @@ import { ConfirmDialog } from '../ds/overlay/ConfirmDialog';
 type Listing = { path: string; parent: string | null; dirs: string[] };
 
 /**
+ * One pending ask as `GET /projects` reports it under `needs[]`. Declared here
+ * rather than on `ProjectSummary` until the server field lands; the board
+ * tolerates its absence and falls back to the counts.
+ */
+type ServerNeed = {
+  kind: 'permission' | 'question' | 'planner';
+  id: string;
+  runId?: string;
+  text: string;
+  options?: string[];
+  toolName?: string;
+  since?: number;
+};
+type FleetProject = ProjectSummary & { needs?: ServerNeed[] };
+
+/**
  * Does one project answer to this query?
  *
  * Name, path and mission all match: a fleet accumulates several checkouts of
  * the same repo under different paths, and worktrees whose basenames are
- * identical, so the path is often the only thing that tells two cards apart.
+ * identical, so the path is often the only thing that tells two rows apart.
  * Matching the mission means "the fitness studio one" finds it when the
  * project is called `smake`.
  */
@@ -27,6 +46,39 @@ function matches(p: ProjectSummary, q: string): boolean {
   const run = p.activeRun ?? p.lastRun;
   return [p.name, p.folder, run?.title, run?.mission]
     .some((f) => f?.toLowerCase().includes(q));
+}
+
+/**
+ * The board's needs-you items, in reading order: the server's project
+ * ordering (urgency first), then oldest ask first within a project.
+ *
+ * Without `needs` from the server, one count-only strip per project that
+ * has anything pending — it can be opened, not answered.
+ */
+function needsOf(projects: FleetProject[]): NeedItem[] {
+  const out: NeedItem[] = [];
+  for (const p of projects) {
+    if (Array.isArray(p.needs)) {
+      const sorted = [...p.needs].sort((a, b) => (a.since ?? 0) - (b.since ?? 0));
+      for (const n of sorted) out.push({ ...n, projectId: p.id, projectName: p.name });
+      continue;
+    }
+    const approvals = p.pendingPermissions || 0;
+    const questions = p.pendingQuestions || 0;
+    if (approvals + questions === 0) continue;
+    out.push({
+      projectId: p.id, projectName: p.name, kind: 'summary',
+      text: summaryText({ approvals, questions, planner: Boolean(p.plannerQuestion) }),
+    });
+  }
+  return out;
+}
+
+/** `Response` → the error string the board prints, or null when it went through. */
+async function toError(r: Response): Promise<string | null> {
+  if (r.ok) return null;
+  const body = await r.json().catch(() => ({} as { error?: string }));
+  return body.error ?? (r.status === 404 ? 'already answered or timed out' : `HTTP ${r.status}`);
 }
 
 /** Server-driven state for the controlled FolderPicker. */
@@ -61,6 +113,14 @@ function usePicker(onPick: (path: string) => void) {
   };
 }
 
+const sectionStyle = { display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' } as const;
+
+/**
+ * The board. Three questions, top to bottom, in the order they matter:
+ * what needs you · what is running · what finished. The card grid that
+ * answered all three at once, per project, in whichever order the projects
+ * happened to be in, is gone.
+ */
 export function FleetView({
   projects, connected, activity, auth, onOpen, refresh, theme, onToggleTheme, onSettings,
 }: {
@@ -87,7 +147,24 @@ export function FleetView({
   // Filtering narrows, it never reorders: the server's urgency ordering
   // survives, so a project blocked on you stays first among whatever is left.
   const q = query.trim().toLowerCase();
-  const shown = q ? projects.filter((p) => matches(p, q)) : projects;
+  const shown = (q ? projects.filter((p) => matches(p, q)) : projects) as FleetProject[];
+
+  const needs = needsOf(shown);
+  const running = shown
+    .filter((p) => p.activeRun)
+    .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
+  const recent = shown.filter((p) => !p.activeRun);
+
+  // The header pill counts the whole fleet, not the filtered view: it is the
+  // page's status line, and a filter that hides a blocked project must not
+  // also hide the fact that one is blocked.
+  const totalRunning = projects.filter((p) => p.activeRun).length;
+  const totalNeeds = (projects as FleetProject[]).reduce((n, p) =>
+    n + (Array.isArray(p.needs) ? p.needs.length : (p.pendingPermissions || 0) + (p.pendingQuestions || 0)), 0);
+  const pill = [
+    totalRunning > 0 ? `${totalRunning} running` : null,
+    totalNeeds > 0 ? `${totalNeeds} needs you` : null,
+  ].filter(Boolean).join(' · ');
 
   const onDrop = async (e: React.DragEvent) => {
     e.preventDefault();
@@ -99,11 +176,33 @@ export function FleetView({
     setDrop({ name: entry.name, matches: r.ok ? (await r.json()).matches : [] });
   };
 
+  // Answering from the board. Each resolves to an error line or null; the
+  // strip owns its busy state, the fleet is refreshed either way so a strip
+  // that was answered elsewhere in the meantime disappears too.
+  const settle = async (r: Promise<Response>) => {
+    const err = await toError(await r);
+    refresh();
+    return err;
+  };
+  const onPermission = (it: NeedItem, behavior: 'allow' | 'deny') =>
+    settle(api.permission(it.id!, behavior));
+  const onAnswer = (it: NeedItem, text: string) =>
+    settle(api.answer(it.id!, text));
+  // The planner's ask is a batch; the board answers the first question only
+  // (its text is the strip's text) and `open` handles the rest in the chat.
+  // Mirrors `useChat().answer` in state.ts — a direct fetch because that hook
+  // is scoped to one project and the board spans them all.
+  const onPlanner = (it: NeedItem, text: string) =>
+    settle(fetch('/chat/answer', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: it.projectId, id: it.id, answers: { [it.text]: text } }),
+    }));
+
   return (
     <div style={{
       height: '100%', overflowY: 'auto', position: 'relative',
       // Column layout so the empty state can claim the space under the header
-      // and centre in it; a populated grid still lays out and scrolls normally.
+      // and centre in it; a populated board still lays out and scrolls normally.
       display: 'flex', flexDirection: 'column',
     }}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -113,6 +212,17 @@ export function FleetView({
 
       <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {!connected && <Banner tone="disconnected" inline>disconnected</Banner>}
+        {/* The page's one status line: what is happening across the fleet.
+            Omitted when nothing is — an idle fleet says so by saying nothing. */}
+        {pill && (
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '2px 10px', borderRadius: 'var(--r-pill)',
+            border: `1px solid ${totalNeeds > 0 ? 'var(--status-warning)' : 'var(--line-strong)'}`,
+            background: totalNeeds > 0 ? 'var(--brand-wash)' : 'transparent',
+            fontSize: 'var(--fs-xs)', color: 'var(--ink-1)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
+          }}>{pill}</span>
+        )}
         {/* Only when it warns. A fleet has many projects, each with its own
             provider — some with one per role — so one badge naming one payer
             here says something that is no longer true of the page. The two
@@ -134,62 +244,94 @@ export function FleetView({
         )}
       </AppHeader>
 
-      {/* One card needs no filter; several do, and the row is the same height
+      {/* One project needs no filter; several do, and the row is the same height
           whether or not anything is typed in it. */}
       {projects.length > 1 && (
         <FleetSearch value={query} onChange={setQuery}
           count={shown.length} total={projects.length} />
       )}
 
-      {/* With no projects the grid strands a lone card in the top-left of an
-          empty page. Centre the invitation instead; once there are projects the
-          grid is the right shape again. */}
-      <div style={projects.length === 0 ? {
-        flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center', gap: 'var(--sp-3)',
-        padding: 'var(--sp-5)', textAlign: 'center',
-      } : {
-        display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(var(--card-min), 1fr))',
-        gap: 'var(--sp-4)', padding: 'var(--sp-5)', maxWidth: 'var(--fleet-max)', margin: '0 auto',
-      }}>
-        {shown.map((p) => (
-          <ProjectCard key={p.id} name={p.name} folder={p.folder}
-            instance={providerHome(p.provider)}
-            run={p.activeRun ? {
-              mission: p.activeRun.mission,
-              title: p.activeRun.title,
-              costUsd: p.activeRun.costUsd,
-              budgetUsd: p.activeRun.budgetUsd,
-              costBasis: basisOf(p.activeRun),
-              usage: p.activeRun.usage,
-              turns: p.activeRun.turns,
-            } : undefined}
-            lastRun={!p.activeRun && p.lastRun && p.lastRun.status !== 'idle' && p.lastRun.status !== 'running'
-              ? { ...p.lastRun, status: p.lastRun.status } : undefined}
-            activity={p.activeRun ? activity[p.id] : undefined}
-            pendingPermissions={p.pendingPermissions}
-            pendingQuestions={p.pendingQuestions}
-            plannerQuestion={p.plannerQuestion}
-            onOpen={() => onOpen(p.id)}
-            onUnlink={() => setUnlinking(p)} />
-        ))}
-        {projects.length === 0 && (
-          <>
-            <div style={{ width: '20rem', maxWidth: '100%' }}>
-              <LinkProjectCard onClick={picker.show} />
-            </div>
-            <Empty>No projects linked yet — link a folder to give the director a job site.</Empty>
-          </>
-        )}
-        {projects.length > 0 && shown.length === 0 && (
-          // Spans the grid so the message sits under the field that caused it
-          // rather than alone in the first column.
-          <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
-            <Empty>Nothing matches “{query.trim()}”.</Empty>
-            <Button variant="ghost" size="sm" onClick={() => setQuery('')}>Clear filter</Button>
+      {projects.length === 0 ? (
+        // With no projects a board is three empty headings. Centre the
+        // invitation instead; once there are projects the board is the right shape.
+        <div style={{
+          flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: 'var(--sp-3)',
+          padding: 'var(--sp-5)', textAlign: 'center',
+        }}>
+          <div style={{ width: '20rem', maxWidth: '100%' }}>
+            <LinkProjectCard onClick={picker.show} />
           </div>
-        )}
-      </div>
+          <Empty>No projects linked yet — link a folder to give the director a job site.</Empty>
+        </div>
+      ) : (
+        <div style={{
+          display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)',
+          padding: 'var(--sp-5)', maxWidth: 'var(--fleet-max)', margin: '0 auto', width: '100%', boxSizing: 'border-box',
+        }}>
+          {shown.length === 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
+              <Empty>Nothing matches “{query.trim()}”.</Empty>
+              <Button variant="ghost" size="sm" onClick={() => setQuery('')}>Clear filter</Button>
+            </div>
+          )}
+
+          {/* 1 · Needs you. First, always, and answerable here. */}
+          {needs.length > 0 && (
+            <section style={sectionStyle}>
+              <SectionTitle>Needs you · {needs.length}</SectionTitle>
+              <NeedsBoard items={needs}
+                onPermission={onPermission} onAnswer={onAnswer} onPlanner={onPlanner}
+                onOpen={onOpen} />
+            </section>
+          )}
+
+          {/* 2 · Running. One bordered list; rows, not cards. */}
+          {running.length > 0 && (
+            <section style={sectionStyle}>
+              <SectionTitle>Running · {running.length}</SectionTitle>
+              <div style={{
+                background: 'var(--bg-card)', border: '1px solid var(--line)',
+                borderRadius: 'var(--r-md)', overflow: 'hidden',
+              }}>
+                {running.map((p, i) => {
+                  const r = p.activeRun!;
+                  return (
+                    <FleetRunRow key={p.id} name={p.name} folder={p.folder}
+                      title={r.title} mission={r.mission}
+                      activity={activity[p.id]}
+                      costUsd={r.costUsd} budgetUsd={r.budgetUsd}
+                      costBasis={basisOf(r)} usage={r.usage} turns={r.turns}
+                      directorModel={r.directorModel} workerModel={r.workerModel}
+                      createdAt={r.createdAt}
+                      onOpen={() => onOpen(p.id)}
+                      style={i > 0 ? { borderTop: '1px solid var(--line)' } : undefined} />
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {/* 3 · Recent. What finished, compact, last. */}
+          {recent.length > 0 && (
+            <section style={sectionStyle}>
+              <SectionTitle>Recent · {recent.length}</SectionTitle>
+              <div style={{
+                display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                gap: 'var(--sp-3)',
+              }}>
+                {recent.map((p) => (
+                  <OutcomeTile key={p.id} name={p.name} folder={p.folder}
+                    lastRun={p.lastRun && p.lastRun.status !== 'idle' && p.lastRun.status !== 'running'
+                      ? p.lastRun : null}
+                    onOpen={() => onOpen(p.id)}
+                    onUnlink={() => setUnlinking(p)} />
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+      )}
 
       {picker.open && picker.props && (
         <FolderPicker {...picker.props} onClose={picker.close} />
