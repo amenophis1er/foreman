@@ -539,6 +539,7 @@ async function driveRun(
     return;
   }
   let agentEnv;
+  let roleMetered = resolved.metered;
   try {
     // Resolved per role. Where both roles share a provider this resolves once
     // and starts one gateway; where they differ, the supervisor already runs a
@@ -559,6 +560,7 @@ async function driveRun(
         ? await agentEnvFor(directorProvider)
         : await agentEnvFor(workerProvider),
     };
+    roleMetered = directorProvider.metered || workerProvider.metered;
   } catch (err) {
     meta.status = 'error';
     meta.endedAt = Date.now();
@@ -570,7 +572,14 @@ async function driveRun(
   }
   // Frozen with the provider: whether this run's dollar figure is real money
   // decides which caps bind, and that must not change under a resume.
-  if (meta.metered === undefined) meta.metered = resolved.metered;
+  //
+  // Decided by the ROLES, not the project's own provider. A run whose director
+  // is on Codex and whose workers are on Ollama spends no real dollars, even
+  // though the project is nominally a Claude Code one — reading meteredness
+  // off the project would show that run a dollar meter and arm a dollar cap
+  // over spend that never happens. Metered if ANY role bills real money, so
+  // the cap still protects a mixed run where part of the spend is genuine.
+  if (meta.metered === undefined) meta.metered = roleMetered;
   const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv);
   activeByProject.set(projectId, run);
   try {
