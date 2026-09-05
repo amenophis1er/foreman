@@ -1,4 +1,4 @@
-Says which account pays. Appears in the fleet header, the project header, and directly beneath Start mission.
+Says which account pays. Appears in the project header and directly beneath Start mission — per project, because that is where the truth lives now that providers are chosen per project and per role. In the **fleet** header it appears only when it warns (`api-key`: an ambient key outranking a subscription; `none`: nothing can run) and never names an account; a healthy login shows nothing there.
 
 ```jsx
 <BillingBadge mode="api-key" source="ANTHROPIC_API_KEY" />

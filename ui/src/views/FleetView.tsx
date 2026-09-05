@@ -113,7 +113,16 @@ export function FleetView({
 
       <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {!connected && <Banner tone="disconnected" inline>disconnected</Banner>}
-        <BillingBadge mode={auth.mode} source={auth.source} account={auth.account} />
+        {/* Only when it warns. A fleet has many projects, each with its own
+            provider — some with one per role — so one badge naming one payer
+            here says something that is no longer true of the page. The two
+            states that still deserve a global flag are the expensive mistake
+            (an ambient API key outranking a subscription) and "nothing can
+            run at all". A healthy login says nothing; each project's own
+            header says who pays for it. */}
+        {(auth.mode === 'api-key' || auth.mode === 'none') && (
+          <BillingBadge mode={auth.mode} source={auth.source} />
+        )}
         {/* The fleet's one creative act. As a trailing grid tile it drifted
             further from the eye with every project linked; in the header it
             stays in the same place whether there are two projects or twenty. */}
