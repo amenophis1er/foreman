@@ -158,6 +158,11 @@ export async function ensureGateway(p: ResolvedProvider, holder?: string): Promi
       CODEX_ORIGINATOR: process.env.CODEX_ORIGINATOR || 'foreman',
       // Only consulted when the token carries no account claim of its own.
       ...(accountId ? { CODEX_ACCOUNT_ID: accountId } : {}),
+      // Opt-in request dumping for diagnosing a stall that only the real
+      // payload reproduces. Forwarded only when the operator set it: the
+      // files contain prompts and repository contents.
+      ...(process.env.FOREMAN_GATEWAY_DUMP_DIR
+        ? { FOREMAN_GATEWAY_DUMP_DIR: process.env.FOREMAN_GATEWAY_DUMP_DIR } : {}),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

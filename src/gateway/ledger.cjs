@@ -21,12 +21,23 @@
  * `POST /run/<key>/v1/messages?beta=true`). The key carries the resume attempt
  * as well as the run id, so a resumed run starts a fresh bucket and its
  * persisted total is never counted twice by a gateway that outlived it.
+ *
+ * REQUEST DUMPS. Set FOREMAN_GATEWAY_DUMP_DIR and every POST to /v1/messages
+ * is written to disk, request and response outcome, before it is served. This
+ * exists because a stall was only ever reproducible with the real worker
+ * payload — the SDK's full system prompt plus its whole tool set — and no
+ * hand-built request came close. The only honest way to replay it is to have
+ * kept it. Off by default: the files hold prompts and repository contents.
  */
 const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+const { Readable } = require('node:stream');
 const gateway = require('./llm-gateway.cjs');
 
 const PORT = Number(process.env.LLM_GATEWAY_PORT || 0);
 const MODE = process.env.LLM_GATEWAY_MODE || 'openai';
+const DUMP_DIR = process.env.FOREMAN_GATEWAY_DUMP_DIR || '';
 
 /** key -> running totals. In memory: a restarted gateway has counted nothing. */
 const ledger = new Map();
@@ -101,13 +112,25 @@ function extractUsage(body) {
  * the buffer is capped: a ledger must not turn a long streamed answer into
  * unbounded memory. Every write is passed straight through first, so nothing
  * here can delay or alter what the agent receives.
+ *
+ * `observe`, when given, is told the outcome once at end — status, timing,
+ * size, whether usage ever appeared. The dumper hangs off this rather than
+ * wrapping `res` a second time: two observers patching write/end would each
+ * see the other's wrapper, and a bug in either would be twice as hard to place.
  */
-function tee(res, key) {
+function tee(res, key, observe) {
   const { write, end } = res;
   let buf = '';
+  let bytes = 0;
+  let firstByteMs = null;
+  const started = Date.now();
   const CAP = 256 * 1024;
   const absorb = (chunk) => {
-    if (!chunk || buf.length > CAP) return;
+    if (!chunk) return;
+    const len = typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length;
+    if (len > 0 && firstByteMs === null) firstByteMs = Date.now() - started;
+    bytes += len;
+    if (buf.length > CAP) return;
     // Buffer.from, not chunk.toString(): a Uint8Array's own toString() ignores
     // the encoding and yields "101,118,101,..." — comma-separated byte values
     // that parse as nothing and would silently record zero tokens forever.
@@ -119,18 +142,131 @@ function tee(res, key) {
   };
   res.end = function (chunk, ...rest) {
     absorb(chunk);
+    let sawUsage = false;
     try {
       const got = extractUsage(buf);
-      if (got) record(key, got.usage, got.costUsd);
+      sawUsage = !!got;
+      if (got && key) record(key, got.usage, got.costUsd);
     } catch { /* never fail a response over bookkeeping */ }
+    if (observe) {
+      try {
+        observe({
+          status: res.statusCode, durationMs: Date.now() - started, bytes, sawUsage, firstByteMs,
+        });
+      } catch { /* an observer is not allowed to fail the response either */ }
+    }
     return end.call(this, chunk, ...rest);
   };
+}
+
+/** Header copy safe to write to disk: the two places a credential travels. */
+function redactHeaders(headers) {
+  const out = {};
+  for (const [k, v] of Object.entries(headers || {})) {
+    out[k] = /^(x-api-key|authorization)$/i.test(k) ? '[redacted]' : v;
+  }
+  return out;
+}
+
+/**
+ * The few numbers that tell a stalled request apart from a healthy one at a
+ * glance, without opening a multi-megabyte file. `system` is a string or an
+ * array of text blocks depending on the SDK version; both are measured.
+ */
+function summarize(body, bodyBytes) {
+  const s = { model: null, stream: null, systemChars: 0, toolCount: 0, messageCount: 0, bodyBytes };
+  if (!body || typeof body !== 'object') return s;
+  s.model = typeof body.model === 'string' ? body.model : null;
+  s.stream = !!body.stream;
+  if (typeof body.system === 'string') s.systemChars = body.system.length;
+  else if (Array.isArray(body.system)) {
+    for (const b of body.system) if (b && typeof b.text === 'string') s.systemChars += b.text.length;
+  }
+  if (Array.isArray(body.tools)) s.toolCount = body.tools.length;
+  if (Array.isArray(body.messages)) s.messageCount = body.messages.length;
+  return s;
+}
+
+/**
+ * Build the request dumper, or nothing when the directory is unset.
+ *
+ * `begin` writes the request file and returns the function that writes its
+ * response file; both swallow everything. A dump is a diagnostic aid bolted
+ * onto the request path, and the one thing worse than a missing dump is a
+ * worker that failed because its gateway could not write a file.
+ */
+function makeDumper(dir, log = (line) => process.stderr.write(`${line}\n`)) {
+  if (!dir) return null;
+  let seq = 0;
+  let made = false;
+  return {
+    dir,
+    begin(key, req, raw) {
+      try {
+        if (!made) { fs.mkdirSync(dir, { recursive: true }); made = true; }
+        const ts = new Date();
+        // The key is `<runId>.<attempt>`-ish but comes off the wire; keep the
+        // filename to characters every filesystem accepts.
+        const safeKey = String(key ?? 'unkeyed').replace(/[^A-Za-z0-9._-]/g, '_');
+        const name = `${ts.toISOString().replace(/[:.]/g, '-')}-${safeKey}-${++seq}`;
+        const text = Buffer.from(raw).toString('utf8');
+        let body = text;
+        try { body = JSON.parse(text); } catch { /* keep the raw string: a bad body is the finding */ }
+        const summary = summarize(body, raw.length);
+        fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify({
+          ts: ts.toISOString(), key, url: req.url, headers: redactHeaders(req.headers), body, summary,
+        }));
+        const label = key ?? 'unkeyed';
+        log(`[dump] ${label} -> ${summary.model} tools=${summary.toolCount} system=${summary.systemChars} stream=${summary.stream}`);
+        return (info) => {
+          try {
+            fs.writeFileSync(path.join(dir, `${name}.response.json`), JSON.stringify(info));
+            log(`[dump] ${label} <- ${info.status} in ${info.durationMs}ms ${info.bytes}B usage=${info.sawUsage}`);
+          } catch { /* see above */ }
+        };
+      } catch {
+        return () => {};
+      }
+    },
+  };
+}
+
+/** Drain a request into memory. */
+function readAll(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+/**
+ * A stand-in request the handler cannot tell from the original.
+ *
+ * The body has been drained to dump it, so the handler gets a stream that
+ * plays it back. Sharing a 'data' listener with the handler instead would
+ * work today only because each handler subscribes before its first `await`
+ * — an ordering inside a verbatim upstream file that a re-sync may not
+ * keep, and whose failure mode is a silently truncated prompt. The handlers
+ * read exactly headers, method, url, on and pipe (measured, not assumed).
+ */
+function replay(req, raw) {
+  const r = new Readable({ read() {} });
+  r.headers = req.headers;
+  r.method = req.method;
+  r.url = req.url;
+  r.push(raw);
+  r.push(null);
+  return r;
 }
 
 function startServer() {
   const handler = MODE === 'passthrough' ? gateway.handlePassthrough
     : MODE === 'codex' ? gateway.handleCodex
     : gateway.handleOpenAI;
+  const dumper = makeDumper(DUMP_DIR);
+  if (dumper) process.stderr.write(`[dump] writing /v1/messages requests to ${dumper.dir}\n`);
 
   const server = http.createServer((req, res) => {
     // Foreman's own read side. Never proxied upstream.
@@ -147,15 +283,29 @@ function startServer() {
     const m = /^\/run\/([^/]+)(\/.*)$/.exec(req.url || '');
     const key = m ? decodeURIComponent(m[1]) : null;
     if (m) req.url = m[2];
-    if (key) tee(res, key);
 
-    Promise.resolve(handler(req, res)).catch((e) => {
+    const wantDump = !!dumper && req.method === 'POST' && (req.url || '').startsWith('/v1/messages');
+    // Assigned once the request file is written; the tee calls it at end.
+    let finishDump = () => {};
+    if (key || wantDump) tee(res, key, wantDump ? (info) => finishDump(info) : undefined);
+
+    const fail = (e) => {
       if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' });
       res.end(JSON.stringify({
         type: 'error',
         error: { type: 'api_error', message: String((e && e.message) || e) },
       }));
-    });
+    };
+    if (wantDump) {
+      // Drain, dump, then serve from the replay. The undumped path below is
+      // untouched: the handler still gets the live socket stream.
+      readAll(req).then((raw) => {
+        finishDump = dumper.begin(key, req, raw);
+        return handler(replay(req, raw), res);
+      }).catch(fail);
+    } else {
+      Promise.resolve(handler(req, res)).catch(fail);
+    }
   });
   server.on('error', (e) => {
     if (e.code === 'EADDRINUSE') process.exit(0);
@@ -169,6 +319,8 @@ function startServer() {
   });
 }
 
-module.exports = { extractUsage, record, ledger, tee };
+module.exports = {
+  extractUsage, record, ledger, tee, makeDumper, summarize, redactHeaders, replay,
+};
 
 if (require.main === module) startServer();

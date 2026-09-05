@@ -9,6 +9,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { mkdtempSync, readdirSync, readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const require_ = createRequire(import.meta.url);
 const ledgerMod = require_('./ledger.cjs') as {
@@ -114,4 +117,139 @@ test('nonsense in a usage object is ignored rather than poisoning a total', () =
   assert.deepEqual(ledgerMod.ledger.get('k'), {
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, calls: 1,
   });
+});
+
+// ---- request dumps --------------------------------------------------------
+
+const dumps = ledgerMod as unknown as {
+  makeDumper(dir: string, log?: (line: string) => void): null | {
+    dir: string;
+    begin(key: string | null, req: { url?: string; headers?: Record<string, unknown> }, raw: Buffer):
+      (info: Record<string, unknown>) => void;
+  };
+  replay(req: { headers: unknown; method: string; url: string }, raw: Buffer): NodeJS.ReadableStream & {
+    headers: unknown; method: string; url: string;
+  };
+  tee(res: Record<string, unknown>, key: string | null, observe?: (info: Record<string, unknown>) => void): void;
+};
+
+const scratch = () => mkdtempSync(join(tmpdir(), 'foreman-dump-'));
+
+const fakeReq = (headers: Record<string, string>, url = '/v1/messages?beta=true') => (
+  { headers, method: 'POST', url }
+);
+
+test('dumping is a no-op when the directory is unset', () => {
+  // Off by default is the whole point: these files hold prompts and repository
+  // contents, and no one should find them on disk without having asked.
+  assert.equal(dumps.makeDumper(''), null);
+  assert.equal(dumps.makeDumper(undefined as unknown as string), null);
+});
+
+test('a request is written with its secrets redacted and its shape summarised', () => {
+  const dir = join(scratch(), 'nested', 'not-yet-made');
+  const lines: string[] = [];
+  const d = dumps.makeDumper(dir, (l) => lines.push(l))!;
+  const body = {
+    model: 'kimi-k3:cloud', stream: true, max_tokens: 8,
+    system: [{ type: 'text', text: 'abc' }, { type: 'text', text: 'de' }],
+    tools: [{ name: 'Read' }, { name: 'Edit' }, { name: 'Bash' }],
+    messages: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'yo' }],
+  };
+  const raw = Buffer.from(JSON.stringify(body));
+  const finish = d.begin('run-a.0', fakeReq({
+    'x-api-key': 'sk-secret', authorization: 'Bearer also-secret', 'content-type': 'application/json',
+  }), raw);
+
+  assert.ok(existsSync(dir), 'the dump dir is created on first use');
+  const files = readdirSync(dir).sort();
+  assert.equal(files.length, 1);
+  assert.match(files[0], /-run-a\.0-1\.json$/);
+  const got = JSON.parse(readFileSync(join(dir, files[0]), 'utf8'));
+  assert.equal(got.key, 'run-a.0');
+  assert.equal(got.url, '/v1/messages?beta=true');
+  assert.equal(got.headers['x-api-key'], '[redacted]');
+  assert.equal(got.headers.authorization, '[redacted]');
+  assert.equal(got.headers['content-type'], 'application/json');
+  assert.deepEqual(got.body, body);
+  assert.deepEqual(got.summary, {
+    model: 'kimi-k3:cloud', stream: true, systemChars: 5, toolCount: 3, messageCount: 2,
+    bodyBytes: raw.length,
+  });
+  assert.deepEqual(lines, ['[dump] run-a.0 -> kimi-k3:cloud tools=3 system=5 stream=true']);
+
+  finish({ status: 200, durationMs: 1234, bytes: 99, sawUsage: true, firstByteMs: 12 });
+  const after = readdirSync(dir).sort();
+  assert.deepEqual(after, [files[0], files[0].replace(/\.json$/, '.response.json')]);
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, after[1]), 'utf8')), {
+    status: 200, durationMs: 1234, bytes: 99, sawUsage: true, firstByteMs: 12,
+  });
+  assert.equal(lines[1], '[dump] run-a.0 <- 200 in 1234ms 99B usage=true');
+});
+
+test('a malformed body is still dumped, as the raw string, and still reaches the handler', async () => {
+  // The bad body may be the very thing being diagnosed, so it is kept
+  // verbatim; and the dump must not be what turns it into a failure.
+  const dir = scratch();
+  const d = dumps.makeDumper(dir, () => {})!;
+  const raw = Buffer.from('{"model": "x", not json');
+  const req = fakeReq({ 'x-api-key': 'k' });
+  d.begin(null, req, raw);
+  const [file] = readdirSync(dir);
+  assert.match(file, /-unkeyed-1\.json$/);
+  const got = JSON.parse(readFileSync(join(dir, file), 'utf8'));
+  assert.equal(got.body, '{"model": "x", not json');
+  assert.equal(got.summary.model, null);
+  assert.equal(got.summary.bodyBytes, raw.length);
+
+  // What the handler would then read: the same bytes, under the same identity.
+  const r = dumps.replay(req, raw);
+  assert.equal(r.method, 'POST');
+  assert.equal(r.url, '/v1/messages?beta=true');
+  assert.equal(r.headers, req.headers);
+  const chunks: Buffer[] = [];
+  for await (const c of r as AsyncIterable<Buffer>) chunks.push(c);
+  assert.equal(Buffer.concat(chunks).toString(), raw.toString());
+});
+
+test('an unwritable dump dir does not fail the request', () => {
+  // A file where a directory should be: mkdir -p cannot succeed.
+  const blocker = join(scratch(), 'file');
+  require_('node:fs').writeFileSync(blocker, '');
+  const d = dumps.makeDumper(join(blocker, 'sub'), () => {})!;
+  const finish = d.begin('k', fakeReq({}), Buffer.from('{}'));
+  assert.equal(typeof finish, 'function');
+  assert.doesNotThrow(() => finish({ status: 200 }));
+});
+
+test('the tee reports the response outcome once, and still passes every byte through', () => {
+  const written: unknown[] = [];
+  const res = {
+    statusCode: 200,
+    write(chunk: unknown) { written.push(chunk); return true; },
+    end(chunk?: unknown) { if (chunk !== undefined) written.push(chunk); return this; },
+  };
+  const seen: Record<string, unknown>[] = [];
+  ledgerMod.ledger.clear();
+  dumps.tee(res as unknown as Record<string, unknown>, 'run-t.0', (info) => seen.push(info));
+  res.write('data: {"type":"message_start"}\n\n');
+  res.write(Buffer.from('data: {"type":"message_delta","usage":{"input_tokens":3,"output_tokens":1}}\n\n'));
+  res.end('data: [DONE]\n');
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].status, 200);
+  assert.equal(seen[0].sawUsage, true);
+  assert.equal(seen[0].bytes, written.reduce<number>((a, c) => a + Buffer.byteLength(c as string), 0));
+  assert.equal(typeof seen[0].durationMs, 'number');
+  assert.equal(typeof seen[0].firstByteMs, 'number');
+  assert.equal(written.length, 3, 'nothing is swallowed or duplicated');
+  assert.equal(ledgerMod.ledger.get('run-t.0')?.inputTokens, 3, 'counting still happens alongside');
+});
+
+test('an observer that throws cannot break the response', () => {
+  let ended = false;
+  const res = { statusCode: 200, write() { return true; }, end() { ended = true; return this; } };
+  dumps.tee(res as unknown as Record<string, unknown>, null, () => { throw new Error('boom'); });
+  assert.doesNotThrow(() => res.end());
+  assert.ok(ended);
 });
