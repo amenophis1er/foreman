@@ -1,10 +1,18 @@
 import React, { useState } from 'react';
 import { StatusBadge } from '../status/StatusBadge';
+import { formatTokens } from '../status/BudgetMeter';
 
 /** A run in the history rail: its name (or mission), date, cost, status. */
-export function RunRow({ mission, title, createdAt, costUsd = 0, status = 'done', selected, current, onSelect, style }) {
+export function RunRow({ mission, title, createdAt, costUsd = 0, costBasis = 'priced', usage, status = 'done', selected, current, onSelect, style }) {
   const [hover, setHover] = useState(false);
   const cost = Number(costUsd) || 0;
+  // A dollar only where someone priced it. An unpriced run shows what is
+  // known — tokens — and a free one shows nothing; a figure with no basis
+  // is the one number a run rail must never invent.
+  const tokens = usage ? (usage.inputTokens || 0) + (usage.outputTokens || 0) + (usage.cacheReadTokens || 0) + (usage.cacheWriteTokens || 0) : 0;
+  const spend = costBasis === 'priced' ? `$${cost.toFixed(2)}`
+    : costBasis === 'unpriced' && tokens > 0 ? `${formatTokens(tokens)} tok`
+    : null;
   const date = createdAt
     ? new Date(createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
     : null;
@@ -32,7 +40,7 @@ export function RunRow({ mission, title, createdAt, costUsd = 0, status = 'done'
         fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums',
       }}>
         {date && <span>{date}</span>}
-        <span>${cost.toFixed(2)}</span>
+        {spend && <span title={costBasis === 'unpriced' ? 'This provider publishes no prices; tokens are what is known.' : undefined}>{spend}</span>}
         <StatusBadge status={status} />
       </div>
     </div>

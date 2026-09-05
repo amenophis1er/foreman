@@ -114,13 +114,14 @@ function RunSwitcher({ history, selectedRunId, live, onSelectRun, right }: {
     <div style={{ flex: '0 0 auto', borderBottom: '1px solid var(--line)', background: 'var(--bg-panel)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', padding: '4px var(--sp-3) 4px var(--sp-2)', minWidth: 0 }}>
         <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textTransform: 'uppercase', letterSpacing: 'var(--ls-caps)', flex: '0 0 auto' }}>
-          {live ? 'This run' : current ? 'Past run' : 'Runs'}
+          {live ? 'This run' : current ? 'Past run' : 'Planning'}
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
           {current ? (
             <RunRow mission={current.mission} title={current.title} createdAt={current.createdAt}
-              costUsd={current.costUsd} status={current.status} current style={{ marginBottom: 0, padding: '2px 8px' }} />
-          ) : <Empty>No run selected — planning below, or open a past run.</Empty>}
+              costUsd={current.costUsd} costBasis={basisOf(current)} usage={current.usage}
+              status={current.status} current style={{ marginBottom: 0, padding: '2px 8px' }} />
+          ) : <Empty>No run yet — talk the next mission through below, or open a past run.</Empty>}
         </div>
         {right}
         {others.length > 0 && (
@@ -138,7 +139,7 @@ function RunSwitcher({ history, selectedRunId, live, onSelectRun, right }: {
         }}>
           {others.map((r) => (
             <RunRow key={r.id} mission={r.mission} title={r.title} createdAt={r.createdAt}
-              costUsd={r.costUsd} status={r.status}
+              costUsd={r.costUsd} costBasis={basisOf(r)} usage={r.usage} status={r.status}
               onSelect={() => { setOpen(false); onSelectRun(r.id); }} />
           ))}
         </div>
@@ -165,6 +166,9 @@ function Disclosure({ label, open, onToggle, children }: {
     </div>
   );
 }
+
+/** The one reading column both transcripts share. See `--spine-max`. */
+const SPINE_COL: React.CSSProperties = { width: '100%', maxWidth: 'var(--spine-max)', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)', boxSizing: 'border-box' };
 
 export type TranscriptOrder = 'newest' | 'oldest';
 
@@ -248,6 +252,9 @@ function Transcript({ run, filter, jump, order, header }: {
         overflowY: 'auto', padding: 'var(--sp-3)', minHeight: 0, flex: 1,
         display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)',
       }}>
+      {/* One column of reading width, centred: on a wide window a transcript
+          stretched edge to edge read flat, every line the same long shape. */}
+      <div style={SPINE_COL}>
       {header}
       {shown.length === 0 && <Empty>Transcript will appear here.</Empty>}
       {shown.map((e) => (
@@ -262,6 +269,7 @@ function Transcript({ run, filter, jump, order, header }: {
             kind={e.kind} body={e.body} ts={e.ts} to={e.to} timing={e.timing} />
         </div>
       ))}
+      </div>
     </div>
   );
 }
@@ -331,6 +339,7 @@ function PlanPane({
             </span>
           </div>
         )}
+        <div style={SPINE_COL}>
         {chat.entries.map((e) => (
           <TranscriptEntry key={e.id} agent={e.agent} title={e.title}
             kind={e.kind} body={e.body} ts={e.ts} />
@@ -353,8 +362,9 @@ function PlanPane({
             onStart={(v) => onStart(v)}
             onDismiss={chat.dismissProposal} />
         )}
+        </div>
       </div>
-      <div style={{ padding: 'var(--sp-2) var(--sp-3) var(--sp-3)', flex: '0 0 auto' }}>
+      <div style={{ padding: 'var(--sp-2) var(--sp-3) var(--sp-3)', flex: '0 0 auto', width: '100%', maxWidth: 'var(--spine-max)', margin: '0 auto', boxSizing: 'border-box' }}>
         {/* A pending question takes the input box's place rather than sitting
             above it: it IS the input right now, and two ways to reply to the
             same thing side by side would be a real question about which one
@@ -686,7 +696,15 @@ export function ProjectView({
           onAnswer={(id, answer) => void api.answer(id, answer)} />
       )}
       {selectedRunId && !viewingLive && (
-        <Banner tone="readonly">Viewing a past run (read-only).</Banner>
+        <Banner tone="readonly">
+          Viewing a past run (read-only).
+          {/* The way back, where the reader is when they want it. The header's
+              "New mission" says what it starts, not where it goes. */}
+          <Button variant="ghost" size="sm" icon="back" style={{ marginLeft: 'var(--sp-2)' }}
+            onClick={() => setSelectedRunId(activeRunId ?? null)}>
+            {activeRunId ? 'Back to the live run' : 'Back to planning'}
+          </Button>
+        </Banner>
       )}
 
       <RunSwitcher history={history} selectedRunId={selectedRunId} live={viewingLive}
@@ -743,7 +761,7 @@ export function ProjectView({
               {(chat.costUsd > 0 || chat.entries.length > 0) && (
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', flex: '0 0 auto',
-                  padding: '4px var(--sp-3) 0',
+                  padding: '4px var(--sp-3) 0', width: '100%', maxWidth: 'var(--spine-max)', margin: '0 auto', boxSizing: 'border-box',
                 }}>
                   <span style={{ flex: 1 }} />
                   {chat.costUsd > 0 && (
@@ -765,7 +783,8 @@ export function ProjectView({
                 onStart={(v) => void startMission(v)} />
               <button type="button" onClick={() => setComposeOpen(true)} style={{
                 flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 6,
-                margin: '0 var(--sp-3) var(--sp-3)', padding: '6px 10px',
+                margin: '0 auto var(--sp-3)', padding: '6px 10px',
+                width: 'calc(100% - 2 * var(--sp-3))', maxWidth: 'calc(var(--spine-max) - 2 * var(--sp-3))', boxSizing: 'border-box',
                 background: 'none', border: '1px dashed var(--line-strong)', borderRadius: 'var(--r-sm)',
                 cursor: 'pointer', font: 'inherit', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textAlign: 'left',
               }}>

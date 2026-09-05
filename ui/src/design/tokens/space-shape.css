@@ -23,6 +23,7 @@
   --bp-medium: 1180px; /* below: left rail collapses into a crew strip */
   --fleet-max: 75rem;       /* 1200 */
   --composer-max: 45rem;    /* 720 */
+  --spine-max: 62rem;       /* 992 — one readable column for chat and transcript; wider reads flat */
   --card-min: 18.75rem;     /* 300 */
   --card-min-h: 8.125rem;   /* 130 */
   --modal-w: 30rem;         /* 480 */

@@ -10,6 +10,9 @@ export interface RunRowProps {
   /** Epoch ms. Rendered `Sep 3, 12:16 AM`. */
   createdAt?: number;
   costUsd?: number;
+  /** What `costUsd` is. `priced` renders dollars; `unpriced` renders tokens from `usage`; `free` renders no spend. Default `priced`. */
+  costBasis?: 'priced' | 'free' | 'unpriced';
+  usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number };
   status?: 'idle' | 'running' | 'done' | 'error' | 'interrupted';
   selected?: boolean;
   /** The run whose crew is shown — semibold title. */

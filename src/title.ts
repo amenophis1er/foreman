@@ -25,7 +25,10 @@ const TITLE_MODEL = 'haiku';
 const MAX_TITLE_CHARS = 60;
 
 /** A stuck subprocess must not leak; the title is optional, so give up early. */
-const TIMEOUT_MS = 45_000;
+// Generous on purpose. Nothing waits on the title, and a slow first call on
+// a cloud gateway (test-4's kimi took 114 s to answer its first turn) is not
+// a reason to leave a run named by its brief for good.
+const TIMEOUT_MS = 150_000;
 
 const SYSTEM_PROMPT =
   'You name software missions. You reply with the title and nothing else: no ' +
@@ -71,7 +74,9 @@ export async function generateRunTitle(
     `MISSION:\n${brief}`;
 
   let q: ReturnType<typeof query> | undefined;
+  let timedOut = false;
   const timer = setTimeout(() => {
+    timedOut = true;
     void (q as AsyncGenerator<SDKMessage> | undefined)?.return?.(undefined as never)
       .catch(() => {});
   }, TIMEOUT_MS);
@@ -113,14 +118,18 @@ export async function generateRunTitle(
         for (const b of content) if (b.type === 'text') text += String(b.text ?? '');
       } else if (m.type === 'result') {
         if (typeof m.total_cost_usd === 'number') costUsd = m.total_cost_usd;
-        if (m.is_error) return null;
+        if (m.is_error) { console.warn(`[title] model returned an error: ${String(m.result ?? m.subtype ?? '').slice(0, 200)}`); return null; }
       }
     }
 
     const title = cleanTitle(text);
+    if (!title) console.warn(`[title] ${timedOut ? `no answer within ${TIMEOUT_MS / 1000}s` : text.trim() ? `unusable reply: ${JSON.stringify(text.slice(0, 120))}` : 'empty reply'}`);
     return title ? { title, costUsd } : null;
-  } catch {
-    return null; // a name is never worth failing a mission over
+  } catch (e) {
+    // A name is never worth failing a mission over — but a silent failure
+    // left a run un-named twice with nothing to go on. Say why, once.
+    console.warn(`[title] failed: ${(e as Error)?.message ?? e}`);
+    return null;
   } finally {
     clearTimeout(timer);
     await (q as AsyncGenerator<SDKMessage> | undefined)?.return?.(undefined as never)
