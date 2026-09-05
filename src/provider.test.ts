@@ -13,10 +13,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import {
-  ANTHROPIC_NATIVE_BASE_URL, GATEWAY_INVARIANT, gatewayBaseUrl, normalizeOpenAiBaseUrl,
+  ANTHROPIC_NATIVE_BASE_URL, GATEWAY_INVARIANT, normalizeOpenAiBaseUrl,
   ownedConfigDir, providerEnv, providerFromLegacy, providerOf, providerProblem, resolveProvider,
 } from './provider.js';
 import type { ProviderRef } from './types.js';
+
+/** Stands in for a running gateway; the supervisor's own port is dynamic. */
+const GW = 'http://127.0.0.1:54321';
 
 const ROOT = '/tmp/foreman-test-root';
 
@@ -60,7 +63,7 @@ test('gateway wires never forward an ambient credential', async () => {
       const resolved = await resolveProvider(ref, ROOT);
       // Codex has no login on a test machine; give it one so env-building runs.
       const p = { ...resolved, apiKey: resolved.apiKey ?? 'codex-token', problem: undefined };
-      const { env } = providerEnv(p);
+      const { env } = providerEnv(p, GW);
       assert.ok(env, `${ref.kind} must build an env`);
 
       const leaked = Object.values(AMBIENT);
@@ -70,7 +73,7 @@ test('gateway wires never forward an ambient credential', async () => {
           `${ref.kind} leaked an ambient credential through ${k}`,
         );
       }
-      assert.equal(env.ANTHROPIC_BASE_URL, gatewayBaseUrl(), `${ref.kind}: ${GATEWAY_INVARIANT}`);
+      assert.equal(env.ANTHROPIC_BASE_URL, GW, `${ref.kind}: ${GATEWAY_INVARIANT}`);
       assert.ok(env.ANTHROPIC_API_KEY, `${ref.kind}: ${GATEWAY_INVARIANT}`);
       assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, undefined, `${ref.kind} left the OAuth token set`);
       assert.equal(env.ANTHROPIC_AUTH_TOKEN, undefined, `${ref.kind} left the auth token set`);
@@ -84,7 +87,7 @@ test('a gateway wire with no credential throws rather than falling back', async 
     ROOT,
   );
   await withEnv({ TEST_ABSENT_KEY: undefined, ...AMBIENT }, async () => {
-    assert.throws(() => providerEnv(p), /gateway wire must set an explicit/);
+    assert.throws(() => providerEnv(p, GW), /gateway wire must set an explicit/);
   });
 });
 
@@ -93,7 +96,7 @@ test('gateway providers never read a user Claude Code install', async () => {
     { kind: 'openai-compatible', id: 'ollama', baseUrl: 'http://127.0.0.1:11434' }, ROOT);
   assert.equal(p.configDir, ownedConfigDir(ROOT, 'ollama'));
   assert.ok(p.configDir.startsWith(ROOT), 'must live under the Foreman data root');
-  const { env } = providerEnv(p);
+  const { env } = providerEnv(p, GW);
   assert.equal(env?.CLAUDE_CONFIG_DIR, p.configDir);
 });
 
@@ -103,7 +106,7 @@ test('an endpoint needing no key still satisfies the invariant', async () => {
   const p = await resolveProvider(
     { kind: 'openai-compatible', id: 'ollama', baseUrl: 'http://127.0.0.1:11434' }, ROOT);
   await withEnv(AMBIENT, async () => {
-    const { env } = providerEnv(p);
+    const { env } = providerEnv(p, GW);
     assert.ok(env?.ANTHROPIC_API_KEY);
     assert.ok(!Object.values(AMBIENT).includes(env!.ANTHROPIC_API_KEY as string));
   });
@@ -112,15 +115,19 @@ test('an endpoint needing no key still satisfies the invariant', async () => {
 test('gateway wires pin every model alias, or workers 400', async () => {
   const p = await resolveProvider(
     { kind: 'openai-compatible', id: 'or', baseUrl: 'https://openrouter.ai/api', model: 'gpt-5' }, ROOT);
-  const { env } = providerEnv(p);
+  const { env } = providerEnv(p, GW);
   assert.equal(env?.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'gpt-5');
   assert.equal(env?.ANTHROPIC_DEFAULT_SONNET_MODEL, 'gpt-5');
   assert.equal(env?.ANTHROPIC_DEFAULT_OPUS_MODEL, 'gpt-5');
   assert.equal(env?.LLM_GATEWAY_DEFAULT_MODEL, 'gpt-5');
 });
 
-test('the gateway port avoids Ollama', () => {
-  assert.notEqual(new URL(gatewayBaseUrl()).port, '11434');
+test('a gateway wire with no gateway running refuses to build an env', async () => {
+  // The supervisor allocates the port, so an env built without one would point
+  // the agent at nothing — or, worse, at whatever else answers on a guess.
+  const p = await resolveProvider(
+    { kind: 'openai-compatible', id: 'ollama', baseUrl: 'http://127.0.0.1:11434' }, ROOT);
+  assert.throws(() => providerEnv(p), /gateway wire must set an explicit/);
 });
 
 // ---------------------------------------------------------------------------
@@ -210,8 +217,8 @@ test('base URLs are normalised the way people paste them', () => {
     'a local http endpoint must not be upgraded to https');
 });
 
-test('gateway providers refuse to dispatch until the gateway exists', async () => {
+test('a resolvable gateway provider reports no problem', async () => {
   const p = await resolveProvider(
     { kind: 'openai-compatible', id: 'ollama', baseUrl: 'http://127.0.0.1:11434' }, ROOT);
-  assert.match(providerProblem(p) ?? '', /not built yet/);
+  assert.equal(providerProblem(p), null);
 });

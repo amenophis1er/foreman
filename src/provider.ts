@@ -35,24 +35,11 @@ import type { ProviderRef, ClaudeInstanceRef } from './types.js';
 export const ANTHROPIC_NATIVE_BASE_URL = 'https://api.anthropic.com';
 
 /**
- * Loopback port for the translating gateway.
- *
- * NOT 11434. That is the gateway's default in the container-based design this
- * is ported from, where nothing else is listening — but on a user's machine it
- * is Ollama's port, so the gateway would collide with the very thing it exists
- * to proxy to.
+ * Gateways bind a port the OS chooses, one process per active provider — see
+ * gateway.ts. Deliberately not a fixed port: the value this was ported from is
+ * 11434, which on a user's machine is Ollama's, and colliding with the thing
+ * you proxy to is a poor first bug.
  */
-export const GATEWAY_PORT = Number(process.env.FOREMAN_GATEWAY_PORT ?? 11987);
-
-export const gatewayBaseUrl = (): string => `http://127.0.0.1:${GATEWAY_PORT}`;
-
-/**
- * Flipped on in step 2 of docs/provider-model.md §9, when the gateway process
- * exists. Until then gateway-wired providers resolve and validate normally but
- * refuse to dispatch, so a half-built provider can never run against the wrong
- * credential.
- */
-export const GATEWAY_IMPLEMENTED = false;
 
 /** How an agent's requests reach a model. */
 export type Wire = 'anthropic-native' | 'gateway-openai' | 'gateway-codex';
@@ -303,7 +290,7 @@ export interface AgentEnv {
  * programming error rather than a user error, and the failure mode it guards
  * against is a leaked token, so it fails loudly instead of degrading.
  */
-export function providerEnv(p: ResolvedProvider): AgentEnv {
+export function providerEnv(p: ResolvedProvider, gatewayUrl?: string): AgentEnv {
   const env: Record<string, string | undefined> = { ...process.env };
   env.CLAUDE_CONFIG_DIR = p.configDir;
 
@@ -325,9 +312,7 @@ export function providerEnv(p: ResolvedProvider): AgentEnv {
     // — see GATEWAY_INVARIANT for why deleting them is not enough.
     for (const v of AMBIENT_CREDENTIAL_VARS) delete env[v];
     env.ANTHROPIC_API_KEY = p.apiKey;
-    env.ANTHROPIC_BASE_URL = gatewayBaseUrl();
-    env.LLM_GATEWAY_MODE = p.wire === 'gateway-codex' ? 'codex' : 'openai';
-    if (p.upstreamUrl) env.LLM_GATEWAY_TARGET_URL = p.upstreamUrl;
+    env.ANTHROPIC_BASE_URL = gatewayUrl;
 
     // Model aliases. Foreman's cost model IS these aliases — director opus,
     // workers sonnet, run titles haiku — and on a gateway wire the SDK would
@@ -340,7 +325,7 @@ export function providerEnv(p: ResolvedProvider): AgentEnv {
       env.LLM_GATEWAY_DEFAULT_MODEL = p.model;
     }
 
-    if (!env.ANTHROPIC_API_KEY || env.ANTHROPIC_BASE_URL !== gatewayBaseUrl()) {
+    if (!env.ANTHROPIC_API_KEY || !gatewayUrl) {
       throw new Error(`${GATEWAY_INVARIANT} (provider: ${p.kind})`);
     }
   }
@@ -356,9 +341,6 @@ export function providerEnv(p: ResolvedProvider): AgentEnv {
  */
 export function providerProblem(p: ResolvedProvider): string | null {
   if (p.problem) return p.problem;
-  if (p.wire !== 'anthropic-native' && !GATEWAY_IMPLEMENTED) {
-    return `${p.kind} needs the translating gateway, which is not built yet`;
-  }
   if (p.wire !== 'anthropic-native' && !p.apiKey) return GATEWAY_INVARIANT;
   return null;
 }

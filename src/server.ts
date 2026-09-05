@@ -47,6 +47,8 @@ import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
 import { defaultInstance, discoverInstances, effectiveConfigDir } from './instance.js';
 import { providerEnv, providerOf, providerProblem, resolveProvider } from './provider.js';
+import { ensureGateway, gatewayStatus, stopGateways } from './gateway.js';
+import type { ResolvedProvider } from './provider.js';
 import {
   dirHasCredentials, detectAuth, hasKeychainCredentials, readAccount, type AuthMode,
 } from './preflight.js';
@@ -179,6 +181,20 @@ function makeEmitter(runId: string, projectId: string) {
 }
 
 /**
+ * Everything an agent needs to authenticate, including starting the provider's
+ * gateway if it has one.
+ *
+ * Both dispatch paths (missions and planning turns) go through here, so a
+ * gateway can never be skipped on one of them — which would leave the agent
+ * pointed at a closed port with a real credential in hand.
+ */
+async function agentEnvFor(resolved: ResolvedProvider): Promise<ReturnType<typeof providerEnv>> {
+  await mkdir(resolved.configDir, { recursive: true }).catch(() => {});
+  if (resolved.wire === 'anthropic-native') return providerEnv(resolved);
+  return providerEnv(resolved, await ensureGateway(resolved));
+}
+
+/**
  * Chat frames carry `chat: true` and no run id, so a UI following the same
  * stream can tell a planning conversation from a mission without guessing.
  */
@@ -224,13 +240,12 @@ async function driveChatTurn(project: Project, text: string): Promise<void> {
       emit('chat_error', { error: `provider unavailable — ${problem}` });
       return;
     }
-    await mkdir(resolved.configDir, { recursive: true }).catch(() => {});
     const result = await runPlanningTurn({
       sessionId: meta.sessionId,
       folder: project.folder,
       text,
       model: settings.plannerModel,
-      agentEnv: providerEnv(resolved),
+      agentEnv: await agentEnvFor(resolved),
       emit,
     });
     const next: ChatMeta = {
@@ -303,10 +318,19 @@ async function driveRun(
     activeByProject.delete(projectId);
     return;
   }
-  // Foreman-owned config dirs are created on demand, so a provider that must
-  // not see a user install has somewhere isolated to keep its own state.
-  await mkdir(resolved.configDir, { recursive: true }).catch(() => {});
-  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), providerEnv(resolved));
+  let agentEnv;
+  try {
+    agentEnv = await agentEnvFor(resolved);
+  } catch (err) {
+    meta.status = 'error';
+    meta.endedAt = Date.now();
+    await store.writeMeta(meta).catch(() => {});
+    emit('run_error', { error: String(err instanceof Error ? err.message : err) });
+    emit('run_finished', { status: 'error', costUsd: meta.costUsd });
+    activeByProject.delete(projectId);
+    return;
+  }
+  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv);
   activeByProject.set(projectId, run);
   try {
     if (changes?.directorChanged || changes?.workerChanged) {
@@ -623,6 +647,9 @@ const server = http.createServer(async (req, res) => {
         authMode: auth.mode,
         authAccount: auth.account ?? null,
         keychainLogin: keychain,
+        // Gateways currently up, so "what is Foreman actually using" is one
+        // request rather than a guess. Routes only — never a credential.
+        gateways: gatewayStatus(),
         instances,
       });
 
@@ -825,3 +852,12 @@ if (swept.length) console.log(`Marked ${swept.length} orphaned run(s) as interru
 server.listen(PORT, () => {
   console.log(`Foreman listening on http://localhost:${PORT}`);
 });
+
+// Gateways are children of this process; a hard exit would orphan them holding
+// loopback ports. Both signals a terminal or a supervisor sends are handled.
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    stopGateways();
+    process.exit(0);
+  });
+}
