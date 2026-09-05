@@ -48,6 +48,7 @@ import { preflight, reportPreflight } from './preflight.js';
 import { defaultInstance, discoverInstances, effectiveConfigDir } from './instance.js';
 import { providerEnv, providerOf, providerProblem, resolveProvider } from './provider.js';
 import { ensureGateway, gatewayStatus, stopGateways } from './gateway.js';
+import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
 import type { ResolvedProvider } from './provider.js';
 import {
   dirHasCredentials, detectAuth, hasKeychainCredentials, readAccount, type AuthMode,
@@ -544,7 +545,25 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, { ok: true });
 
     } else if (req.method === 'GET' && url.pathname === '/models') {
-      json(res, 200, { models: MODELS });
+      // Model choice follows the provider: offering Opus for a project pinned
+      // to Ollama would be offering something that cannot run.
+      const forProject = url.searchParams.get('projectId');
+      const project = forProject ? await store.getProject(forProject) : null;
+      const provider = project ? providerOf(project) : null;
+      if (provider && provider.kind === 'openai-compatible') {
+        const local = await discoverOllama();
+        const models = local
+          // A `:cloud` model is neither local nor free; say so rather than
+          // letting it look like the others.
+          ? local.map((m) => ({
+              id: m.id, label: m.id, model: m.id, cost: m.remote ? 2 : 0,
+              note: m.remote ? 'Runs on Ollama’s servers, not this machine.'
+                : `Local${m.size ? ` · ${m.size}` : ''}. No metered cost.`,
+            }))
+          : [];
+        return json(res, 200, { models, provider: provider.kind });
+      }
+      json(res, 200, { models: MODELS, provider: provider?.kind ?? 'claude-code' });
 
     } else if (req.method === 'GET' && url.pathname === '/projects') {
       const [projects, allRuns, auth] = await Promise.all([
@@ -650,6 +669,10 @@ const server = http.createServer(async (req, res) => {
         // Gateways currently up, so "what is Foreman actually using" is one
         // request rather than a guess. Routes only — never a credential.
         gateways: gatewayStatus(),
+        // A running local Ollama is offered with no configuration at all; the
+        // absence of this key is what "none detected" looks like.
+        ollama: await discoverOllama().then((models) =>
+          models ? { host: ollamaHost(), models } : null),
         instances,
       });
 
