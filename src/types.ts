@@ -229,6 +229,25 @@ export interface WorkerMeta {
    * from "re-running the same failing command".
    */
   recent?: string[];
+  /**
+   * The worker's own account of where it is, from its report_progress tool.
+   * Kept apart from `recent` because the two answer different questions:
+   * `recent` is what the harness saw the worker call, this is what the
+   * worker says it is doing and how far along it is — the only signal that
+   * tells "two of three files written, stuck on the third" from flailing.
+   * Latest report wins; `at` dates it so a stale one reads as stale.
+   */
+  progress?: WorkerProgress;
+}
+
+/** One report_progress call, as stored on the record and sent to the UI. */
+export interface WorkerProgress {
+  /** One-line summary, capped at 200 chars by the tool. */
+  status: string;
+  done?: string[];
+  next?: string;
+  blocked?: string;
+  at: number;
 }
 
 /**

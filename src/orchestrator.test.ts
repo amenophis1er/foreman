@@ -431,7 +431,10 @@ type ToolSurface = {
   checkWorkersTool(a?: { workerId?: string }): string;
   waitForWorkerTool(a?: { workerId?: string; timeoutSeconds?: number }): Promise<string>;
   messageWorkerTool(a: { worker_id: string; message: string }): Promise<string>;
-  workers: Map<string, { status: string; sessionId?: string; recent?: string[]; toolCalls?: number }>;
+  workers: Map<string, {
+    status: string; sessionId?: string; recent?: string[]; toolCalls?: number;
+    progress?: { status: string; done?: string[]; next?: string; blocked?: string; at: number };
+  }>;
 };
 
 /**
@@ -611,4 +614,107 @@ test('the recent window is bounded and counts tool calls', () => {
   assert.equal(w.recent.length, RECENT_LINES);
   assert.equal(w.recent.at(-1), '"Now I will run the tests."');
   assert.ok(typeof w.lastActivityAt === 'number');
+});
+
+// ---------------------------------------------------------------------------
+// report_progress: the worker's own account, beside the harness's
+// ---------------------------------------------------------------------------
+
+type ProgressSurface = ToolSurface & {
+  reportProgressTool(id: string, a: { status: string; done?: string[]; next?: string; blocked?: string }): string;
+};
+
+test('a progress report is stored on the record with a timestamp and emitted', async () => {
+  const { run, t, events } = stubbedRun(slowWorker(60));
+  const p = t as ProgressSurface;
+  t.spawnWorkerTool({ task: 'x' });
+  const before = Date.now();
+  const ack = p.reportProgressTool('worker-1', {
+    status: 'two of three files written', done: ['a.ts', 'b.ts'], next: 'c.ts', blocked: undefined,
+  });
+  assert.match(ack, /Noted/);
+  const w = p.workers.get('worker-1')!;
+  assert.equal(w.progress?.status, 'two of three files written');
+  assert.deepEqual(w.progress?.done, ['a.ts', 'b.ts']);
+  assert.equal(w.progress?.next, 'c.ts');
+  assert.equal(w.progress?.blocked, undefined);
+  assert.ok(typeof w.progress?.at === 'number' && w.progress.at >= before);
+  const ev = events.find((e) => e.event === 'worker_progress');
+  assert.deepEqual(ev?.data, {
+    id: 'worker-1', status: 'two of three files written', done: ['a.ts', 'b.ts'], next: 'c.ts', blocked: undefined,
+  });
+  // Persisted like every other field: the director may read it after a restart.
+  assert.equal(run.meta.workers.find((x) => x.id === 'worker-1')?.progress?.status, 'two of three files written');
+  await t.waitForWorkerTool({ workerId: 'worker-1' });
+});
+
+test('syncWorkersMeta hands progress to the meta sink', async () => {
+  let saved: RunMeta | undefined;
+  const run = new MissionRun(meta(), () => {}, (m) => { saved = structuredClone(m); }, noopAgentEnv);
+  const t = run as unknown as ProgressSurface;
+  t.runWorker = slowWorker(30);
+  t.spawnWorkerTool({ task: 'x' });
+  t.reportProgressTool('worker-1', { status: 'halfway', blocked: 'port 3000 is taken' });
+  assert.equal(saved?.workers[0]?.progress?.status, 'halfway');
+  assert.equal(saved?.workers[0]?.progress?.blocked, 'port 3000 is taken');
+  await t.waitForWorkerTool({ workerId: 'worker-1' });
+});
+
+test('the progress line lands in recent, and check_workers prints progress above recent', async () => {
+  const { t } = stubbedRun(slowWorker(60));
+  const p = t as ProgressSurface;
+  t.spawnWorkerTool({ task: 'x' });
+  p.reportProgressTool('worker-1', { status: 'tests green', done: ['migration'], next: 'wire the route' });
+  const w = p.workers.get('worker-1')!;
+  assert.equal(w.recent?.at(-1), 'progress: tests green');
+  const view = t.checkWorkersTool({ workerId: 'worker-1' });
+  assert.match(view, /progress \(\d+s ago\): tests green\n    done: migration\n    next: wire the route/);
+  assert.ok(view.indexOf('progress') < view.indexOf('recent:'), 'the worker\'s account comes before the harness\'s');
+  // A blocker is loud in the timeline too, since that line may outlive the report.
+  p.reportProgressTool('worker-1', { status: 'stuck', blocked: 'no DB credentials' });
+  assert.equal(w.recent?.at(-1), 'progress: stuck — BLOCKED: no DB credentials');
+  assert.match(t.checkWorkersTool({ workerId: 'worker-1' }), /blocked: no DB credentials/);
+  await t.waitForWorkerTool({ workerId: 'worker-1' });
+});
+
+test('wait_for_worker on timeout shows the progress report too', async () => {
+  const { t } = stubbedRun(slowWorker(150));
+  const p = t as ProgressSurface;
+  t.spawnWorkerTool({ task: 'x' });
+  p.reportProgressTool('worker-1', { status: 'step 3 of 5' });
+  const out = await t.waitForWorkerTool({ workerId: 'worker-1', timeoutSeconds: 0.02 });
+  assert.match(out, /progress .*: step 3 of 5/);
+  await t.waitForWorkerTool({ workerId: 'worker-1' });
+});
+
+test('progress status is capped at 200 chars and flattened to one line', async () => {
+  const { t } = stubbedRun(slowWorker(30));
+  const p = t as ProgressSurface;
+  t.spawnWorkerTool({ task: 'x' });
+  p.reportProgressTool('worker-1', { status: `a\n b ${'x'.repeat(400)}` });
+  const status = p.workers.get('worker-1')!.progress!.status;
+  assert.equal(status.length, 200);
+  assert.doesNotMatch(status, /\n/);
+  assert.match(status, /^a b x+…$/);
+  await t.waitForWorkerTool({ workerId: 'worker-1' });
+});
+
+test('a progress report for an unknown worker does not throw', () => {
+  const { t, events } = stubbedRun(slowWorker(10));
+  const p = t as ProgressSurface;
+  assert.doesNotThrow(() => p.reportProgressTool('worker-9', { status: 'hello' }));
+  assert.match(p.reportProgressTool('worker-9', { status: 'hello' }), /No record/);
+  assert.ok(!events.some((e) => e.event === 'worker_progress'));
+});
+
+test('the report_progress call itself is counted but not duplicated in recent', () => {
+  const run = new MissionRun(meta(), () => {}, () => {}, noopAgentEnv) as unknown as {
+    noteActivity(w: any, m: any): void;
+  };
+  const w: any = { id: 'w', status: 'running', costUsd: 0, task: 't' };
+  run.noteActivity(w, { type: 'assistant', message: { content: [
+    { type: 'tool_use', name: 'mcp__foreman__report_progress', input: { status: 'halfway' } },
+  ] } });
+  assert.equal(w.toolCalls, 1);
+  assert.deepEqual(w.recent ?? [], []);
 });

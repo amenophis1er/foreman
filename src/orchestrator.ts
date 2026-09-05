@@ -11,6 +11,9 @@
  *    and wait_for_worker. Nothing holds the director's turn open longer than
  *    a bounded wait, so it can run several workers at once and notice one
  *    while another is still working.
+ *  - Give each worker one Foreman tool of its own, report_progress, so the
+ *    director's view of a worker is not only inferred from its tool calls
+ *    but includes what the worker itself says it has done and is stuck on.
  *  - Enforce the per-run budget before any new worker work starts.
  *  - Emit every observable event through the injected {@link Emitter}, which
  *    both broadcasts to live clients and persists to the run's event log.
@@ -91,7 +94,7 @@ import type { AgentEnv } from './provider.js';
 import { generateRunTitle } from './title.js';
 import { costBasisOf, isPriced } from './types.js';
 import { priceUsage, type ModelPrice } from './prices.js';
-import type { RunMeta, TokenUsage, WorkerMeta } from './types.js';
+import type { RunMeta, TokenUsage, WorkerMeta, WorkerProgress } from './types.js';
 
 /** A run's usage before its first `result` message. */
 function emptyUsage(): TokenUsage {
@@ -363,6 +366,16 @@ export const MAX_WAIT_SECONDS = 600;
 export const RECENT_LINES = 8;
 
 /**
+ * Longest `status` report_progress keeps. One line in a status block that is
+ * printed for every worker on every check_workers; a worker that wants to
+ * say more has `done`, `next` and `blocked` for it.
+ */
+export const PROGRESS_STATUS_MAX = 200;
+
+/** The worker-side tool's full name, as the policy and the activity window see it. */
+const REPORT_PROGRESS_TOOL = 'mcp__foreman__report_progress';
+
+/**
  * One line of a worker's activity, as the director will see it.
  *
  * A tool name alone says "Bash"; the director needs "Bash npm test" to tell
@@ -400,9 +413,15 @@ function fmtAge(ms: number): string {
  *
  * Exported for the same reason as the watchdogs: it is the director's only
  * view of a running worker, and what it shows — age, time since the last
- * message, call count, the recent lines, the report once there is one — is a
- * rule worth pinning without an SDK behind it. `withReport` is false when the
- * caller is about to print the report itself.
+ * message, call count, the worker's own progress report, the recent lines,
+ * the report once there is one — is a rule worth pinning without an SDK
+ * behind it. `withReport` is false when the caller is about to print the
+ * report itself.
+ *
+ * Progress sits above `recent` because it is the better signal: the recent
+ * lines are the harness guessing from tool names, the progress block is the
+ * worker saying where it is, and a director skimming several blocks should
+ * meet the worker's account first.
  */
 export function workerStatusBlock(w: WorkerMeta, now = Date.now(), withReport = true): string {
   const head = [`${w.id}  ${w.status}`];
@@ -410,6 +429,13 @@ export function workerStatusBlock(w: WorkerMeta, now = Date.now(), withReport = 
   if (w.status === 'running' && w.lastActivityAt) head.push(`last activity ${fmtAge(now - w.lastActivityAt)} ago`);
   head.push(`${w.toolCalls ?? 0} tool calls`);
   const lines = [head.join('  ')];
+  if (w.progress) {
+    const p = w.progress;
+    lines.push(`  progress (${fmtAge(now - p.at)} ago): ${p.status}`);
+    if (p.done?.length) lines.push(`    done: ${p.done.join(', ')}`);
+    if (p.next) lines.push(`    next: ${p.next}`);
+    if (p.blocked) lines.push(`    blocked: ${p.blocked}`);
+  }
   if (w.recent?.length) {
     lines.push('  recent:');
     for (const r of w.recent) lines.push(`    ${r}`);
@@ -507,6 +533,11 @@ const WORKER_CHARTER = `
 You are a FOREMAN WORKER. Complete exactly the task you were given, inside the
 working directory. Never ask interactive questions — if you are blocked on a
 decision you cannot make, print "BLOCKED: <your question>" and end your turn.
+REPORT PROGRESS. Call mcp__foreman__report_progress when you finish a distinct
+sub-step, when you change approach, and immediately when you are blocked. The
+director supervises several workers and can only help with what it can see; a
+worker that goes quiet for minutes looks stalled and may be stopped. Reporting
+is never a substitute for finishing.
 When finished, end with a concise report of what you did and how you checked it.
 `;
 
@@ -1493,7 +1524,10 @@ export class MissionRun {
         maxTurns: 60,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: WORKER_CHARTER },
         ...this.agentEnv.worker,
-        mcpServers: this.browserServers(),
+        // Built per worker: the report_progress handler closes over this id,
+        // which is how a report lands on the right record without the worker
+        // having to know its own name.
+        mcpServers: { foreman: this.workerTools(workerId), ...this.browserServers() },
         canUseTool: this.policyFor(workerId),
       },
     });
@@ -1582,7 +1616,10 @@ export class MissionRun {
   private noteActivity(w: WorkerRuntime, m: Record<string, unknown>): void {
     w.lastActivityAt = Date.now();
     const uses = toolUsesOf(m);
-    const lines = uses.map((t) => activityHint(t.name, t.input));
+    // A report_progress call is counted but not hinted: its handler writes
+    // the fuller `progress:` line into the window itself, and the same status
+    // twice in eight lines would push out a line that said something.
+    const lines = uses.filter((t) => t.name !== REPORT_PROGRESS_TOOL).map((t) => activityHint(t.name, t.input));
     if (uses.length) w.toolCalls = (w.toolCalls ?? 0) + uses.length;
     else if (m.type === 'assistant') {
       const content = (m.message as { content?: unknown } | undefined)?.content;
@@ -1591,6 +1628,11 @@ export class MissionRun {
         : undefined;
       if (typeof textBlock?.text === 'string' && textBlock.text.trim()) lines.push(`"${oneLine(textBlock.text, 80)}"`);
     }
+    this.pushRecent(w, lines);
+  }
+
+  /** Appends to the rolling window, dropping the oldest past RECENT_LINES. */
+  private pushRecent(w: WorkerRuntime, lines: string[]): void {
     if (!lines.length) return;
     w.recent = [...(w.recent ?? []), ...lines].slice(-RECENT_LINES);
   }
@@ -1602,6 +1644,67 @@ export class MissionRun {
       return copy as WorkerMeta;
     });
     this.saveMeta(this.meta);
+  }
+
+  // -- worker tools -----------------------------------------------------------
+
+  /**
+   * report_progress, the one Foreman tool a worker has. Stores the report on
+   * the record, drops a `progress:` line into `recent` so the timeline shows
+   * when the worker said it, and emits it for the UI. The status is capped
+   * rather than rejected: a worker that wrote a paragraph still reported, and
+   * the director would rather have its first 200 chars than an error.
+   *
+   * An unknown id is a no-op, not a throw: the only way to reach it is a
+   * worker whose record was dropped under it, and failing its tool call would
+   * make that worker's turn stranger, not the record come back.
+   */
+  private reportProgressTool(
+    workerId: string,
+    { status, done, next, blocked }: { status: string; done?: string[]; next?: string; blocked?: string },
+  ): string {
+    const w = this.workers.get(workerId);
+    if (!w) return `No record for ${workerId}; progress not stored.`;
+    const clean = (s: string | undefined) => (s && s.trim() ? oneLine(s, PROGRESS_STATUS_MAX) : undefined);
+    const progress: WorkerProgress = {
+      status: clean(status) ?? '(no status)',
+      at: Date.now(),
+    };
+    const steps = (done ?? []).map((d) => clean(d)).filter((d): d is string => d !== undefined);
+    if (steps.length) progress.done = steps;
+    const n = clean(next);
+    if (n) progress.next = n;
+    const b = clean(blocked);
+    if (b) progress.blocked = b;
+    w.progress = progress;
+    this.pushRecent(w, [`progress: ${progress.status}${b ? ` — BLOCKED: ${b}` : ''}`]);
+    this.syncWorkersMeta();
+    this.emit('worker_progress', {
+      id: workerId, status: progress.status, done: progress.done, next: progress.next, blocked: progress.blocked,
+    });
+    return b
+      ? 'Noted, including the blocker — the director can see it. Continue with whatever is not blocked, ' +
+        'or end your turn with "BLOCKED: <question>" if nothing is.'
+      : 'Noted. Continue.';
+  }
+
+  /** The per-worker `foreman` MCP server; see {@link reportProgressTool}. */
+  private workerTools(workerId: string) {
+    const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
+    const reportProgress = tool(
+      'report_progress',
+      'Tell the director where you are. Call it when you finish a distinct sub-step, when you ' +
+      'change approach, and immediately when you are blocked. One line of status; optionally the ' +
+      'sub-steps done so far, what you are about to do, and what you cannot get past.',
+      {
+        status: z.string().describe(`One-line summary of where you are (max ${PROGRESS_STATUS_MAX} chars)`),
+        done: z.array(z.string()).optional().describe('Sub-steps completed so far'),
+        next: z.string().optional().describe('What you are about to do'),
+        blocked: z.string().optional().describe('Anything you cannot get past, stated so someone else could act on it'),
+      },
+      async (args) => text(this.reportProgressTool(workerId, args)),
+    );
+    return createSdkMcpServer({ name: 'foreman', tools: [reportProgress] });
   }
 
   // -- director tools ---------------------------------------------------------

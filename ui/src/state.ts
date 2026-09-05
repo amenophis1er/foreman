@@ -373,6 +373,29 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         }],
       };
     }
+    case 'worker_progress': {
+      // The worker's own account, which the crew tree shows as its current
+      // task in place of the brief's first line: once a worker has said where
+      // it is, that beats a 200-char echo of what it was asked. Loud enough
+      // in the transcript to be found, quiet enough (system, not error) that
+      // ten of them do not read as ten problems — a blocker is the one that
+      // should stand out, so it gets its own line.
+      const status = String(d.status ?? '');
+      const body = [
+        status,
+        ...(Array.isArray(d.done) && d.done.length ? [`done: ${d.done.join(', ')}`] : []),
+        ...(d.next ? [`next: ${String(d.next)}`] : []),
+        ...(d.blocked ? [`BLOCKED: ${String(d.blocked)}`] : []),
+      ].join('\n');
+      return {
+        ...s,
+        agents: s.agents.map((x) => (x.id === d.id ? { ...x, task: status || x.task } : x)),
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.id ?? 'worker'), kind: 'system',
+          title: d.blocked ? 'progress · blocked' : 'progress', body,
+        }],
+      };
+    }
     case 'worker_finished':
       // Carries `report` too, deliberately not rendered: the worker's own
       // messages already streamed into the transcript, and the report is the
@@ -483,6 +506,7 @@ function activityLine(event: string, d: any): string | null {
   }
   if (event === 'worker_started') return `${d.id} ${d.resumed ? 'resumed' : 'spawned'}`;
   if (event === 'worker_finished') return `${d.id} ${d.status}`;
+  if (event === 'worker_progress') return `${d.id}: ${d.blocked ? `BLOCKED — ${d.blocked}` : d.status}`;
   if (event === 'steer') return `you → ${d.to}: ${d.text}`;
   if (event === 'budget_alert') return d.text;
   if (event === 'question') return `director asks: ${d.question}`;
