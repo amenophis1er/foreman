@@ -362,8 +362,8 @@ export class MissionRun {
         'actually complete. Keep completed work; do not rewrite files that already ' +
         'satisfy their milestone. Update the doc to match reality, then continue ' +
         'the mission to DONE WHEN. ' +
-        `Budget note: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)} is already spent.`
-      : `MISSION: ${this.meta.mission}\n\nBudget: $${this.meta.budgetUsd.toFixed(2)} total for this run. ` +
+        this.budgetNote()
+      : `MISSION: ${this.meta.mission}\n\n${this.budgetLine()} ` +
         `Working directory: ${this.meta.folder}. Begin by writing .foreman/MISSION.md, then execute the plan.`;
 
     try {
@@ -641,9 +641,43 @@ export class MissionRun {
     }
   }
 
+  /**
+   * What the director is told about its budget, in the units that are true.
+   *
+   * Quoting dollars on an unmetered run is not a cosmetic slip: the figure is
+   * Anthropic pricing applied to somebody else's tokens, and a director told
+   * it has overspent behaves accordingly — it stops delegating and asks for
+   * authorisation it does not need. That is exactly what happened on the first
+   * mixed-provider run, and a resumed session carries the belief in its
+   * restored context long after the cap itself is gone.
+   */
+  private budgetLine(): string {
+    if (this.meta.metered === false) {
+      return `This run is not billed per token, so there is no spend cap. ` +
+        `It is bounded by ${this.meta.maxTurns ?? DEFAULT_MAX_TURNS} director turns.`;
+    }
+    return `Budget: $${this.meta.budgetUsd.toFixed(2)} total for this run.`;
+  }
+
+  private budgetNote(): string {
+    if (this.meta.metered === false) {
+      return 'Budget note: this run is not billed per token — any earlier message ' +
+        'about a spend cap no longer applies, and you do not need authorisation ' +
+        'to continue. Carry on to DONE WHEN.';
+    }
+    return `Budget note: $${this.meta.costUsd.toFixed(2)} of ` +
+      `$${this.meta.budgetUsd.toFixed(2)} is already spent.`;
+  }
+
   /** Appended to worker reports so the director can see the true burn rate
    *  (its own turn costs are invisible to it otherwise). */
   private costFooter(): string {
+    if (this.meta.metered === false) {
+      const u = this.meta.usage;
+      const tokens = u ? u.inputTokens + u.outputTokens : 0;
+      return `\n\n[Run so far: ${this.turns} director turns` +
+        `${tokens ? `, ${Math.round(tokens / 1000)}k tokens` : ''} — not billed per token]`;
+    }
     return `\n\n[Run cost so far: $${this.meta.costUsd.toFixed(2)} of ` +
       `$${this.meta.budgetUsd.toFixed(2)} budget — includes director turns]`;
   }
