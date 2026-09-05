@@ -769,6 +769,10 @@ function applyChatWire(s: ChatView, e: WireEvent): ChatView {
   const ts = e.ts ?? Date.now();
   const d = e.data;
   switch (e.event) {
+    // The server threw the conversation away (Clear from another tab, or a
+    // fork). Same as the local reset, so a stale proposal cannot outlive it.
+    case 'chat_cleared':
+      return chatReducer(s, { t: 'reset' });
     case 'chat_message':
       return {
         ...s,

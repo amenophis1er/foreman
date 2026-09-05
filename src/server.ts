@@ -484,6 +484,16 @@ function ledgerKeyFor(meta: RunMeta): string {
  * Chat frames carry `chat: true` and no run id, so a UI following the same
  * stream can tell a planning conversation from a mission without guessing.
  */
+/**
+ * A chat event for open tabs only, not the log: the log it would describe
+ * is the one being thrown away. Used when a conversation is cleared, so a
+ * tab still showing the old proposal and cost drops them.
+ */
+function broadcastChat(projectId: string, event: string, data: unknown): void {
+  const frame = `event: ${event}\ndata: ${JSON.stringify({ runId: null, projectId, chat: true, data })}\n\n`;
+  for (const res of sseClients) res.write(frame);
+}
+
 function makeChatEmitter(projectId: string) {
   return (event: string, data: unknown): void => {
     const evt: ForemanEvent = { ts: Date.now(), event, data };
@@ -1404,6 +1414,7 @@ const server = http.createServer(async (req, res) => {
           return json(res, 409, { error: 'the planner is mid-reply — wait for it to finish' });
         }
         await store.clearChat(projectId).catch(() => {});
+        broadcastChat(projectId, 'chat_cleared', {});
         json(res, 200, { ok: true });
 
       } else if (req.method === 'POST') {
@@ -1483,6 +1494,10 @@ const server = http.createServer(async (req, res) => {
       // the fork's own opening line as the human's message.
       chatTurns.add(id);
       await store.clearChat(id).catch(() => {});
+      // Every open tab drops the old conversation — proposal card included —
+      // before the seeded one starts arriving. Without this a second fork
+      // left the previous proposal on screen above the new question.
+      broadcastChat(id, 'chat_cleared', {});
       void driveChatTurn(project, seed.prompt, seed.shown);
       json(res, 200, { ok: true });
 

@@ -36,7 +36,8 @@ function serverFiles(dir: string): string[] {
 
 /**
  * Names passed as the first argument to an emitter. Matches the shapes in use:
- * `this.emit('x'`, `turn.emit('x'`, `emit('x'`, `makeChatEmitter(id)('x'`, and
+ * `this.emit('x'`, `turn.emit('x'`, `emit('x'`, `makeChatEmitter(id)('x'`,
+ * `broadcastChat(id, 'x'` (a frame without a log line), and
  * the ternary `emit(isResume ? 'run_resumed' : 'run_started'` — the whole
  * first-argument expression is taken and every quoted name in it counts. A
  * name assembled from strings would not be caught; none exist, and the
@@ -44,11 +45,11 @@ function serverFiles(dir: string): string[] {
  */
 function emittedNames(): Set<string> {
   const names = new Set<string>();
-  const re = /(?:\bemit|makeChatEmitter\([^)]*\))\(\s*([^,]+),/g;
+  const re = /(?:\bemit|makeChatEmitter\([^)]*\))\(\s*([^,]+),|\bbroadcastChat\(\s*[^,]+,\s*([^,]+),/g;
   for (const file of serverFiles(SRC)) {
     const text = readFileSync(file, 'utf8');
     for (const m of text.matchAll(re)) {
-      for (const q of m[1].matchAll(/'([a-z_]+)'/g)) names.add(q[1]);
+      for (const q of (m[1] ?? m[2] ?? '').matchAll(/'([a-z_]+)'/g)) names.add(q[1]);
     }
   }
   return names;
