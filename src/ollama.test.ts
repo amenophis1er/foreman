@@ -61,12 +61,12 @@ test('a server that answers with junk is also null', async (t) => {
   await withHost(stub.host, async () => assert.equal(await discoverOllama(500), null));
 });
 
-test('models are listed, with cloud models marked and sorted last', async (t) => {
+test('models are listed alphabetically, with cloud ones marked but not demoted', async (t) => {
   const stub = await stubOllama((res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       models: [
-        { name: 'kimi-k3:cloud', remote_model: 'kimi-k3', details: { parameter_size: '2.81T' } },
+        { name: 'kimi-k3:cloud', remote_model: 'kimi-k3', remote_host: 'https://ollama.com', details: { parameter_size: '2.81T' } },
         { name: 'smollm:135m', details: { parameter_size: '134.52M' } },
         { name: 'ornith:9b', details: { parameter_size: '9.0B' } },
         { name: '', details: {} },
@@ -78,10 +78,12 @@ test('models are listed, with cloud models marked and sorted last', async (t) =>
   await withHost(stub.host, async () => {
     const models = await discoverOllama(500);
     assert.ok(models);
-    assert.deepEqual(models.map((m) => m.id), ['ornith:9b', 'smollm:135m', 'kimi-k3:cloud']);
-    assert.equal(models[0].remote, false);
-    assert.equal(models[2].remote, true, 'a :cloud model is not local, and it matters');
-    assert.equal(models[1].size, '134.52M');
+    // Alphabetical: a cloud model is not a lesser option to be listed last.
+    assert.deepEqual(models.map((m) => m.id), ['kimi-k3:cloud', 'ornith:9b', 'smollm:135m']);
+    assert.equal(models[0].remote, true, 'a :cloud model still says where it runs');
+    assert.equal(models[0].host, 'https://ollama.com');
+    assert.equal(models[1].remote, false);
+    assert.equal(models[2].size, '134.52M');
   });
 });
 

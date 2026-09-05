@@ -98,6 +98,15 @@ import type { RunMeta, WorkerMeta } from './types.js';
  */
 const LOCAL_IGNORE_LINES = ['settings.local.json', '.gitignore'];
 
+/**
+ * Caps that hold whatever the provider is. A dollar budget is meaningless on a
+ * local model and actively wrong through a gateway (the SDK prices foreign
+ * tokens with Anthropic's table), but "too many turns" and "too long" are true
+ * everywhere — and a runaway agent is what a cap exists to stop, not a bill.
+ */
+const DEFAULT_MAX_TURNS = 60;
+const DEFAULT_MAX_SECONDS = 45 * 60;
+
 /** Broadcasts to SSE clients and appends to the run's event log. */
 export type Emitter = (event: string, data: unknown) => void;
 
@@ -182,6 +191,9 @@ export class MissionRun {
   private directorCostSeen = 0;
   private wasInterrupted = false;
   private usageLimited = false;
+  /** Director turns taken, for the cap that applies to every provider. */
+  private turns = 0;
+  private startedAt = Date.now();
 
   constructor(
     meta: RunMeta,
@@ -360,6 +372,7 @@ export class MissionRun {
             this.directorCostSeen = total;
           }
           lastTurnFailed = Boolean(m.is_error);
+          this.turns++;
           this.noteUsageLimit(String(m.result ?? ''));
 
           // Enforce the cap against the director's own spend, at the only
@@ -530,6 +543,10 @@ export class MissionRun {
   private enforceBudget(): void {
     const { costUsd, budgetUsd } = this.meta;
     if (budgetUsd <= 0) return;
+    // The hard 125% kill is the one that ends a run outright, so it must never
+    // fire on a figure that is not real money. An unmetered run is bounded by
+    // the turn and time caps in capReached() instead.
+    if (this.meta.metered === false) return;
     if (!this.budgetKillSent && costUsd >= budgetUsd * 1.25) {
       this.budgetKillSent = true;
       this.budgetNoticeSent = true; // the kill supersedes the wind-down notice
@@ -564,8 +581,29 @@ export class MissionRun {
       `$${this.meta.budgetUsd.toFixed(2)} budget — includes director turns]`;
   }
 
-  private overBudget(): string | null {
+  /** How far past its limits the run is, as a wind-down reason — or null. */
+  private capReached(): string | null {
+    if (this.turns >= (this.meta.maxTurns ?? DEFAULT_MAX_TURNS)) {
+      return `TURN CAP REACHED: ${this.turns} director turns.`;
+    }
+    const elapsed = (Date.now() - this.startedAt) / 1000;
+    const maxSeconds = this.meta.maxSeconds ?? DEFAULT_MAX_SECONDS;
+    if (elapsed >= maxSeconds) {
+      return `TIME CAP REACHED: ${Math.round(elapsed / 60)} minutes.`;
+    }
+    // Money only binds where the figure is real. Enforcing it through a
+    // gateway ends working runs over spend that never happened.
+    if (this.meta.metered === false) return null;
     if (this.meta.costUsd < this.meta.budgetUsd) return null;
+    return `BUDGET CAP REACHED: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)}.`;
+  }
+
+  private overBudget(): string | null {
+    const cap = this.capReached();
+    if (!cap) return null;
+    if (this.meta.metered === false) {
+      return `${cap} Do not start new work. Update MISSION.md, summarize the state, and stop.`;
+    }
     return (
       `BUDGET EXHAUSTED: $${this.meta.costUsd.toFixed(2)} spent of ` +
       `$${this.meta.budgetUsd.toFixed(2)} cap. Do not start new work. Update MISSION.md, ` +
@@ -588,14 +626,17 @@ export class MissionRun {
    * state a resume can least afford.
    */
   private budgetWindDown(): string | null {
-    if (this.meta.costUsd < this.meta.budgetUsd || this.budgetStopped) return null;
+    const cap = this.capReached();
+    if (!cap || this.budgetStopped) return null;
     this.budgetStopped = true;
     this.emit('budget_stop', {
       costUsd: this.meta.costUsd,
       budgetUsd: this.meta.budgetUsd,
+      metered: this.meta.metered !== false,
+      reason: cap,
     });
     return (
-      `BUDGET CAP REACHED: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)}. ` +
+      `${cap} ` +
       'This is your LAST turn — the run ends when it does. Do not start new work, do not ' +
       'spawn or message workers, and do not begin any verification you have not already ' +
       'finished. Use this turn only to: tick every MISSION.md box you have genuinely ' +

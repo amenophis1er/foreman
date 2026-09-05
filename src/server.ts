@@ -331,6 +331,9 @@ async function driveRun(
     activeByProject.delete(projectId);
     return;
   }
+  // Frozen with the provider: whether this run's dollar figure is real money
+  // decides which caps bind, and that must not change under a resume.
+  if (meta.metered === undefined) meta.metered = resolved.metered;
   const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv);
   activeByProject.set(projectId, run);
   try {
@@ -552,13 +555,15 @@ const server = http.createServer(async (req, res) => {
       const provider = project ? providerOf(project) : null;
       if (provider && provider.kind === 'openai-compatible') {
         const local = await discoverOllama();
+        // Both kinds are offered plainly, with the trade named: a cloud model
+        // is fast enough to direct a mission and bills an Ollama account; a
+        // local one is free and private but slow on a director's long prompt.
         const models = local
-          // A `:cloud` model is neither local nor free; say so rather than
-          // letting it look like the others.
           ? local.map((m) => ({
               id: m.id, label: m.id, model: m.id, cost: m.remote ? 2 : 0,
-              note: m.remote ? 'Runs on Ollama’s servers, not this machine.'
-                : `Local${m.size ? ` · ${m.size}` : ''}. No metered cost.`,
+              note: m.remote
+                ? `Runs on ${m.host ?? 'Ollama’s servers'}, not this machine. Fast; billed to your Ollama account.`
+                : `Local${m.size ? ` · ${m.size}` : ''}. Free and private, but slow on long prompts.`,
             }))
           : [];
         return json(res, 200, { models, provider: provider.kind });

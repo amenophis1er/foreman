@@ -99,6 +99,15 @@ export interface ResolvedProvider {
    * stored login pays. The original per-project billing lever.
    */
   ownLogin?: boolean;
+  /**
+   * Whether the SDK's `total_cost_usd` is a real number for this provider.
+   *
+   * The SDK prices every response with Anthropic's table. Through a gateway
+   * the token counts are real but the prices are not, so a dollar cap would be
+   * enforced against fiction — and it does not merely mislead, it terminates
+   * working runs. Unmetered providers cap on turns and wall-clock instead.
+   */
+  metered: boolean;
   /** Why this provider cannot run right now, if it cannot. */
   problem?: string;
 }
@@ -199,6 +208,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       return {
         kind: ref.kind,
         wire: 'anthropic-native',
+        metered: true,
         label: `Claude Code · ${configDir}${ref.ownLogin ? ' (its own login pays)' : ''}`,
         configDir,
         executable: clean(ref.executable) ?? base.executable,
@@ -211,6 +221,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       return {
         kind: ref.kind,
         wire: 'anthropic-native',
+        metered: true,
         label: `Anthropic API key · $${ref.apiKeyEnv}`,
         // Foreman-owned: an API-key provider has no business reading a user
         // install's settings, plugins or login.
@@ -227,6 +238,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       return {
         kind: ref.kind,
         wire: 'gateway-codex',
+        metered: false,
         label: `Codex · ${home}`,
         configDir: ownedConfigDir(root, ref.id),
         upstreamUrl: ref.upstreamUrl ?? 'https://chatgpt.com/backend-api',
@@ -244,6 +256,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       return {
         kind: ref.kind,
         wire: 'gateway-openai',
+        metered: false,
         label: `${ref.label ?? 'OpenAI-compatible'} · ${ref.baseUrl}`,
         configDir: ownedConfigDir(root, ref.id),
         upstreamUrl: normalizeOpenAiBaseUrl(ref.baseUrl),

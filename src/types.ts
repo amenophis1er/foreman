@@ -163,6 +163,16 @@ export interface RunMeta {
   folder: string;
   mission: string;
   budgetUsd: number;
+  /**
+   * Whether `costUsd` is real money. False through a gateway, where the SDK
+   * prices foreign tokens with Anthropic's table — see provider.ts. An
+   * unmetered run is capped by {@link maxTurns} and {@link maxSeconds}.
+   */
+  metered?: boolean;
+  /** Director turns before the run winds down. Universal; provider-independent. */
+  maxTurns?: number;
+  /** Wall-clock cap. Matters most exactly where dollars matter least. */
+  maxSeconds?: number;
   status: RunStatus;
   costUsd: number;
   createdAt: number;

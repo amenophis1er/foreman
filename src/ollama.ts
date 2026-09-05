@@ -28,10 +28,14 @@ export interface OllamaModel {
   size?: string;
   /**
    * A `:cloud` model, which runs on Ollama's servers rather than this machine.
-   * Worth distinguishing: it is neither free nor private, and Foreman's budget
-   * story for local models does not apply to it.
+   * Both kinds are first-class here — the distinction is what you are trading:
+   * a cloud model is fast enough to direct a mission and is billed to an
+   * Ollama account, a local one is free and private but slow on the long
+   * prompts a director sends.
    */
   remote: boolean;
+  /** Where a cloud model actually runs, e.g. `https://ollama.com`. */
+  host?: string;
 }
 
 /**
@@ -46,7 +50,10 @@ export async function discoverOllama(timeoutMs = 1500): Promise<OllamaModel[] | 
   const res = await fetch(`${host}/api/tags`, { signal: ctl }).catch(() => null);
   if (!res?.ok) return null;
   const body = await res.json().catch(() => null) as {
-    models?: Array<{ name?: string; remote_model?: string; details?: { parameter_size?: string } }>;
+    models?: Array<{
+      name?: string; remote_model?: string; remote_host?: string;
+      details?: { parameter_size?: string };
+    }>;
   } | null;
   if (!body?.models) return null;
   return body.models
@@ -55,8 +62,11 @@ export async function discoverOllama(timeoutMs = 1500): Promise<OllamaModel[] | 
       id: m.name,
       size: m.details?.parameter_size || undefined,
       remote: Boolean(m.remote_model),
+      host: m.remote_host || undefined,
     }))
-    .sort((a, b) => Number(a.remote) - Number(b.remote) || a.id.localeCompare(b.id));
+    // Plain alphabetical: cloud models are not a lesser option to be listed
+    // after the real ones, they are the ones fast enough to direct with.
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /**
