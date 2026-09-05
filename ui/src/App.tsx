@@ -58,6 +58,8 @@ type ModelList = {
   loading: boolean;
   /** Why the list is short or empty; passed to the pickers. */
   note?: string;
+  /** What the pickers' "Default" row inherits from, for this provider. */
+  inheritNote?: string;
 };
 
 /**
@@ -90,6 +92,9 @@ function useModels(projectId: string | null): ModelList {
             : d.models?.length === 0
               ? 'This endpoint has no models installed.'
               : undefined,
+          inheritNote: d.provider && d.provider !== 'claude-code'
+            ? 'inherits this project’s provider default'
+            : undefined,
         });
       })
       .catch(() => live && setState({ models: null, loading: false }));
@@ -154,7 +159,7 @@ export default function App() {
     <div style={{ height: '100%' }}>
       {project ? (
         <ProjectView p={project} models={models.models} modelsLoading={models.loading}
-          modelsNote={models.note} routeRunId={runId}
+          modelsNote={models.note} modelsInheritNote={models.inheritNote} routeRunId={runId}
           onSelectRun={(id) => goRun(project.id, id)}
           onBack={() => go(null)} refreshFleet={refresh} {...shared} />
       ) : (

@@ -22,6 +22,9 @@ export interface ModelSelectProps {
   /** Line shown at the top of the listbox — why the list is short or empty
    *  (an unreachable endpoint reads differently from one with nothing pulled). */
   note?: string;
+  /** What the "Default" row inherits from, when it is not a Claude Code
+   *  install — e.g. `the provider's default model`. */
+  inheritNote?: string;
   /** Include the leading "Default" (inherit) row. Default true. */
   allowDefault?: boolean;
   disabled?: boolean;

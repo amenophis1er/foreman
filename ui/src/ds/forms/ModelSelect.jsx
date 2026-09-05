@@ -43,12 +43,15 @@ function CostMark({ cost }) {
  * Model picker for a role. Trigger shows the label; the menu lists label, exact model id, a 4-bar cost mark and one line of guidance.
  * `models` normally comes from `GET /models` via `ModelSelect.useModels`; falls back to `FALLBACK_MODELS`.
  */
-export function ModelSelect({ align = 'left', value = '', onChange, models, loading, note, allowDefault = true, disabled, style }) {
+export function ModelSelect({ align = 'left', value = '', onChange, models, loading, note, inheritNote, allowDefault = true, disabled, style }) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(null);
   const root = useRef(null);
-  const list = [...(allowDefault ? [INHERIT] : []), ...(models || FALLBACK_MODELS)];
-  const current = list.find((m) => m.id === value) || (value ? { id: value, label: value, model: value } : INHERIT);
+  // "inherits your Claude Code default" is only true on a Claude Code provider.
+  // Elsewhere the caller says what Default actually inherits.
+  const inherit = inheritNote ? { ...INHERIT, model: inheritNote } : INHERIT;
+  const list = [...(allowDefault ? [inherit] : []), ...(models || FALLBACK_MODELS)];
+  const current = list.find((m) => m.id === value) || (value ? { id: value, label: value, model: value } : inherit);
 
   useEffect(() => {
     if (!open) return undefined;

@@ -18,6 +18,7 @@ import path from 'node:path';
 import { access, mkdir, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { defaultInstance, describeInstance, effectiveConfigDir } from './instance.js';
+import { discoverOllama, ollamaHost } from './ollama.js';
 
 export type CheckStatus = 'ok' | 'warn' | 'error';
 
@@ -141,6 +142,32 @@ function checkInstance(): Check {
   return { name: 'Claude Code', status: 'ok', detail: describeInstance(defaultInstance()) };
 }
 
+/**
+ * A local Ollama, if one is running.
+ *
+ * Absent is the common case and not a problem, so this reports nothing at all
+ * rather than a reassuring "not found" — the preflight screen exists to show
+ * what would stop a mission, and an unused capability is not that. When one IS
+ * running it is worth a line, because it means models are available with no
+ * configuration and the operator should know they are on offer.
+ */
+async function checkOllama(): Promise<Check | null> {
+  const models = await discoverOllama(1200);
+  if (!models) return null;
+  const local = models.filter((m) => !m.remote).length;
+  const cloud = models.length - local;
+  const parts = [
+    local ? `${local} local` : null,
+    cloud ? `${cloud} cloud` : null,
+  ].filter(Boolean).join(' · ');
+  return {
+    name: 'Ollama',
+    status: models.length ? 'ok' : 'warn',
+    detail: models.length ? `${ollamaHost()} — ${parts}` : `${ollamaHost()} — running, no models pulled`,
+    fix: models.length ? undefined : 'ollama pull <model>, or use a :cloud model',
+  };
+}
+
 async function checkPort(port: number): Promise<Check> {
   const name = `Port ${port}`;
   const inUse = await new Promise<boolean>((resolve) => {
@@ -196,13 +223,16 @@ export async function preflight(opts: {
   foremanHome: string;
   distDir: string;
 }): Promise<Check[]> {
-  return Promise.all([
+  const checks = await Promise.all([
     checkAuth(),
     checkInstance(),
+    checkOllama(),
     checkPort(opts.port),
     checkHome(opts.foremanHome),
     checkUi(opts.distDir),
   ]);
+  // A null is a check that had nothing worth saying — see checkOllama().
+  return checks.filter((c): c is Check => c !== null);
 }
 
 const GLYPH: Record<CheckStatus, string> = { ok: '✓', warn: '!', error: '✗' };

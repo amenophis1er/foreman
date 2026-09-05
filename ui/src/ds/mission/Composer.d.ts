@@ -42,6 +42,8 @@ export interface ComposerProps {
   modelsLoading?: boolean;
   /** Passed to both pickers — why the list is short or empty. */
   modelsNote?: string;
+  /** What the pickers' Default row inherits from on this provider. */
+  modelsInheritNote?: string;
   onStart?: (v: ComposerResult) => void;
   style?: CSSProperties;
 }

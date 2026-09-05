@@ -236,11 +236,11 @@ function RunDetails({ r, liveCost }: { r: RunSummary; liveCost?: number }) {
 }
 
 export function ProjectView({
-  p, models, modelsLoading, modelsNote, routeRunId, onSelectRun, onBack, refreshFleet, auth,
-  theme, onToggleTheme, onSettings,
+  p, models, modelsLoading, modelsNote, modelsInheritNote, routeRunId, onSelectRun, onBack,
+  refreshFleet, auth, theme, onToggleTheme, onSettings,
 }: {
   p: ProjectSummary; models: ModelInfo[] | null;
-  modelsLoading?: boolean; modelsNote?: string;
+  modelsLoading?: boolean; modelsNote?: string; modelsInheritNote?: string;
   auth: { mode: BillingMode; source: string; account?: { email?: string; org?: string } };
   routeRunId: string | null; onSelectRun: (runId: string | null) => void;
   onBack: () => void; refreshFleet: () => void;
@@ -386,6 +386,7 @@ export function ProjectView({
               <Composer folder={p.folder} defaultBudgetUsd={p.defaultBudgetUsd}
                 error={composerErr} busy={starting} models={models}
                 modelsLoading={modelsLoading} modelsNote={modelsNote}
+                modelsInheritNote={modelsInheritNote}
                 onStart={(v) => void startMission(v)}
                 style={{
                   background: 'var(--bg-panel)', border: '1px solid var(--line)',

@@ -11,3 +11,4 @@ const { models, loading } = ModelSelect.useModels('/models'); // once, in the sc
 - Closes on outside click and Escape. No search, no groups — the list is short by design.
 
 - `note` heads the open listbox when the list needs explaining — `Cannot reach http://box:11434`. An empty picker with no reason makes an unreachable endpoint look identical to one with nothing installed.
+- `inheritNote` replaces the Default row's `inherits your Claude Code default`, which is only true on a Claude Code provider. On anything else the caller says what Default actually inherits.
