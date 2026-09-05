@@ -37,6 +37,14 @@ export interface BudgetMeterProps {
   usage?: MeterUsage | null;
   /** Turn count to show alongside tokens when not `priced`, and known. */
   turns?: number;
+  /**
+   * Split the token figure into input and output rather than summing.
+   *
+   * On for the run header, off for a fleet card — the split is the more
+   * informative reading (output costs several times what input does), but it
+   * needs room, and a grid of cards needs a figure that survives being narrow.
+   */
+  detail?: boolean;
   style?: CSSProperties;
 }
 

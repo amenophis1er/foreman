@@ -240,7 +240,6 @@ function RunDetails({ r, live, liveCost, liveBasis, liveUsage, liveTurns, onChan
   const costBasis = liveBasis ?? basisOf(r);
   const usage = liveUsage ?? r.usage ?? null;
   const turns = liveTurns ?? r.turns;
-  const tokenCount = usage ? usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens : 0;
   const rows: Array<[string, string]> = [
     ['director', r.directorModel || 'default'],
     ['workers', r.workerModel || 'default'],
@@ -251,7 +250,8 @@ function RunDetails({ r, live, liveCost, liveBasis, liveUsage, liveTurns, onChan
     // says what it is rather than leaving the reader to infer "free".
     ['budget', costBasis === 'priced'
       ? `$${((liveCost ?? r.costUsd) || 0).toFixed(2)} / $${r.budgetUsd.toFixed(2)}`
-      : `${formatTokens(tokenCount)} tok${typeof turns === 'number' ? ` · ${turns} turn${turns === 1 ? '' : 's'}` : ''}`
+      : `${formatTokens(usage?.inputTokens ?? 0)} in · ${formatTokens(usage?.outputTokens ?? 0)} out`
+        + `${typeof turns === 'number' ? ` · ${turns} turn${turns === 1 ? '' : 's'}` : ''}`
         + (costBasis === 'unpriced' ? ' · cost not tracked' : ' · no per-token cost')],
   ];
   const valueStyle = {
@@ -392,7 +392,7 @@ export function ProjectView({
           source={billingSource(p, auth.source)} />
         {selectedRunId && <StatusBadge status={run.runStatus} />}
         {selectedRunId && (
-          <BudgetMeter spent={run.costUsd} budget={run.budgetUsd}
+          <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} detail
             costBasis={run.costBasis} usage={run.usage} turns={selectedRun?.turns} />
         )}
         {viewingLive && run.runStatus === 'running' && (

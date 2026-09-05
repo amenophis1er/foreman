@@ -108,7 +108,10 @@ function tee(res, key) {
   const CAP = 256 * 1024;
   const absorb = (chunk) => {
     if (!chunk || buf.length > CAP) return;
-    buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    // Buffer.from, not chunk.toString(): a Uint8Array's own toString() ignores
+    // the encoding and yields "101,118,101,..." — comma-separated byte values
+    // that parse as nothing and would silently record zero tokens forever.
+    buf += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
   };
   res.write = function (chunk, ...rest) {
     absorb(chunk);

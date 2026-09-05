@@ -38,7 +38,7 @@ const STRIPES = 'repeating-linear-gradient(-45deg, var(--line-strong) 0 3px, tra
  * nothing is being spent; a striped one says something is, and that no one
  * here can say how much.
  */
-export function BudgetMeter({ spent, budget, costBasis = 'priced', usage = null, turns, style }) {
+export function BudgetMeter({ spent, budget, costBasis = 'priced', usage = null, turns, detail = false, style }) {
   spent = Number(spent) || 0;
   budget = Number(budget) || 0;
 
@@ -62,7 +62,16 @@ export function BudgetMeter({ spent, budget, costBasis = 'priced', usage = null,
           backgroundImage: unpriced ? STRIPES : undefined,
         }} />
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-sm)', color: 'var(--ink-1)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-          {formatTokens(tokens)} tok{typeof turns === 'number' ? ` · ${turns} turn${turns === 1 ? '' : 's'}` : ''}
+          {/* One total answers "is anything happening"; the split answers
+              "what kind of work is this", which is the more useful question
+              wherever there is room for it. Output tokens are what a model
+              actually generates and are priced several times higher than
+              input, so a run that is 90% input is a different animal from one
+              that is 90% output — and a single summed figure hides that. */}
+          {detail
+            ? `${formatTokens(usage?.inputTokens ?? 0)} in · ${formatTokens(usage?.outputTokens ?? 0)} out`
+            : `${formatTokens(tokens)} tok`}
+          {typeof turns === 'number' ? ` · ${turns} turn${turns === 1 ? '' : 's'}` : ''}
         </span>
       </div>
     );
