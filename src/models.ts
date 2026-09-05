@@ -109,11 +109,50 @@ export async function discoverModels(
   return models.sort((a, b) => a.id.localeCompare(b.id));
 }
 
+/**
+ * Per-million-token rates, which is how a pricing page reads.
+ *
+ * The conversion lives here, in the one place that renders a rate for a
+ * person — prices.ts deliberately keeps the source's own per-token unit so
+ * there is exactly one factor of a million to get wrong.
+ */
+function rateLine(price: ModelPrice): string {
+  const perM = (n: number) => {
+    const v = n * 1_000_000;
+    // Sub-cent rates are real and common; rounding them to "$0.00" would say
+    // free about something that is not.
+    return v >= 1 ? `$${v.toFixed(2)}` : `$${v.toFixed(3)}`;
+  };
+  if (price.input === 0 && price.output === 0) return 'Free at this endpoint.';
+  return `${perM(price.input)} in / ${perM(price.output)} out per million tokens.`;
+}
+
+/**
+ * The picker's 0–4 cost bars, from a real rate where there is one.
+ *
+ * A rank, not a figure — the line under it carries the actual number. Banded
+ * on the output rate because output dominates what an agent run spends, and a
+ * constant guess (every remote model was "2") ranked a cheap flash model
+ * level with a flagship.
+ */
+export function costRank(m: EndpointModel): 0 | 1 | 2 | 3 | 4 {
+  if (!m.price) return m.remote ? 2 : 0;
+  const perM = m.price.output * 1_000_000;
+  if (perM === 0) return 0;
+  if (perM < 1) return 1;
+  if (perM < 5) return 2;
+  if (perM < 20) return 3;
+  return 4;
+}
+
 /** One line for a picker, naming the trade rather than ranking the options. */
 export function describeModel(m: EndpointModel): string {
+  // A published rate is the most useful thing anyone can be told about a
+  // model they are about to spend on, so it leads.
+  if (m.price) return rateLine(m.price);
   if (m.remote) {
     return `Runs on ${m.host ?? 'the provider’s servers'}, not this machine. ` +
-      'Fast; billed to that account.';
+      'Fast; billed to that account, at a rate Foreman cannot see.';
   }
   return `Local${m.size ? ` · ${m.size}` : ''}. Free and private, but slow on long prompts.`;
 }

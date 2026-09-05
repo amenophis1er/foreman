@@ -57,7 +57,7 @@ import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
 import { deleteSecret, hasSecret, putSecret } from './secrets.js';
 import { ANTHROPIC_MODELS } from './anthropic-models.js';
 import { codexHome, codexModels, readCodexAuth } from './codex.js';
-import { describeModel, discoverModels } from './models.js';
+import { costRank, describeModel, discoverModels } from './models.js';
 import type { ResolvedProvider } from './provider.js';
 import type { ModelPrice } from './prices.js';
 import {
@@ -242,12 +242,14 @@ async function availableModels(project: Project | null): Promise<{
       out.push({
         id: m.id, label: m.id, model: m.id,
         providerId: pinned.id, providerLabel: pinned.label ?? 'Custom endpoint',
-        cost: m.remote ? 2 : 0, note: describeModel(m),
-        // The endpoint decides the floor and the model can raise it: a daemon
-        // on this machine is free, but a `:cloud` model it merely proxies runs
-        // on somebody's paid servers, and calling that free is the error that
-        // costs money.
-        ...basisOf(m.remote || !isLoopback(resolved.upstreamUrl) ? 'unpriced' : 'free'),
+        cost: costRank(m), note: describeModel(m),
+        // Three-way, in the order the facts outrank each other. A published
+        // rate settles it. Otherwise the endpoint sets the floor and the model
+        // can raise it: a daemon on this machine is free, but a `:cloud` model
+        // it merely proxies runs on somebody's paid servers, and calling that
+        // free is the error that costs money.
+        ...basisOf(m.price ? 'priced'
+          : m.remote || !isLoopback(resolved.upstreamUrl) ? 'unpriced' : 'free'),
       });
     }
   }
@@ -261,7 +263,7 @@ async function availableModels(project: Project | null): Promise<{
       out.push({
         id: m.id, label: m.id, model: m.id,
         providerId: 'ollama-local', providerLabel: 'Ollama',
-        cost: m.remote ? 2 : 0, note: describeModel(m),
+        cost: costRank(m), note: describeModel(m),
         // A model served from this machine costs nothing per token; a `:cloud`
         // one is real spend Foreman cannot price. Neither gets a dollar
         // figure, but they are not the same thing to tell someone.

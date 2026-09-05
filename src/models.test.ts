@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { describeModel, discoverModels } from './models.js';
+import { costRank, describeModel, discoverModels } from './models.js';
 
 /** A stub endpoint; `routes` maps a path to [status, body]. */
 function stub(routes: Record<string, [number, unknown]>): Promise<{
@@ -96,4 +96,52 @@ test('a key is sent when the endpoint needs one to list', async (t) => {
 test('the note names the trade rather than ranking the options', () => {
   assert.match(describeModel({ id: 'a', remote: true, host: 'https://ollama.com' }), /ollama\.com.*Fast/s);
   assert.match(describeModel({ id: 'b', remote: false, size: '9.0B' }), /Local · 9\.0B.*Free and private/s);
+});
+
+// ---------------------------------------------------------------------------
+// What a picker is told about price
+// ---------------------------------------------------------------------------
+
+test('a published rate leads the description, in per-million terms', () => {
+  // Per-token is how the source publishes and how prices.ts stores it; per
+  // million is how a person reads a pricing page. The conversion happens here
+  // and nowhere else.
+  assert.equal(
+    describeModel({ id: 'x', remote: false, price: { input: 0.000002, output: 0.00001 } }),
+    '$2.00 in / $10.00 out per million tokens.',
+  );
+});
+
+test('a sub-cent rate is not rounded away to nothing', () => {
+  // "$0.00 in / $0.00 out" would say free about a model that is not.
+  assert.equal(
+    describeModel({ id: 'x', remote: false, price: { input: 0.00000005, output: 0.0000004 } }),
+    '$0.050 in / $0.400 out per million tokens.',
+  );
+});
+
+test('a model published at zero is described as free at that endpoint', () => {
+  assert.equal(
+    describeModel({ id: 'x', remote: false, price: { input: 0, output: 0 } }),
+    'Free at this endpoint.',
+  );
+});
+
+test('an unpriced remote model says the rate is not visible, rather than implying none', () => {
+  const note = describeModel({ id: 'x', remote: true, host: 'https://ollama.com' });
+  assert.match(note, /billed to that account/);
+  assert.match(note, /Foreman cannot see/);
+});
+
+test('cost bars come from the real rate where there is one', () => {
+  const rank = (output: number) => costRank({ id: 'x', remote: true, price: { input: 0, output } });
+  assert.equal(rank(0), 0);
+  assert.equal(rank(0.0000005), 1);   // $0.50/Mtok
+  assert.equal(rank(0.000002), 2);    // $2
+  assert.equal(rank(0.00001), 3);     // $10
+  assert.equal(rank(0.00006), 4);     // $60
+  // With no rate published, the old constant stands: local is free, remote is
+  // a guess, and the note beside it says the rate is unknown.
+  assert.equal(costRank({ id: 'x', remote: false }), 0);
+  assert.equal(costRank({ id: 'x', remote: true }), 2);
 });
