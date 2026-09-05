@@ -53,7 +53,7 @@ import { defaultInstance, discoverInstances, effectiveConfigDir } from './instan
 import {
   normalizeOpenAiBaseUrl, providerEnv, providerOf, providerProblem, resolveProvider, roleCost,
 } from './provider.js';
-import { ensureGateway, gatewayStatus, releaseGateways, stopGateways } from './gateway.js';
+import { ensureGateway, gatewayStatus, gatewayUsage, releaseGateways, stopGateways } from './gateway.js';
 import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
 import { deleteSecret, hasSecret, putSecret } from './secrets.js';
 import { ANTHROPIC_MODELS } from './anthropic-models.js';
@@ -427,13 +427,30 @@ function makeEmitter(runId: string, projectId: string) {
  * pointed at a closed port with a real credential in hand.
  */
 async function agentEnvFor(
-  resolved: ResolvedProvider, holder?: string,
+  resolved: ResolvedProvider, holder?: string, ledgerKey?: string,
 ): Promise<ReturnType<typeof providerEnv>> {
   await mkdir(resolved.configDir, { recursive: true }).catch(() => {});
   if (resolved.wire === 'anthropic-native') return providerEnv(resolved);
   // `holder` keeps the gateway alive for as long as this run needs it — see
   // the reaper in gateway.ts.
-  return providerEnv(resolved, await ensureGateway(resolved, holder));
+  const url = await ensureGateway(resolved, holder);
+  // The run key rides on the path, which the Agent SDK preserves (measured:
+  // it sends `POST /run/<key>/v1/messages`). That is what lets one gateway
+  // serving several runs still say which one spent what.
+  return providerEnv(resolved, ledgerKey ? `${url}/run/${encodeURIComponent(ledgerKey)}` : url);
+}
+
+/**
+ * The ledger bucket for this attempt at a run.
+ *
+ * The attempt number is part of the key on purpose. A gateway can outlive the
+ * run that started it, so a resumed run whose earlier tokens are already
+ * persisted in `meta.usage` would otherwise read them back out of the ledger
+ * and count them twice. A fresh bucket per attempt makes "persisted total plus
+ * what this attempt has spent" exactly right.
+ */
+function ledgerKeyFor(meta: RunMeta): string {
+  return `${meta.id}.${meta.resumes ?? 0}`;
 }
 
 /**
@@ -563,6 +580,7 @@ async function driveRun(
   let agentEnv;
   let roleBasis = resolved.costBasis;
   let prices: { director?: ModelPrice; worker?: ModelPrice } = {};
+  let gatewayRoles = { director: false, worker: false };
   try {
     // Resolved per role. Where both roles share a provider this resolves once
     // and starts one gateway; where they differ, the supervisor already runs a
@@ -577,11 +595,19 @@ async function driveRun(
       const roleProblem = providerProblem(p);
       if (roleProblem) throw new Error(roleProblem);
     }
+    const key = ledgerKeyFor(meta);
     agentEnv = {
-      director: await agentEnvFor(directorProvider, meta.id),
+      director: await agentEnvFor(directorProvider, meta.id, key),
       worker: directorProvider === workerProvider
-        ? await agentEnvFor(directorProvider, meta.id)
-        : await agentEnvFor(workerProvider, meta.id),
+        ? await agentEnvFor(directorProvider, meta.id, key)
+        : await agentEnvFor(workerProvider, meta.id, key),
+    };
+    // Only roles that actually go through a gateway are counted there; a
+    // native role's tokens arrive on the SDK's own result message, and adding
+    // both would double every one of them.
+    gatewayRoles = {
+      director: directorProvider.wire !== 'anthropic-native',
+      worker: workerProvider.wire !== 'anthropic-native',
     };
     const directorCost = await roleCost(directorProvider, meta.directorModel);
     const workerCost = directorProvider === workerProvider && meta.directorModel === meta.workerModel
@@ -618,7 +644,9 @@ async function driveRun(
   // Written in step so a run started here still reads correctly if it is ever
   // handled by a build from before the split.
   meta.metered = roleBasis === 'priced';
-  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv, prices);
+  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv, prices, {
+    key: ledgerKeyFor(meta), roles: gatewayRoles, read: gatewayUsage,
+  });
   activeByProject.set(projectId, run);
   try {
     if (changes?.directorChanged || changes?.workerChanged) {

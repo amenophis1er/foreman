@@ -10,7 +10,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { ensureGateway, gatewayStatus, reapNow, releaseGateways, stopGateways } from './gateway.js';
+import {
+  ensureGateway, gatewayStatus, gatewayUsage, reapNow, releaseGateways, stopGateways,
+} from './gateway.js';
 import { providerEnv, resolveProvider } from './provider.js';
 
 const ROOT = '/tmp/foreman-gateway-test';
@@ -166,4 +168,59 @@ test('two runs holding one gateway: the first to finish does not kill it', async
   releaseGateways('run-b');
   reapNow(Date.now() + 60 * 60_000);
   assert.equal(gatewayStatus().length, 0);
+});
+
+test('a run key on the path is stripped, attributed, and never sent upstream', async (t) => {
+  // The mechanism the whole ledger rests on: Foreman points an agent at
+  // `.../run/<key>`, the SDK preserves that prefix (measured — it sends
+  // `POST /run/<key>/v1/messages`), and the gateway must both count against
+  // the key AND hand the upstream the path it expects.
+  const upstream = await stubUpstream();
+  t.after(async () => { stopGateways(); await upstream.close(); });
+
+  const p = await resolveProvider(
+    { kind: 'openai-compatible', id: 'ledger', baseUrl: upstream.url }, ROOT);
+  const url = await ensureGateway(p, 'run-x');
+
+  const ask = (path: string) => fetch(`${url}${path}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': 'k' },
+    body: JSON.stringify({ model: 'm', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }),
+  });
+
+  const res = await ask('/run/mission-1.0');
+  assert.equal(res.status, 200, 'a keyed request is served exactly like an unkeyed one');
+  const body = await res.json() as { content: Array<{ text: string }> };
+  assert.equal(body.content[0].text, 'pong', 'the agent must not be able to tell it was counted');
+
+  // The upstream sees its own API, not Foreman's routing.
+  assert.equal(upstream.seen.length, 1);
+
+  const totals = await gatewayUsage('mission-1.0');
+  assert.ok(totals, 'the key should have been attributed');
+  assert.equal(totals!.inputTokens, 3, 'the stub reports 3 prompt tokens');
+  assert.equal(totals!.outputTokens, 1);
+  assert.equal(totals!.calls, 1);
+
+  // A different attempt of the same run is a different bucket.
+  assert.equal(await gatewayUsage('mission-1.1'), null);
+});
+
+test('an unkeyed request is still served, just not counted', async (t) => {
+  // A gateway that refused traffic it could not label would turn bookkeeping
+  // into an outage.
+  const upstream = await stubUpstream();
+  t.after(async () => { stopGateways(); await upstream.close(); });
+
+  const p = await resolveProvider(
+    { kind: 'openai-compatible', id: 'unkeyed', baseUrl: upstream.url }, ROOT);
+  const url = await ensureGateway(p, 'run-y');
+
+  const res = await fetch(`${url}/v1/messages`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': 'k' },
+    body: JSON.stringify({ model: 'm', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json() as any).content[0].text, 'pong');
 });

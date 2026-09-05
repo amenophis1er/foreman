@@ -1383,6 +1383,13 @@ function startServer() {
 }
 
 module.exports = {
+  // DIVERGENCE (Foreman): the three request handlers are exported so
+  // ledger.cjs can bind the socket itself and count tokens per run without
+  // editing anything above this line. Additive only — re-apply after a
+  // re-sync; src/gateway/ledger.test.ts fails loudly if it is lost.
+  handleOpenAI,
+  handleCodex,
+  handlePassthrough,
   anthropicToOpenAIRequest,
   hoistSystemMessages,
   openAIToAnthropicResponse,

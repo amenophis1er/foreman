@@ -257,6 +257,12 @@ export class MissionRun {
   private usageLimited = false;
   /** Director turns taken, for the cap that applies to every provider. */
   private turns = 0;
+  /** Gateway tokens seen since the last confirmed result. Never persisted. */
+  private interimUsage: TokenUsage = emptyUsage();
+  /** The ledger reading the interim is measured against. */
+  private ledgerBaseline: (TokenUsage & { calls: number }) | null = null;
+  private rebaseline = false;
+  private ledgerTimer?: ReturnType<typeof setInterval>;
   private startedAt = Date.now();
 
   constructor(
@@ -281,6 +287,25 @@ export class MissionRun {
      * rather than priced from a table Foreman made up.
      */
     private readonly prices: { director?: ModelPrice; worker?: ModelPrice } = {},
+    /**
+     * Live token counts from the gateway, for the long stretches where the
+     * SDK has nothing to say.
+     *
+     * An OpenAI-compatible endpoint reports usage only on the final chunk of
+     * a stream, and the SDK only surfaces it on the `result` message that
+     * ends a turn — so a director working through one long turn shows zero
+     * tokens for minutes while really having spent a hundred thousand. The
+     * gateway sees every response, so it can answer in the meantime.
+     *
+     * Strictly an INTERIM figure: it is emitted, never persisted, and it is
+     * reset to nothing every time a `result` message arrives with the real
+     * number. The SDK stays the authority on what this run actually spent.
+     */
+    private readonly ledger?: {
+      key: string;
+      roles: { director: boolean; worker: boolean };
+      read: (key: string) => Promise<TokenUsage & { calls: number } | null>;
+    },
   ) {
     this.meta = meta;
     // Usage and turns are counted from zero on a fresh run, but a resumed one
@@ -433,6 +458,13 @@ export class MissionRun {
   async start(resume?: { sessionId?: string }): Promise<void> {
     const resumeSessionId = resume?.sessionId;
     const isResume = resume !== undefined;
+    // Only a run with a gatewayed role has anything to poll for. Three
+    // seconds is chosen against what it is for — a person watching a turn
+    // that has been silent for minutes — not against how fast tokens move.
+    if (this.ledger && (this.ledger.roles.director || this.ledger.roles.worker)) {
+      this.ledgerTimer = setInterval(() => void this.pollLedger(), 3000);
+      this.ledgerTimer.unref?.();
+    }
     this.emit(isResume ? 'run_resumed' : 'run_started', {
       runId: this.meta.id,
       folder: this.meta.folder,
@@ -561,6 +593,11 @@ export class MissionRun {
       this.meta.status = 'error';
       this.emit('run_error', { error: String(err) });
     } finally {
+      // Stop polling before anything else: the run is over, every result is
+      // in, and an interim estimate outliving the real figure would be the
+      // one number here that is not backed by anything.
+      if (this.ledgerTimer) clearInterval(this.ledgerTimer);
+      this.interimUsage = emptyUsage();
       // "Always allow" makes the SDK write .claude/settings.local.json into the
       // mission folder, which appears only once a grant happens — so this runs
       // after the work, not just before it.
@@ -765,14 +802,63 @@ export class MissionRun {
     this.emit('cost', {
       costUsd: this.meta.costUsd,
       budgetUsd: this.meta.budgetUsd,
-      usage: this.meta.usage,
+      usage: this.liveUsage(),
       costBasis: costBasisOf(this.meta),
       metered: isPriced(this.meta),
       turns: this.turns,
     });
   }
 
+  /**
+   * Read the gateway's running total and republish the economics.
+   *
+   * The baseline is what the ledger held at the last confirmed result, so
+   * what is shown is only the growth since — added to a persisted total that
+   * already accounts for everything before it. When a result lands, the
+   * interim is dropped to nothing rather than carried, because briefly
+   * under-reporting an estimate is safer than briefly double-counting one.
+   */
+  private async pollLedger(): Promise<void> {
+    if (!this.ledger) return;
+    const now = await this.ledger.read(this.ledger.key).catch(() => null);
+    if (!now) return;
+    if (!this.ledgerBaseline || this.rebaseline) {
+      this.ledgerBaseline = now;
+      this.rebaseline = false;
+      return;
+    }
+    const b = this.ledgerBaseline;
+    const grew = {
+      inputTokens: Math.max(0, now.inputTokens - b.inputTokens),
+      outputTokens: Math.max(0, now.outputTokens - b.outputTokens),
+      cacheReadTokens: Math.max(0, now.cacheReadTokens - b.cacheReadTokens),
+      cacheWriteTokens: Math.max(0, now.cacheWriteTokens - b.cacheWriteTokens),
+    };
+    const changed = Object.keys(grew).some(
+      (k) => grew[k as keyof TokenUsage] !== this.interimUsage[k as keyof TokenUsage],
+    );
+    this.interimUsage = grew;
+    if (changed) this.emitEconomics();
+  }
+
+  /** Confirmed usage plus whatever the gateway has seen since. */
+  private liveUsage(): TokenUsage {
+    const c = this.meta.usage ?? emptyUsage();
+    const i = this.interimUsage;
+    return {
+      inputTokens: c.inputTokens + i.inputTokens,
+      outputTokens: c.outputTokens + i.outputTokens,
+      cacheReadTokens: c.cacheReadTokens + i.cacheReadTokens,
+      cacheWriteTokens: c.cacheWriteTokens + i.cacheWriteTokens,
+    };
+  }
+
   private addUsage(raw: unknown, role: AgentRole = 'director'): void {
+    // The real number for this turn just arrived; the estimate standing in
+    // for it is now redundant, and the ledger must be re-baselined so the
+    // same tokens are not offered again as growth.
+    this.interimUsage = emptyUsage();
+    this.rebaseline = true;
     const delta = normalizeUsage(raw);
     this.meta.usage = accumulateUsage(this.meta.usage ?? emptyUsage(), raw);
     this.meta.turns = this.turns;
