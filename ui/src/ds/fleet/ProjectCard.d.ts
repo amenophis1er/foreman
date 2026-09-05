@@ -17,7 +17,13 @@ export interface ProjectCardProps {
   instance?: string;
   /** The active run, if any. Absent → idle state. `title` is the run's
    *  generated name; without one the brief is shown over two lines instead. */
-  run?: { mission: string; title?: string; costUsd: number; budgetUsd: number };
+  run?: {
+    mission: string; title?: string; costUsd: number; budgetUsd: number;
+    /** False when the dollar figure is not real money; the meter shows tokens. */
+    metered?: boolean;
+    usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number };
+    turns?: number;
+  };
   /** Flat alternative to `run` for markup contexts: passing `mission` puts the card in its running state. */
   mission?: string;
   title?: string;

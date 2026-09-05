@@ -11,3 +11,5 @@ Says which account pays. Appears in the fleet header, the project header, and di
 - `compact` drops the `billing:` prefix for dense rows. Keep the full form in headers.
 - The server decides the mode — including per-project billing. Do not derive it in the view from a config path.
 - Pass `account` whenever the server knows it. The label then reads as the account email rather than the word `subscription`, because two subscriptions on one machine are indistinguishable otherwise. The org name goes in the tooltip.
+
+- `local` and `provider` exist because a gateway-routed project is neither an Anthropic key nor a subscription. A model served from this machine costs nothing per token, and an external endpoint is real spend Foreman cannot price — saying "API key billing" for either would be a lie in the one place the product promises not to tell one.

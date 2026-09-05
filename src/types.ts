@@ -18,13 +18,18 @@ export interface Project {
   createdAt: number;
   /** Default budget suggested in the composer. */
   defaultBudgetUsd: number;
-  /** Pins this project to one Claude Code install; server default when absent. */
+  /**
+   * Who serves and who pays. Absent means the legacy `claudeInstance` below
+   * (or the server default) — see providerOf() in provider.ts.
+   */
+  provider?: ProviderRef;
+  /** @deprecated Pre-provider pin. Read through providerOf(); never written. */
   claudeInstance?: ClaudeInstanceRef;
 }
 
 /**
- * Which Claude Code install an agent runs under. Decides whose subscription or
- * key is billed and which settings/plugins load.
+ * @deprecated The pre-provider shape, still read from records written before
+ * {@link ProviderRef} existed. Never written. See providerFromLegacy().
  */
 export interface ClaudeInstanceRef {
   /** CLAUDE_CONFIG_DIR for the agent. */
@@ -43,6 +48,65 @@ export interface ClaudeInstanceRef {
   billing?: 'inherit' | 'own-login';
 }
 
+/**
+ * Who serves the model, who pays for it, and where requests go — one choice,
+ * not three settings. See src/provider.ts and docs/provider-model.md; the
+ * union shape is what makes "subscription login + custom base URL", the
+ * combination that leaks a token, unrepresentable.
+ */
+export type ProviderRef =
+  /** An installed Claude Code, using whatever it is logged into. Ambient. */
+  | {
+      kind: 'claude-code';
+      /** CLAUDE_CONFIG_DIR; the server default when absent. */
+      configDir?: string;
+      /** Claude Code executable; the SDK's bundled one when absent. */
+      executable?: string;
+      /** Strip inherited key credentials so this install's own login pays. */
+      ownLogin?: boolean;
+    }
+  /** An Anthropic API key Foreman is told about by name, never by value. */
+  | {
+      kind: 'anthropic-api';
+      /** Stable id; names this provider's Foreman-owned config dir. */
+      id: string;
+      /** Server environment variable holding the key. Foreman stores no secrets. */
+      apiKeyEnv: string;
+      model?: string;
+    }
+  /** An installed Codex CLI, using the login `codex login` already stored. */
+  | {
+      kind: 'codex';
+      id: string;
+      /** CODEX_HOME; `~/.codex` when absent. */
+      codexHome?: string;
+      /** Codex inference backend; the public one when absent. */
+      upstreamUrl?: string;
+      model?: string;
+    }
+  /** Anything speaking OpenAI Chat Completions: Ollama, OpenRouter, vLLM, … */
+  | {
+      kind: 'openai-compatible';
+      id: string;
+      baseUrl: string;
+      /**
+       * Name of a server environment variable holding the key. The fallback
+       * when nothing is stored for this provider; omit it entirely to use a
+       * stored key alone.
+       */
+      apiKeyEnv?: string;
+      /**
+       * This endpoint requires a credential. Distinguishes "a key is stored
+       * for it" from "it needs none at all" — a local Ollama is the latter,
+       * and inferring from the absence of `apiKeyEnv` would make every stored
+       * key look like no key.
+       */
+      needsKey?: boolean;
+      /** Short name for badges — "Ollama", "OpenRouter". */
+      label?: string;
+      model?: string;
+    };
+
 export type WorkerStatus = 'running' | 'done' | 'error';
 
 /** Persisted, replayable event envelope. */
@@ -53,6 +117,20 @@ export interface ForemanEvent {
   event: string;
   /** JSON-serializable payload; shape depends on `event`. */
   data: unknown;
+}
+
+/**
+ * Real token usage. `costUsd` is notional on a subscription plan and
+ * fictional through a gateway (the SDK prices foreign tokens with
+ * Anthropic's rate table) — token counts are what actually moved on any
+ * provider, so this is what an unmetered run's meter should show instead of
+ * a dollar figure nobody billed.
+ */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
 /** Snapshot of one worker, persisted in run metadata. */
@@ -93,7 +171,23 @@ export interface RunMeta {
   directorModel?: ModelChoice;
   /** Model override for worker sessions (cost lever). */
   workerModel?: ModelChoice;
-  /** Instance this run resolved to at dispatch, so history and resume agree. */
+  /**
+   * Provider serving each role, when it differs from the run's own.
+   *
+   * A model carries the provider that serves it, so a run can put a capable
+   * director on one and cheap workers on another — the configuration the
+   * whole provider model exists to make possible. Absent means "the run's
+   * provider", which is every run recorded before this existed.
+   */
+  directorProviderId?: string;
+  workerProviderId?: string;
+  /**
+   * Provider frozen at dispatch, so history and resume agree — and so a later
+   * settings change cannot move an in-flight or resumed run to another
+   * provider, or another bill.
+   */
+  provider?: ProviderRef;
+  /** @deprecated Pre-provider pin, still read for runs recorded before providers. */
   claudeInstance?: ClaudeInstanceRef;
   /** Number of times this run was resumed after an interruption. */
   resumes?: number;
@@ -104,8 +198,29 @@ export interface RunMeta {
   folder: string;
   mission: string;
   budgetUsd: number;
+  /**
+   * Whether `costUsd` is real money. False through a gateway, where the SDK
+   * prices foreign tokens with Anthropic's table — see provider.ts. An
+   * unmetered run is capped by {@link maxTurns} and {@link maxSeconds}.
+   */
+  metered?: boolean;
+  /** Director turns before the run winds down. Universal; provider-independent. */
+  maxTurns?: number;
+  /** Wall-clock cap. Matters most exactly where dollars matter least. */
+  maxSeconds?: number;
   status: RunStatus;
   costUsd: number;
+  /**
+   * Token counts accumulated from every director and worker `result`
+   * message's `usage` object. Absent on runs recorded before this landed.
+   */
+  usage?: TokenUsage;
+  /**
+   * Director turns taken so far, persisted so a resumed run keeps counting
+   * against {@link maxTurns} instead of restarting the cap from zero — the
+   * orchestrator's private counter is only ever accurate within one process.
+   */
+  turns?: number;
   createdAt: number;
   endedAt?: number;
   directorSessionId?: string;

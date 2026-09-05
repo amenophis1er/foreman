@@ -34,8 +34,11 @@
  *   GET    /chat?projectId=      A project's planning conversation (log + meta)
  *   POST   /chat                 Send a message to the planner {projectId, text}
  *   DELETE /chat?projectId=      Forget the conversation and its session
+ *   PUT    /providers/{id}/key   Store a provider's key {key}
+ *   DELETE /providers/{id}/key   Forget it
  */
 import http from 'node:http';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -45,34 +48,48 @@ import { runPlanningTurn } from './planner.js';
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
-import { defaultInstance, discoverInstances, effectiveConfigDir, resolveInstance } from './instance.js';
+import { defaultInstance, discoverInstances, effectiveConfigDir } from './instance.js';
+import {
+  normalizeOpenAiBaseUrl, providerEnv, providerOf, providerProblem, resolveProvider,
+} from './provider.js';
+import { ensureGateway, gatewayStatus, releaseGateways, stopGateways } from './gateway.js';
+import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
+import { deleteSecret, hasSecret, putSecret } from './secrets.js';
+import { ANTHROPIC_MODELS } from './anthropic-models.js';
+import { codexHome, codexModels, readCodexAuth } from './codex.js';
+import { describeModel, discoverModels } from './models.js';
+import type { ResolvedProvider } from './provider.js';
 import {
   dirHasCredentials, detectAuth, hasKeychainCredentials, readAccount, type AuthMode,
 } from './preflight.js';
 import type {
-  ChatMeta, ClaudeInstanceRef, ForemanEvent, ModelChoice, Project, RunMeta, ToolPolicy,
+  ChatMeta, ForemanEvent, ModelChoice, Project, ProviderRef, RunMeta, ToolPolicy,
 } from './types.js';
 
 /**
  * Curated model list for the composer pickers (GET /models). `id` is exactly
  * what the SDK receives as `options.model`.
  */
-const MODELS = [
-  { id: 'fable', label: 'Fable', model: 'claude-fable-5', cost: 4, note: 'Frontier. Long-horizon planning and verification.' },
-  { id: 'opus', label: 'Opus', model: 'claude-opus-5', cost: 3, note: 'Deep reasoning for hard refactors.' },
-  { id: 'sonnet', label: 'Sonnet', model: 'claude-sonnet-5', cost: 2, note: 'Balanced. The usual worker.' },
-  { id: 'haiku', label: 'Haiku', model: 'claude-haiku-4-5', cost: 1, note: 'Fast and cheap for reads and mechanical edits.' },
-];
+const MODELS = ANTHROPIC_MODELS;
 
 /**
  * The billing mode one project will actually use. `own-login` means the pinned
  * config dir's stored login pays, so a dir without one is a misconfiguration
  * worth surfacing before a mission starts rather than after it fails.
  */
-async function projectBilling(p: Project, serverMode: AuthMode): Promise<AuthMode> {
-  const instance = resolveInstance(p.claudeInstance);
-  if (instance.billing !== 'own-login') return serverMode;
-  return (await dirHasCredentials(effectiveConfigDir(instance))) ? 'subscription' : 'none';
+async function projectBilling(p: Project, serverMode: AuthMode): Promise<BillingMode> {
+  const resolved = await resolveProvider(providerOf(p), store.root);
+  // A gateway provider bills its own upstream, never the server's Anthropic
+  // credential — reporting the server's mode there would name the wrong payer.
+  if (resolved.wire !== 'anthropic-native') {
+    if (!resolved.apiKey) return 'none';
+    // Loopback means the model is served from this machine: no per-token cost,
+    // which is why this run's budget caps on turns and time instead.
+    return isLoopback(resolved.upstreamUrl) ? 'local' : 'provider';
+  }
+  if (resolved.kind === 'anthropic-api') return resolved.apiKey ? 'api-key' : 'none';
+  if (!resolved.ownLogin) return serverMode;
+  return (await dirHasCredentials(resolved.configDir)) ? 'subscription' : 'none';
 }
 
 /**
@@ -99,16 +116,226 @@ function fleetOrder(
   return fleetTier(a) - fleetTier(b) || b.lastActivityAt - a.lastActivityAt;
 }
 
+/**
+ * Parses a provider from a request body.
+ *
+ * The union is the product's safety property — "subscription login" and
+ * "custom base URL" must not be expressible together — so it is validated
+ * here, at the boundary, rather than trusted from a client. Anything
+ * unrecognised is rejected outright: silently coercing a malformed provider to
+ * `claude-code` would run a mission on a credential nobody chose.
+ *
+ * Returns `null` for "not supplied" and a string for "supplied but wrong".
+ */
+function parseProvider(v: unknown): ProviderRef | null | string {
+  if (v === undefined) return null;
+  if (v === null) return null; // an explicit clear; the caller distinguishes
+  if (typeof v !== 'object') return 'provider must be an object';
+  const p = v as Record<string, unknown>;
+  const str = (k: string): string | undefined => {
+    const raw = p[k];
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+  };
+
+  switch (p.kind) {
+    case 'claude-code':
+      return {
+        kind: 'claude-code',
+        ...(str('configDir') ? { configDir: str('configDir')! } : {}),
+        ...(str('executable') ? { executable: str('executable')! } : {}),
+        ...(p.ownLogin === true ? { ownLogin: true } : {}),
+      };
+    case 'anthropic-api': {
+      const apiKeyEnv = str('apiKeyEnv');
+      if (!apiKeyEnv) return 'anthropic-api needs apiKeyEnv';
+      return { kind: 'anthropic-api', id: str('id') ?? newProviderId(), apiKeyEnv, model: str('model') };
+    }
+    case 'codex':
+      return {
+        kind: 'codex', id: str('id') ?? newProviderId(),
+        codexHome: str('codexHome'), upstreamUrl: str('upstreamUrl'), model: str('model'),
+      };
+    case 'openai-compatible': {
+      const baseUrl = str('baseUrl');
+      if (!baseUrl) return 'openai-compatible needs baseUrl';
+      // Reject a URL the gateway would choke on before it reaches a run,
+      // rather than after the agent's first call fails.
+      try {
+        new URL(normalizeOpenAiBaseUrl(baseUrl));
+      } catch {
+        return `not a usable base URL: ${baseUrl}`;
+      }
+      return {
+        kind: 'openai-compatible', id: str('id') ?? newProviderId(),
+        baseUrl: normalizeOpenAiBaseUrl(baseUrl),
+        apiKeyEnv: str('apiKeyEnv'), label: str('label'), model: str('model'),
+        ...(p.needsKey === true ? { needsKey: true } : {}),
+      };
+    }
+    default:
+      return `unknown provider kind: ${String(p.kind)}`;
+  }
+}
+
+/** Names a provider's Foreman-owned config dir; stable for its lifetime. */
+function newProviderId(): string {
+  return `pr-${crypto.randomBytes(4).toString('hex')}`;
+}
+
+/** Billing modes the UI understands; a superset of the server's own AuthMode. */
+type BillingMode = AuthMode | 'local' | 'provider';
+
+/** One selectable model, tagged with the provider that serves it. */
+interface ModelOption {
+  id: string;
+  label: string;
+  model: string;
+  /** Which provider serves it; absent means the project's own/server default. */
+  providerId?: string;
+  providerLabel: string;
+  cost?: number;
+  note?: string;
+  /** Whether spending on it is real money Foreman can price. */
+  metered: boolean;
+}
+
+/**
+ * Everything this machine can run a mission on.
+ *
+ * Deliberately generous: a provider that is merely *present* is offered, even
+ * if the current project does not use it, because the picker is where someone
+ * decides to use it. Anything unreachable is simply absent rather than listed
+ * and broken — a picker's job is to offer what will work.
+ */
+async function availableModels(project: Project | null): Promise<{
+  models: ModelOption[];
+  groups: Array<{ providerId?: string; label: string; count: number }>;
+  reachable: boolean;
+}> {
+  const out: ModelOption[] = [];
+
+  // Anthropic, via whichever Claude Code install or key the server resolves.
+  // Always offered: it is the default, and the shipped configuration.
+  for (const m of MODELS) {
+    out.push({ ...m, providerLabel: 'Anthropic', metered: true });
+  }
+
+  // The project's own provider, when it is an endpoint of its own. Asked
+  // first-hand, because a project pointed at another machine must be offered
+  // that machine's models rather than this one's.
+  const pinned = project ? providerOf(project) : null;
+  if (pinned?.kind === 'openai-compatible') {
+    const resolved = await resolveProvider(pinned, store.root);
+    const found = await discoverModels(resolved.upstreamUrl ?? pinned.baseUrl, {
+      apiKey: resolved.apiKey,
+    });
+    for (const m of found ?? []) {
+      out.push({
+        id: m.id, label: m.id, model: m.id,
+        providerId: pinned.id, providerLabel: pinned.label ?? 'Custom endpoint',
+        cost: m.remote ? 2 : 0, note: describeModel(m),
+        metered: !isLoopback(resolved.upstreamUrl),
+      });
+    }
+  }
+
+  // A running local Ollama, whether or not any project uses it yet.
+  const localOllama = pinned?.kind === 'openai-compatible'
+    && normalizeOpenAiBaseUrl(pinned.baseUrl) === normalizeOpenAiBaseUrl(ollamaHost());
+  if (!localOllama) {
+    const models = await discoverOllama();
+    for (const m of models ?? []) {
+      out.push({
+        id: m.id, label: m.id, model: m.id,
+        providerId: 'ollama-local', providerLabel: 'Ollama',
+        cost: m.remote ? 2 : 0, note: describeModel(m),
+        // A model served from this machine costs nothing per token; a :cloud
+        // one is real spend Foreman cannot price. Neither is a dollar figure.
+        metered: false,
+      });
+    }
+  }
+
+  // A signed-in Codex install.
+  const home = codexHome();
+  const codexAuth = await readCodexAuth(home).catch(() => null);
+  if (codexAuth) {
+    for (const id of await codexModels(home)) {
+      out.push({
+        id, label: id, model: id,
+        providerId: 'codex-local', providerLabel: 'Codex',
+        cost: 2, note: 'Runs on your ChatGPT subscription.',
+        metered: false,
+      });
+    }
+  }
+
+  const groups = [...new Map(out.map((m) => [m.providerLabel, m])).values()]
+    .map((m) => ({
+      providerId: m.providerId,
+      label: m.providerLabel,
+      count: out.filter((x) => x.providerLabel === m.providerLabel).length,
+    }));
+
+  return { models: out, groups, reachable: true };
+}
+
+/**
+ * The provider serving one role.
+ *
+ * A model carries the provider that serves it, so a run can put its director
+ * on one and its workers on another. An id that no longer resolves falls back
+ * to the run's own provider rather than failing: a provider removed between
+ * dispatch and resume should degrade to the project's, not strand the run.
+ */
+function providerForRole(meta: RunMeta, roleProviderId?: string): ProviderRef {
+  const own = providerOf(meta);
+  if (!roleProviderId) return own;
+  if ('id' in own && own.id === roleProviderId) return own;
+  // The two providers the machine offers without being configured for them.
+  if (roleProviderId === 'ollama-local') return ollamaProvider();
+  if (roleProviderId === 'codex-local') return { kind: 'codex', id: 'codex-local' };
+  return own;
+}
+
+/** Whether a project's provider has a key on file. Never the key itself. */
+async function providerHasKeyOf(p: Project): Promise<boolean> {
+  const ref = providerOf(p);
+  return 'id' in ref && ref.id ? hasSecret(store.root, ref.id) : false;
+}
+
+/** Is this endpoint on this machine? Decides "free" from "somebody's meter". */
+function isLoopback(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname;
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
 /** Trims an optional path field from a request body; '' means "cleared". */
 function toPath(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() ? v.trim() : undefined;
 }
 
 /** Parses a model choice: a known alias or a full claude-* id; else inherit. */
+/**
+ * A model id from any provider.
+ *
+ * This used to accept only Anthropic aliases and `claude-*` ids, which meant a
+ * picked Ollama or Codex model was silently dropped and the run quietly fell
+ * back to the default — the failure looked like a successful mission on the
+ * wrong model. Now that a model carries the provider that serves it, the
+ * shapes are whatever those providers use (`glm-5.3-flash:cloud`,
+ * `gpt-5.6-sol`, `qwen3.8:27b-q8_0`), so this validates the *characters* a
+ * model id may contain rather than trying to recognise a vendor.
+ */
 function modelChoice(v: unknown): ModelChoice {
-  if (typeof v !== 'string' || !v) return undefined;
-  if (MODELS.some((m) => m.id === v)) return v;
-  return /^claude-[a-z0-9.-]{1,60}$/.test(v) ? v : undefined;
+  if (typeof v !== 'string' || !v.trim()) return undefined;
+  const id = v.trim();
+  return /^[A-Za-z0-9._:\/-]{1,120}$/.test(id) ? id : undefined;
 }
 
 /** Directory names never descended into by the drag-drop folder locator. */
@@ -174,6 +401,24 @@ function makeEmitter(runId: string, projectId: string) {
 }
 
 /**
+ * Everything an agent needs to authenticate, including starting the provider's
+ * gateway if it has one.
+ *
+ * Both dispatch paths (missions and planning turns) go through here, so a
+ * gateway can never be skipped on one of them — which would leave the agent
+ * pointed at a closed port with a real credential in hand.
+ */
+async function agentEnvFor(
+  resolved: ResolvedProvider, holder?: string,
+): Promise<ReturnType<typeof providerEnv>> {
+  await mkdir(resolved.configDir, { recursive: true }).catch(() => {});
+  if (resolved.wire === 'anthropic-native') return providerEnv(resolved);
+  // `holder` keeps the gateway alive for as long as this run needs it — see
+  // the reaper in gateway.ts.
+  return providerEnv(resolved, await ensureGateway(resolved, holder));
+}
+
+/**
  * Chat frames carry `chat: true` and no run id, so a UI following the same
  * stream can tell a planning conversation from a mission without guessing.
  */
@@ -213,12 +458,18 @@ async function driveChatTurn(project: Project, text: string): Promise<void> {
   emit('chat_turn', { state: 'thinking' });
   try {
     const settings = await effectiveSettings(project.id);
+    const resolved = await resolveProvider(providerOf(project), store.root);
+    const problem = providerProblem(resolved);
+    if (problem) {
+      emit('chat_error', { error: `provider unavailable — ${problem}` });
+      return;
+    }
     const result = await runPlanningTurn({
       sessionId: meta.sessionId,
       folder: project.folder,
       text,
       model: settings.plannerModel,
-      instance: resolveInstance(project.claudeInstance),
+      agentEnv: await agentEnvFor(resolved, `chat:${project.id}`),
       emit,
     });
     const next: ChatMeta = {
@@ -277,7 +528,70 @@ async function driveRun(
   changes?: { directorChanged: boolean; workerChanged: boolean },
 ): Promise<void> {
   const emit = makeEmitter(meta.id, projectId);
-  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m));
+  // One resolution per run, from the provider frozen into the run's metadata.
+  // A run that cannot resolve a credential must not start: dispatching anyway
+  // would fall back to whatever the environment happens to hold.
+  const resolved = await resolveProvider(providerOf(meta), store.root);
+  const problem = providerProblem(resolved);
+  if (problem) {
+    meta.status = 'error';
+    meta.endedAt = Date.now();
+    await store.writeMeta(meta).catch(() => {});
+    emit('run_error', { error: `provider unavailable — ${problem}` });
+    emit('run_finished', { status: 'error', costUsd: meta.costUsd });
+    activeByProject.delete(projectId);
+    return;
+  }
+  let agentEnv;
+  let roleMetered = resolved.metered;
+  try {
+    // Resolved per role. Where both roles share a provider this resolves once
+    // and starts one gateway; where they differ, the supervisor already runs a
+    // process per provider.
+    const directorProvider = meta.directorProviderId
+      ? await resolveProvider(providerForRole(meta, meta.directorProviderId), store.root)
+      : resolved;
+    const workerProvider = meta.workerProviderId === meta.directorProviderId
+      ? directorProvider
+      : await resolveProvider(providerForRole(meta, meta.workerProviderId), store.root);
+    for (const p of new Set([directorProvider, workerProvider])) {
+      const roleProblem = providerProblem(p);
+      if (roleProblem) throw new Error(roleProblem);
+    }
+    agentEnv = {
+      director: await agentEnvFor(directorProvider, meta.id),
+      worker: directorProvider === workerProvider
+        ? await agentEnvFor(directorProvider, meta.id)
+        : await agentEnvFor(workerProvider, meta.id),
+    };
+    roleMetered = directorProvider.metered || workerProvider.metered;
+  } catch (err) {
+    meta.status = 'error';
+    meta.endedAt = Date.now();
+    await store.writeMeta(meta).catch(() => {});
+    emit('run_error', { error: String(err instanceof Error ? err.message : err) });
+    emit('run_finished', { status: 'error', costUsd: meta.costUsd });
+    activeByProject.delete(projectId);
+    return;
+  }
+  // Frozen with the provider: whether this run's dollar figure is real money
+  // decides which caps bind, and that must not change under a resume.
+  //
+  // Decided by the ROLES, not the project's own provider. A run whose director
+  // is on Codex and whose workers are on Ollama spends no real dollars, even
+  // though the project is nominally a Claude Code one — reading meteredness
+  // off the project would show that run a dollar meter and arm a dollar cap
+  // over spend that never happens. Metered if ANY role bills real money, so
+  // the cap still protects a mixed run where part of the spend is genuine.
+  //
+  // Recomputed on every dispatch, including a resume, rather than frozen once.
+  // The inputs are already frozen — the role providers live in this run's own
+  // metadata — so this is deterministic and cannot drift with settings. What
+  // it does allow is a run whose flag was computed by older, wrong code to
+  // heal when it is resumed, instead of being permanently stuck against a cap
+  // it should never have had.
+  meta.metered = roleMetered;
+  const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv);
   activeByProject.set(projectId, run);
   try {
     if (changes?.directorChanged || changes?.workerChanged) {
@@ -304,6 +618,8 @@ async function driveRun(
     meta.endedAt = Date.now();
     await store.writeMeta(meta).catch(() => {});
   } finally {
+    // However the run ended, it no longer needs its gateways.
+    releaseGateways(meta.id);
     if (activeByProject.get(projectId) === run) activeByProject.delete(projectId);
   }
 }
@@ -312,11 +628,15 @@ async function driveRun(
 async function effectiveSettings(projectId: string): Promise<{
   toolPolicy: ToolPolicy; autoAllowReadOnly: boolean;
   directorModel: ModelChoice; workerModel: ModelChoice; plannerModel: ModelChoice;
+  /** Provider serving each role, when Settings pinned one with the model. */
+  directorProviderId?: string; workerProviderId?: string;
 }> {
   const s = await store.readSettings()
     .catch(() => ({ global: {}, projects: {} as Record<string, object> }));
   const g = s.global as Record<string, unknown>;
   const p = (s.projects as Record<string, unknown>)[projectId] as Record<string, unknown> ?? {};
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() ? v.trim() : undefined;
   return {
     toolPolicy: {
       ...DEFAULT_TOOL_POLICY,
@@ -328,13 +648,16 @@ async function effectiveSettings(projectId: string): Promise<{
     directorModel: modelChoice(p.directorModel ?? g.directorModel),
     workerModel: modelChoice(p.workerModel ?? g.workerModel),
     plannerModel: modelChoice(p.plannerModel ?? g.plannerModel),
+    directorProviderId: str(p.directorProviderId ?? g.directorProviderId),
+    workerProviderId: str(p.workerProviderId ?? g.workerProviderId),
   };
 }
 
 async function startRun(
   projectId: string, folder: string, mission: string, budgetUsd: number,
   directorModel: ModelChoice, workerModel: ModelChoice, browserTools: boolean,
-  claudeInstance: ClaudeInstanceRef,
+  provider: ProviderRef,
+  roleProviders: { director?: string; worker?: string } = {},
 ): Promise<void> {
   const settings = await effectiveSettings(projectId);
   const meta: RunMeta = {
@@ -344,12 +667,17 @@ async function startRun(
     // An explicit composer choice wins; "Default" inherits from Settings.
     directorModel: directorModel ?? settings.directorModel,
     workerModel: workerModel ?? settings.workerModel,
+    // Which provider serves each role — from the model that was picked, so
+    // choosing a model chooses where that role runs.
+    directorProviderId: roleProviders.director ?? settings.directorProviderId,
+    workerProviderId: roleProviders.worker ?? settings.workerProviderId,
     browserTools: browserTools || undefined,
     toolPolicy: settings.toolPolicy,
     autoAllowReadOnly: settings.autoAllowReadOnly,
     // Frozen at dispatch: a later change to the project or the server default
-    // must not silently move an in-flight or resumed run to another install.
-    claudeInstance,
+    // must not silently move an in-flight or resumed run to another provider,
+    // or another bill.
+    provider,
     status: 'running', costUsd: 0,
     createdAt: Date.now(), workers: [],
   };
@@ -450,6 +778,7 @@ const server = http.createServer(async (req, res) => {
   const runEventsMatch = url.pathname.match(/^\/runs\/([^/]+)\/events$/);
   const runResumeMatch = url.pathname.match(/^\/runs\/([^/]+)\/resume$/);
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
+  const providerKeyMatch = url.pathname.match(/^\/providers\/([A-Za-z0-9_-]{1,64})\/key$/);
 
   try {
     if (req.method === 'GET' && (url.pathname === '/'
@@ -490,7 +819,16 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, { ok: true });
 
     } else if (req.method === 'GET' && url.pathname === '/models') {
-      json(res, 200, { models: MODELS });
+      // Every model this machine can reach, not just the project's provider's.
+      //
+      // Scoping the list to one provider made the configuration most worth
+      // having unbuildable: a capable director with cheap local workers needs
+      // two providers in one run, and a caged picker could only offer one.
+      // A model now carries the provider that serves it, so choosing a model
+      // chooses a provider — which is how people actually think about it.
+      const forProject = url.searchParams.get('projectId');
+      const project = forProject ? await store.getProject(forProject) : null;
+      json(res, 200, await availableModels(project));
 
     } else if (req.method === 'GET' && url.pathname === '/projects') {
       const [projects, allRuns, auth] = await Promise.all([
@@ -505,6 +843,9 @@ const server = http.createServer(async (req, res) => {
           // What THIS project will actually bill, which can differ from the
           // server's mode when the pin opts out of the inherited key.
           billingMode: await projectBilling(p, auth.mode),
+          // Whether a key is on file, never the key. Settings renders
+          // "stored / not stored" from this and nothing more.
+          providerHasKey: await providerHasKeyOf(p),
           activeRun: run ? { ...run.meta } : null,
           lastRun: lastRun && {
             mission: lastRun.mission, title: lastRun.title, status: lastRun.status,
@@ -528,26 +869,39 @@ const server = http.createServer(async (req, res) => {
       });
 
     } else if (req.method === 'POST' && url.pathname === '/projects') {
-      const { folder, name, claudeConfigDir, claudeExecutable } = await readBody(req);
+      const { folder, name, provider: providerIn, claudeConfigDir, claudeExecutable } = await readBody(req);
+      const parsed = parseProvider(providerIn);
+      if (typeof parsed === 'string') return json(res, 400, { error: parsed });
       if (typeof folder !== 'string' || !folder) return json(res, 400, { error: 'folder is required' });
       if (!path.isAbsolute(folder)) return json(res, 400, { error: `folder must be an absolute path: ${folder}` });
       const st = await stat(folder).catch(() => null);
       if (st && !st.isDirectory()) return json(res, 400, { error: `not a directory: ${folder}` });
       if (!st) await mkdir(folder, { recursive: true });
-      const pin =
+      // The HTTP shape still speaks "Claude Code install"; storage speaks
+      // providers. Translating here keeps the UI working unchanged while the
+      // union becomes the only thing written to disk.
+      // A provider wins; the older claudeConfigDir/claudeExecutable pair still
+      // works and means the same thing, so existing callers keep functioning.
+      const pin: ProviderRef | undefined = parsed ?? (
         typeof claudeConfigDir === 'string' || typeof claudeExecutable === 'string'
           ? {
+              kind: 'claude-code',
               ...(typeof claudeConfigDir === 'string' ? { configDir: claudeConfigDir } : {}),
               ...(typeof claudeExecutable === 'string' ? { executable: claudeExecutable } : {}),
             }
-          : undefined;
+          : undefined);
       json(res, 200, {
         project: await store.addProject(folder, typeof name === 'string' ? name : undefined, pin),
       });
 
     } else if (req.method === 'PATCH' && projectMatch) {
-      const { name, defaultBudgetUsd, claudeConfigDir, claudeExecutable, claudeBilling } =
+      const { name, defaultBudgetUsd, provider: providerIn, claudeConfigDir, claudeExecutable, claudeBilling } =
         await readBody(req);
+      const parsedPatch = parseProvider(providerIn);
+      if (typeof parsedPatch === 'string') return json(res, 400, { error: parsedPatch });
+      // `provider: null` clears the pin outright; the legacy triple below
+      // expresses the same thing by going empty.
+      const providerCleared = providerIn === null;
       // null clears the pin; undefined leaves it untouched.
       const pinGiven =
         claudeConfigDir !== undefined || claudeExecutable !== undefined || claudeBilling !== undefined;
@@ -558,15 +912,18 @@ const server = http.createServer(async (req, res) => {
       const updated = await store.updateProject(projectMatch[1], {
         name: typeof name === 'string' ? name : undefined,
         defaultBudgetUsd: typeof defaultBudgetUsd === 'number' ? defaultBudgetUsd : undefined,
-        claudeInstance: !pinGiven
+        provider: parsedPatch ?? (providerCleared
+          ? null
+          : !pinGiven
           ? undefined
           : cleared
             ? null
             : {
+                kind: 'claude-code' as const,
                 ...(toPath(claudeConfigDir) ? { configDir: toPath(claudeConfigDir)! } : {}),
                 ...(toPath(claudeExecutable) ? { executable: toPath(claudeExecutable)! } : {}),
-                ...(ownLogin ? { billing: 'own-login' as const } : {}),
-              },
+                ...(ownLogin ? { ownLogin: true } : {}),
+              }),
       });
       json(res, updated ? 200 : 404, updated ? { project: updated } : { error: 'unknown project' });
 
@@ -588,6 +945,21 @@ const server = http.createServer(async (req, res) => {
         authMode: auth.mode,
         authAccount: auth.account ?? null,
         keychainLogin: keychain,
+        // Gateways currently up, so "what is Foreman actually using" is one
+        // request rather than a guess. Routes only — never a credential.
+        gateways: gatewayStatus(),
+        // A running local Ollama is offered with no configuration at all; the
+        // absence of this key is what "none detected" looks like.
+        ollama: await discoverOllama().then((models) =>
+          models ? { host: ollamaHost(), models } : null),
+        // Presence and sign-in state only — never the token.
+        codex: await (async () => {
+          const home = codexHome();
+          const auth = await readCodexAuth(home).catch(() => null);
+          const installed = await stat(path.join(home, 'auth.json')).then(() => true, () => false)
+            || await stat(path.join(home, 'config.toml')).then(() => true, () => false);
+          return installed ? { home, signedIn: Boolean(auth) } : null;
+        })(),
         instances,
       });
 
@@ -599,7 +971,10 @@ const server = http.createServer(async (req, res) => {
       json(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'unknown project' });
 
     } else if (req.method === 'POST' && url.pathname === '/run') {
-      const { projectId, mission, budgetUsd, directorModel, workerModel, browserTools } = await readBody(req);
+      const {
+        projectId, mission, budgetUsd, directorModel, workerModel, browserTools,
+        directorProviderId, workerProviderId,
+      } = await readBody(req);
       if (typeof projectId !== 'string' || typeof mission !== 'string' || !mission.trim()) {
         return json(res, 400, { error: 'projectId and mission are required' });
       }
@@ -613,8 +988,31 @@ const server = http.createServer(async (req, res) => {
       const budget = Number(budgetUsd) > 0 ? Number(budgetUsd) : project.defaultBudgetUsd;
       void startRun(projectId, project.folder, mission, budget,
         modelChoice(directorModel), modelChoice(workerModel), browserTools === true,
-        resolveInstance(project.claudeInstance));
+        providerOf(project),
+        {
+          director: typeof directorProviderId === 'string' ? directorProviderId : undefined,
+          worker: typeof workerProviderId === 'string' ? workerProviderId : undefined,
+        });
       json(res, 200, { ok: true });
+
+    } else if (providerKeyMatch) {
+      // Write-only by design: there is no GET. The API can say whether a key
+      // exists — which Settings needs to render its state — and never what it
+      // is, so a compromised browser session can replace a key but not read
+      // one out.
+      const providerId = providerKeyMatch[1];
+      if (req.method === 'PUT') {
+        const { key } = await readBody(req);
+        const value = typeof key === 'string' ? key.trim() : '';
+        if (!value) return json(res, 400, { error: 'key is required' });
+        await putSecret(store.root, providerId, value);
+        json(res, 200, { ok: true, hasKey: true });
+      } else if (req.method === 'DELETE') {
+        await deleteSecret(store.root, providerId);
+        json(res, 200, { ok: true, hasKey: false });
+      } else {
+        json(res, 405, { error: 'method not allowed' });
+      }
 
     } else if (url.pathname === '/chat') {
       const projectId = req.method === 'POST'
@@ -790,3 +1188,12 @@ if (swept.length) console.log(`Marked ${swept.length} orphaned run(s) as interru
 server.listen(PORT, () => {
   console.log(`Foreman listening on http://localhost:${PORT}`);
 });
+
+// Gateways are children of this process; a hard exit would orphan them holding
+// loopback ports. Both signals a terminal or a supervisor sends are handled.
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    stopGateways();
+    process.exit(0);
+  });
+}

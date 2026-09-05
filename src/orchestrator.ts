@@ -83,9 +83,34 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
   }
 }
 import { makePolicy, type PendingPermission } from './policy.js';
-import { instanceOptions, resolveInstance } from './instance.js';
+import type { AgentEnv } from './provider.js';
 import { generateRunTitle } from './title.js';
-import type { RunMeta, WorkerMeta } from './types.js';
+import type { RunMeta, TokenUsage, WorkerMeta } from './types.js';
+
+/** A run's usage before its first `result` message. */
+function emptyUsage(): TokenUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+}
+
+/**
+ * Folds one SDK `result` message's `usage` object into a running total.
+ *
+ * Exported (pure, no `this`) so the accumulation is testable without
+ * spinning up the Agent SDK: the shape it defends against is a message that
+ * omits `usage` entirely, or reports it with some fields missing — both
+ * observed across providers a gateway sits in front of — never a thrown
+ * error or a poisoned NaN that a partial sum would otherwise carry forever.
+ */
+export function accumulateUsage(current: TokenUsage, raw: unknown): TokenUsage {
+  const u = (raw ?? {}) as Record<string, unknown>;
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return {
+    inputTokens: current.inputTokens + num(u.input_tokens),
+    outputTokens: current.outputTokens + num(u.output_tokens),
+    cacheReadTokens: current.cacheReadTokens + num(u.cache_read_input_tokens),
+    cacheWriteTokens: current.cacheWriteTokens + num(u.cache_creation_input_tokens),
+  };
+}
 
 /**
  * What Foreman keeps out of git inside a mission folder's .claude/.
@@ -97,6 +122,20 @@ import type { RunMeta, WorkerMeta } from './types.js';
  * commands) stays visible, since a project may legitimately track those.
  */
 const LOCAL_IGNORE_LINES = ['settings.local.json', '.gitignore'];
+
+/**
+ * Caps that hold whatever the provider is. A dollar budget is meaningless on a
+ * local model and actively wrong through a gateway (the SDK prices foreign
+ * tokens with Anthropic's table), but "too many turns" and "too long" are true
+ * everywhere — and a runaway agent is what a cap exists to stop, not a bill.
+ */
+// Sized to bound a runaway without shortening a legitimate mission. The
+// director's own SDK limit is 150 turns, so anything tighter here would be a
+// silent regression on runs that used to be governed by budget alone — these
+// caps exist to give an UNMETERED run something that binds, not to second-guess
+// a metered one that dollars already stop.
+const DEFAULT_MAX_TURNS = 150;
+const DEFAULT_MAX_SECONDS = 4 * 60 * 60;
 
 /** Broadcasts to SSE clients and appends to the run's event log. */
 export type Emitter = (event: string, data: unknown) => void;
@@ -132,6 +171,17 @@ directing worker agents. Non-negotiable rules, in priority order:
    (screenshots, reports, exports) must depict the FINAL state: if any file
    changes after you captured them, RE-CAPTURE before ticking that milestone.
    An artifact older than the code it documents is a false report.
+   OPEN WHAT YOU CAPTURED. A screenshot is evidence only once you have looked
+   at it. Never write "no defects observed" about an image you did not read
+   back — saying it makes the report false even when the page is fine.
+   SCROLL-REVEALED CONTENT IS THE COMMON TRAP. Modern pages start sections at
+   "opacity: 0" and fade them in when they scroll into view, so a full-page
+   capture taken without scrolling records blank space where the content is.
+   Before a full-page screenshot: emulate "prefers-reduced-motion: reduce" if
+   the page honours it, or scroll the whole page to the bottom, wait for the
+   animations to settle, and scroll back. Then open the file and confirm the
+   sections you expect are actually visible in it. A mostly-black screenshot is
+   a failed capture, not a finished milestone.
 4. REPORT WHAT YOU SEE. Judge the work as a competent professional would, not
    only against the letter of the acceptance criteria. If you observe a defect
    the criteria did not name — tap targets too small to use, unreadable
@@ -182,13 +232,31 @@ export class MissionRun {
   private directorCostSeen = 0;
   private wasInterrupted = false;
   private usageLimited = false;
+  /** Director turns taken, for the cap that applies to every provider. */
+  private turns = 0;
+  private startedAt = Date.now();
 
   constructor(
     meta: RunMeta,
     private readonly emit: Emitter,
     private readonly saveMeta: MetaSink,
+    /**
+     * Credential + wire per role, resolved once at dispatch.
+     *
+     * Two, not one, because a run may put its director on a capable provider
+     * and its workers on a cheap or local one — that is the point of the
+     * provider model, and it is decided by which model each role was given.
+     * Passed in rather than derived here so exactly one module decides what an
+     * agent can authenticate as; see provider.ts.
+     */
+    private readonly agentEnv: { director: AgentEnv; worker: AgentEnv },
   ) {
     this.meta = meta;
+    // Usage and turns are counted from zero on a fresh run, but a resumed one
+    // must keep the running total rather than quietly under-reporting
+    // everything before the restart — same reasoning as the workers map below.
+    this.meta.usage = meta.usage ?? emptyUsage();
+    this.turns = meta.turns ?? 0;
     // Rehydrate orchestrator state from persisted metadata so a resumed run
     // behaves like the original process: message_worker can reach prior
     // workers, new worker ids never collide with old ones, and "always
@@ -284,6 +352,11 @@ export class MissionRun {
       mission: this.meta.mission,
       budgetUsd: this.meta.budgetUsd,
       costUsd: this.meta.costUsd,
+      // Carried here, not only on `cost`, because a run that spends no
+      // priceable dollars may never emit a cost event at all — and the UI
+      // would then keep replaying an older run's meteredness forever.
+      metered: this.meta.metered !== false,
+      usage: this.meta.usage,
     });
 
     // Name the mission in parallel with running it: the title is display-only,
@@ -305,8 +378,8 @@ export class MissionRun {
         'actually complete. Keep completed work; do not rewrite files that already ' +
         'satisfy their milestone. Update the doc to match reality, then continue ' +
         'the mission to DONE WHEN. ' +
-        `Budget note: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)} is already spent.`
-      : `MISSION: ${this.meta.mission}\n\nBudget: $${this.meta.budgetUsd.toFixed(2)} total for this run. ` +
+        this.budgetNote()
+      : `MISSION: ${this.meta.mission}\n\n${this.budgetLine()} ` +
         `Working directory: ${this.meta.folder}. Begin by writing .foreman/MISSION.md, then execute the plan.`;
 
     try {
@@ -335,7 +408,7 @@ export class MissionRun {
           model: this.meta.directorModel,
           maxTurns: 150,
           systemPrompt: { type: 'preset', preset: 'claude_code', append: DIRECTOR_CHARTER },
-          ...instanceOptions(resolveInstance(this.meta.claudeInstance)),
+          ...this.agentEnv.director,
           mcpServers: { foreman: this.makeTools(), ...this.browserServers() },
           canUseTool: this.policyFor('director'),
         },
@@ -350,8 +423,16 @@ export class MissionRun {
           // Cumulative per query() call — record only the delta per turn.
           const total = m.total_cost_usd as number | undefined;
           if (typeof total === 'number') {
+            // Usage first: addCost emits the `cost` event carrying it, so
+            // folding it in afterwards ships a snapshot one turn stale — the
+            // meter showed `0 tok` on a run that had just spent 123k of them.
+            this.turns++;
+            this.addUsage(m.usage);
             this.addCost(total - this.directorCostSeen);
             this.directorCostSeen = total;
+          } else {
+            this.turns++;
+            this.addUsage(m.usage);
           }
           lastTurnFailed = Boolean(m.is_error);
           this.noteUsageLimit(String(m.result ?? ''));
@@ -397,6 +478,26 @@ export class MissionRun {
       // after the work, not just before it.
       await this.ignoreLocalSettings();
       if (this.meta.status === 'running') this.meta.status = 'interrupted';
+
+      // A director's exit is not proof its mission succeeded. The charter makes
+      // it write DONE WHEN criteria and tick each one the moment it is actually
+      // verified, so criteria still unticked at exit are the director's own
+      // record that the work is unfinished — and reporting that as 'done' is
+      // the one lie a mission runner cannot afford. Downgrading to
+      // 'interrupted' is also the useful answer: it is what makes the run
+      // resumable rather than closed.
+      if (this.meta.status === 'done') {
+        const unmet = await this.unmetCriteria();
+        if (unmet?.length) {
+          this.meta.status = 'interrupted';
+          this.emit('mission_incomplete', {
+            unmet,
+            text: `The director ended with ${unmet.length} DONE WHEN criteri` +
+              `${unmet.length === 1 ? 'on' : 'a'} still unticked, so this run is not done. ` +
+              'Resume to continue it.',
+          });
+        }
+      }
       this.meta.endedAt = Date.now();
       this.saveMeta(this.meta);
       this.emit('run_finished', {
@@ -418,14 +519,49 @@ export class MissionRun {
    * than spent invisibly.
    */
   private async titleMission(): Promise<void> {
-    const named = await generateRunTitle(
-      this.meta.mission, resolveInstance(this.meta.claudeInstance));
+    // Titling rides with the director: same provider, same bill.
+    const named = await generateRunTitle(this.meta.mission, this.agentEnv.director);
     if (!named || this.meta.title) return;
     this.meta.title = named.title;
     this.emit('run_titled', { title: named.title });
     // addCost persists meta, so the title lands on disk with its own cost.
     if (named.costUsd > 0) this.addCost(named.costUsd);
     else this.saveMeta(this.meta);
+  }
+
+  /**
+   * DONE WHEN criteria the director never ticked.
+   *
+   * Reads the mission doc rather than trusting the transcript, because the doc
+   * is the mission's contract and the thing a resumed director reads back.
+   * Only the DONE WHEN section counts: Plan milestones describe the route, and
+   * a route can legitimately change, but the criteria are what "finished"
+   * means for this mission.
+   *
+   * Null when there is nothing to judge by — no doc, or a doc with no criteria
+   * — because absence of evidence is not evidence of failure, and a mission
+   * whose director never wrote a doc has already failed more visibly.
+   */
+  private async unmetCriteria(): Promise<string[] | null> {
+    const doc = await readFile(path.join(this.meta.folder, '.foreman', 'MISSION.md'), 'utf8')
+      .catch(() => null);
+    if (!doc) return null;
+
+    const lines = doc.split('\n');
+    const start = lines.findIndex((l) => /^#{1,6}\s*DONE\s*WHEN/i.test(l.trim()));
+    if (start === -1) return null;
+
+    const unmet: string[] = [];
+    let sawAny = false;
+    for (const line of lines.slice(start + 1)) {
+      // The section ends at the next heading; checkboxes below it are the plan.
+      if (/^#{1,6}\s/.test(line)) break;
+      const box = line.match(/^\s*[-*]\s*\[( |x|X)\]\s*(.*)$/);
+      if (!box) continue;
+      sawAny = true;
+      if (box[1] === ' ') unmet.push(box[2].trim());
+    }
+    return sawAny ? unmet : null;
   }
 
   /**
@@ -512,8 +648,37 @@ export class MissionRun {
     if (typeof usd !== 'number') return;
     this.meta.costUsd += usd;
     this.saveMeta(this.meta);
-    this.emit('cost', { costUsd: this.meta.costUsd, budgetUsd: this.meta.budgetUsd });
+    this.emitEconomics();
     this.enforceBudget();
+  }
+
+  /**
+   * Folds one result message's token usage into the run total and persists
+   * it. Called alongside addCost() from the same two call sites (director
+   * loop, runWorker) so usage and cost are always in step — the honest
+   * counterpart to a dollar figure that is not honest on every provider.
+   */
+  /**
+   * The one event that carries a run's economics. Emitted whenever either half
+   * changes — dollars OR tokens — because through a gateway the SDK often
+   * reports no cost at all, and a UI told only about dollars would never learn
+   * that this run has none to report.
+   */
+  private emitEconomics(): void {
+    this.emit('cost', {
+      costUsd: this.meta.costUsd,
+      budgetUsd: this.meta.budgetUsd,
+      usage: this.meta.usage,
+      metered: this.meta.metered,
+      turns: this.turns,
+    });
+  }
+
+  private addUsage(raw: unknown): void {
+    this.meta.usage = accumulateUsage(this.meta.usage ?? emptyUsage(), raw);
+    this.meta.turns = this.turns;
+    this.saveMeta(this.meta);
+    this.emitEconomics();
   }
 
   /**
@@ -525,6 +690,10 @@ export class MissionRun {
   private enforceBudget(): void {
     const { costUsd, budgetUsd } = this.meta;
     if (budgetUsd <= 0) return;
+    // The hard 125% kill is the one that ends a run outright, so it must never
+    // fire on a figure that is not real money. An unmetered run is bounded by
+    // the turn and time caps in capReached() instead.
+    if (this.meta.metered === false) return;
     if (!this.budgetKillSent && costUsd >= budgetUsd * 1.25) {
       this.budgetKillSent = true;
       this.budgetNoticeSent = true; // the kill supersedes the wind-down notice
@@ -552,15 +721,70 @@ export class MissionRun {
     }
   }
 
+  /**
+   * What the director is told about its budget, in the units that are true.
+   *
+   * Quoting dollars on an unmetered run is not a cosmetic slip: the figure is
+   * Anthropic pricing applied to somebody else's tokens, and a director told
+   * it has overspent behaves accordingly — it stops delegating and asks for
+   * authorisation it does not need. That is exactly what happened on the first
+   * mixed-provider run, and a resumed session carries the belief in its
+   * restored context long after the cap itself is gone.
+   */
+  private budgetLine(): string {
+    if (this.meta.metered === false) {
+      return `This run is not billed per token, so there is no spend cap. ` +
+        `It is bounded by ${this.meta.maxTurns ?? DEFAULT_MAX_TURNS} director turns.`;
+    }
+    return `Budget: $${this.meta.budgetUsd.toFixed(2)} total for this run.`;
+  }
+
+  private budgetNote(): string {
+    if (this.meta.metered === false) {
+      return 'Budget note: this run is not billed per token — any earlier message ' +
+        'about a spend cap no longer applies, and you do not need authorisation ' +
+        'to continue. Carry on to DONE WHEN.';
+    }
+    return `Budget note: $${this.meta.costUsd.toFixed(2)} of ` +
+      `$${this.meta.budgetUsd.toFixed(2)} is already spent.`;
+  }
+
   /** Appended to worker reports so the director can see the true burn rate
    *  (its own turn costs are invisible to it otherwise). */
   private costFooter(): string {
+    if (this.meta.metered === false) {
+      const u = this.meta.usage;
+      const tokens = u ? u.inputTokens + u.outputTokens : 0;
+      return `\n\n[Run so far: ${this.turns} director turns` +
+        `${tokens ? `, ${Math.round(tokens / 1000)}k tokens` : ''} — not billed per token]`;
+    }
     return `\n\n[Run cost so far: $${this.meta.costUsd.toFixed(2)} of ` +
       `$${this.meta.budgetUsd.toFixed(2)} budget — includes director turns]`;
   }
 
-  private overBudget(): string | null {
+  /** How far past its limits the run is, as a wind-down reason — or null. */
+  private capReached(): string | null {
+    if (this.turns >= (this.meta.maxTurns ?? DEFAULT_MAX_TURNS)) {
+      return `TURN CAP REACHED: ${this.turns} director turns.`;
+    }
+    const elapsed = (Date.now() - this.startedAt) / 1000;
+    const maxSeconds = this.meta.maxSeconds ?? DEFAULT_MAX_SECONDS;
+    if (elapsed >= maxSeconds) {
+      return `TIME CAP REACHED: ${Math.round(elapsed / 60)} minutes.`;
+    }
+    // Money only binds where the figure is real. Enforcing it through a
+    // gateway ends working runs over spend that never happened.
+    if (this.meta.metered === false) return null;
     if (this.meta.costUsd < this.meta.budgetUsd) return null;
+    return `BUDGET CAP REACHED: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)}.`;
+  }
+
+  private overBudget(): string | null {
+    const cap = this.capReached();
+    if (!cap) return null;
+    if (this.meta.metered === false) {
+      return `${cap} Do not start new work. Update MISSION.md, summarize the state, and stop.`;
+    }
     return (
       `BUDGET EXHAUSTED: $${this.meta.costUsd.toFixed(2)} spent of ` +
       `$${this.meta.budgetUsd.toFixed(2)} cap. Do not start new work. Update MISSION.md, ` +
@@ -583,14 +807,17 @@ export class MissionRun {
    * state a resume can least afford.
    */
   private budgetWindDown(): string | null {
-    if (this.meta.costUsd < this.meta.budgetUsd || this.budgetStopped) return null;
+    const cap = this.capReached();
+    if (!cap || this.budgetStopped) return null;
     this.budgetStopped = true;
     this.emit('budget_stop', {
       costUsd: this.meta.costUsd,
       budgetUsd: this.meta.budgetUsd,
+      metered: this.meta.metered !== false,
+      reason: cap,
     });
     return (
-      `BUDGET CAP REACHED: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)}. ` +
+      `${cap} ` +
       'This is your LAST turn — the run ends when it does. Do not start new work, do not ' +
       'spawn or message workers, and do not begin any verification you have not already ' +
       'finished. Use this turn only to: tick every MISSION.md box you have genuinely ' +
@@ -621,7 +848,7 @@ export class MissionRun {
         model: this.meta.workerModel,
         maxTurns: 60,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: WORKER_CHARTER },
-        ...instanceOptions(resolveInstance(this.meta.claudeInstance)),
+        ...this.agentEnv.worker,
         mcpServers: this.browserServers(),
         canUseTool: this.policyFor(workerId),
       },
@@ -638,6 +865,9 @@ export class MissionRun {
           report = String(m.result ?? '');
           isError = Boolean(m.is_error);
           this.noteUsageLimit(report);
+          // Same ordering rule as the director loop: the cost event carries
+          // usage, so usage has to be current before it is emitted.
+          this.addUsage(m.usage);
           this.addCost(m.total_cost_usd as number | undefined);
           w.costUsd += (m.total_cost_usd as number | undefined) ?? 0;
         }

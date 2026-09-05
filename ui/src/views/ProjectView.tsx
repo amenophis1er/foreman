@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  api, useChat, useRunHistory, useRunView,
-  type ProjectSummary, type RunSummary, type RunView as RunViewState,
+  api, providerHome, useChat, useRunHistory, useRunView,
+  type ProjectSummary, type RunSummary, type RunView as RunViewState, type TokenUsage,
 } from '../state';
 import { AppHeader } from '../ds/shell/AppHeader';
 import { Button } from '../ds/core/Button';
@@ -10,7 +10,7 @@ import { SectionTitle } from '../ds/core/SectionTitle';
 import { Banner } from '../ds/status/Banner';
 import { StatusBadge } from '../ds/status/StatusBadge';
 import { BillingBadge, type BillingMode } from '../ds/status/BillingBadge';
-import { BudgetMeter } from '../ds/status/BudgetMeter';
+import { BudgetMeter, formatTokens } from '../ds/status/BudgetMeter';
 import { AttentionBar } from '../ds/status/AttentionBar';
 import { RunRail } from '../ds/mission/RunRail';
 import { RunTimeline } from '../ds/mission/RunTimeline';
@@ -24,6 +24,20 @@ import { ProposalCard } from '../ds/mission/ProposalCard';
 import { Tabs } from '../ds/core/Tabs';
 import { SteerBar } from '../ds/mission/SteerBar';
 import type { ModelInfo } from '../ds/forms/ModelSelect';
+
+/**
+ * Where this project's spend actually lands. A pinned provider names itself;
+ * anything else is the server's own credential, and saying so is the point —
+ * this line sits wherever money is about to be committed.
+ */
+function billingSource(p: ProjectSummary, serverSource: string): string {
+  const home = providerHome(p.provider);
+  if (!p.provider || !home) return serverSource;
+  if (p.provider.kind === 'claude-code') {
+    return p.provider.ownLogin ? `${home} (this project's own login)` : home;
+  }
+  return `${p.provider.kind} · ${home}`;
+}
 
 export type TranscriptOrder = 'newest' | 'oldest';
 
@@ -198,11 +212,22 @@ function PlanPane({ chat, folder, starting, error, onStart }: {
 }
 
 /** Key run properties (models, budget, browser), pulled from run metadata. */
-function RunDetails({ r, liveCost }: { r: RunSummary; liveCost?: number }) {
+function RunDetails({ r, liveCost, liveMetered, liveUsage, liveTurns }: {
+  r: RunSummary; liveCost?: number; liveMetered?: boolean; liveUsage?: TokenUsage | null; liveTurns?: number;
+}) {
+  const metered = liveMetered ?? r.metered ?? true;
+  const usage = liveUsage ?? r.usage ?? null;
+  const turns = liveTurns ?? r.turns;
+  const tokenCount = usage ? usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens : 0;
   const rows: Array<[string, string]> = [
     ['director', r.directorModel || 'default'],
     ['workers', r.workerModel || 'default'],
-    ['budget', `$${((liveCost ?? r.costUsd) || 0).toFixed(2)} / $${r.budgetUsd.toFixed(2)}`],
+    // Same honesty rule as BudgetMeter: an unmetered run never gets a dollar
+    // sign, even in this plain key/value list — tokens (and turns, if known)
+    // stand in for the figure this run genuinely has no price for.
+    ['budget', metered
+      ? `$${((liveCost ?? r.costUsd) || 0).toFixed(2)} / $${r.budgetUsd.toFixed(2)}`
+      : `${formatTokens(tokenCount)} tok${typeof turns === 'number' ? ` · ${turns} turn${turns === 1 ? '' : 's'}` : ''}`],
     ['browser', r.browserTools ? 'on' : 'off'],
   ];
   if (r.resumes) rows.push(['resumes', String(r.resumes)]);
@@ -222,9 +247,11 @@ function RunDetails({ r, liveCost }: { r: RunSummary; liveCost?: number }) {
 }
 
 export function ProjectView({
-  p, models, routeRunId, onSelectRun, onBack, refreshFleet, auth, theme, onToggleTheme, onSettings,
+  p, models, modelsLoading, modelsNote, modelsInheritNote, routeRunId, onSelectRun, onBack,
+  refreshFleet, auth, theme, onToggleTheme, onSettings,
 }: {
   p: ProjectSummary; models: ModelInfo[] | null;
+  modelsLoading?: boolean; modelsNote?: string; modelsInheritNote?: string;
   auth: { mode: BillingMode; source: string; account?: { email?: string; org?: string } };
   routeRunId: string | null; onSelectRun: (runId: string | null) => void;
   onBack: () => void; refreshFleet: () => void;
@@ -276,12 +303,16 @@ export function ProjectView({
 
   const startMission = async (v: {
     mission: string; budget: number; directorModel?: string; workerModel?: string;
-    browserTools?: boolean;
+    directorProviderId?: string; workerProviderId?: string; browserTools?: boolean;
   }) => {
     setComposerErr('');
     setStarting(true);
     const r = await api
-      .run(p.id, v.mission, v.budget, v.directorModel, v.workerModel, Boolean(v.browserTools))
+      .run(p.id, v.mission, v.budget, {
+        directorModel: v.directorModel, workerModel: v.workerModel,
+        directorProviderId: v.directorProviderId, workerProviderId: v.workerProviderId,
+        browserTools: v.browserTools,
+      })
       .finally(() => setStarting(false));
     if (!r.ok) setComposerErr((await r.json()).error);
     else refreshFleet();
@@ -308,11 +339,12 @@ export function ProjectView({
         theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {headerErr && <Banner tone="error" inline>{headerErr}</Banner>}
         <BillingBadge mode={p.billingMode ?? auth.mode} compact account={auth.account}
-          source={p.claudeInstance?.billing === 'own-login'
-            ? `${p.claudeInstance.configDir} (this project's own login)`
-            : auth.source} />
+          source={billingSource(p, auth.source)} />
         {selectedRunId && <StatusBadge status={run.runStatus} />}
-        {selectedRunId && <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} />}
+        {selectedRunId && (
+          <BudgetMeter spent={run.costUsd} budget={run.budgetUsd}
+            metered={run.metered} usage={run.usage} turns={selectedRun?.turns} />
+        )}
         {viewingLive && run.runStatus === 'running' && (
           <Button variant="danger" onClick={() => void api.interrupt(selectedRunId!)}>Interrupt</Button>
         )}
@@ -371,6 +403,8 @@ export function ProjectView({
             <div style={{ margin: 'auto', width: '100%', padding: 'var(--sp-5) 0' }}>
               <Composer folder={p.folder} defaultBudgetUsd={p.defaultBudgetUsd}
                 error={composerErr} busy={starting} models={models}
+                modelsLoading={modelsLoading} modelsNote={modelsNote}
+                modelsInheritNote={modelsInheritNote}
                 onStart={(v) => void startMission(v)}
                 style={{
                   background: 'var(--bg-panel)', border: '1px solid var(--line)',
@@ -387,11 +421,9 @@ export function ProjectView({
                 fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
               }}>
                 <BillingBadge mode={p.billingMode ?? auth.mode} compact account={auth.account}
-                  source={p.claudeInstance?.billing === 'own-login'
-                    ? `${p.claudeInstance.configDir} (this project's own login)`
-                    : auth.source} />
+                  source={billingSource(p, auth.source)} />
                 <span style={{ fontFamily: 'var(--font-mono)' }}>
-                  runs on {p.claudeInstance?.configDir ?? 'the server default instance'}
+                  runs on {providerHome(p.provider) ?? 'the server default instance'}
                 </span>
               </div>
             </div>
@@ -407,7 +439,10 @@ export function ProjectView({
               filter={filter} onFilter={(a) => setFilter(filter === a ? null : a)}
               onSelectRun={setSelectedRunId}
               sessionId={run.directorSessionId}
-              details={selectedRun && <RunDetails r={selectedRun} liveCost={run.costUsd} />} />
+              details={selectedRun && (
+                <RunDetails r={selectedRun} liveCost={run.costUsd}
+                  liveMetered={run.metered} liveUsage={run.usage} liveTurns={selectedRun.turns} />
+              )} />
           </div>
           <div style={{ minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             {(run.entries.length > 0 || run.approvals.length + run.questions.length > 0) && (

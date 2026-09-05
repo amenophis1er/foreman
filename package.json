@@ -38,7 +38,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --import tsx --test src/store.test.ts",
+    "test": "node --import tsx --test 'src/**/*.test.ts'",
     "start": "tsx src/server.ts",
     "dev": "node scripts/dev.mjs",
     "ui:dev": "npm --prefix ui run dev",

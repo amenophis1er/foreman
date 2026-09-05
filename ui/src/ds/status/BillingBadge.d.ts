@@ -1,6 +1,11 @@
 import type { CSSProperties } from 'react';
 
-export type BillingMode = 'api-key' | 'subscription' | 'cloud' | 'none';
+export type BillingMode =
+  | 'api-key' | 'subscription' | 'cloud' | 'none'
+  /** Served from this machine — no per-token cost; budgets cap on turns and time. */
+  | 'local'
+  /** An endpoint Foreman does not price. Spend is real; the dollar figure is not shown. */
+  | 'provider';
 
 /**
  * Says which account pays for a mission. Sits in the fleet header, the project
@@ -11,7 +16,8 @@ export type BillingMode = 'api-key' | 'subscription' | 'cloud' | 'none';
  * is harmless. Colouring every mode would train people to ignore all of them.
  */
 export interface BillingBadgeProps {
-  /** api-key (metered) · subscription · cloud (Bedrock/Vertex) · none (blocks missions) */
+  /** api-key (metered) · subscription · cloud (Bedrock/Vertex) · local (this machine) ·
+   *  provider (an endpoint we do not price) · none (blocks missions) */
   mode: BillingMode;
   /** Where the credential came from; shown in the tooltip, e.g. `ANTHROPIC_API_KEY`. */
   source?: string;

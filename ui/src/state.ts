@@ -38,13 +38,42 @@ export type AgentInfo = { id: string; status: Status; task?: string };
 /** '' inherits; otherwise an id from GET /models or a full claude-* id. */
 export type ModelChoice = string;
 
-/** Pins a project to one Claude Code install; server default when absent. */
-export type AuthMode = 'api-key' | 'subscription' | 'cloud' | 'none';
+export type AuthMode =
+  | 'api-key' | 'subscription' | 'cloud' | 'none'
+  /** Served from this machine — free per token; budgets cap on turns and time. */
+  | 'local'
+  /** An endpoint Foreman does not price. */
+  | 'provider';
 
-export type ClaudeInstancePin = {
-  configDir?: string; executable?: string;
-  /** 'own-login' drops the server's API key so the pinned account pays. */
-  billing?: 'inherit' | 'own-login';
+/**
+ * Who serves a project's models and who pays. One choice, not three settings —
+ * see src/provider.ts. The UI reads it; only `claude-code` is settable so far,
+ * so the settings form still speaks in config dirs.
+ */
+export type ProviderRef =
+  // `id` is optional on the way out and always present on the way back: the
+  // server generates one when a client omits it, and it names that provider's
+  // Foreman-owned config dir for the rest of its life.
+  | { kind: 'claude-code'; configDir?: string; executable?: string; ownLogin?: boolean }
+  | { kind: 'anthropic-api'; id?: string; apiKeyEnv: string; model?: string }
+  | { kind: 'codex'; id?: string; codexHome?: string; upstreamUrl?: string; model?: string }
+  | { kind: 'openai-compatible'; id?: string; baseUrl: string; apiKeyEnv?: string; label?: string; model?: string };
+
+/** Where this project's agents run, for the "via …" line and the billing source. */
+export function providerHome(p?: ProviderRef): string | undefined {
+  if (!p) return undefined;
+  switch (p.kind) {
+    case 'claude-code': return p.configDir;
+    case 'codex': return p.codexHome ?? '~/.codex';
+    case 'openai-compatible': return p.baseUrl;
+    case 'anthropic-api': return `$${p.apiKeyEnv}`;
+  }
+}
+
+/** Real token counts, unlike the dollar figure beside them. */
+export type TokenUsage = {
+  inputTokens: number; outputTokens: number;
+  cacheReadTokens: number; cacheWriteTokens: number;
 };
 
 export type RunSummary = {
@@ -56,11 +85,15 @@ export type RunSummary = {
   directorModel?: string; workerModel?: string; resumes?: number;
   browserTools?: boolean;
   directorSessionId?: string;
+  /** False when `costUsd` is not real money — see src/provider.ts. */
+  metered?: boolean;
+  usage?: TokenUsage;
+  turns?: number;
 };
 
 export type ProjectSummary = {
   id: string; name: string; folder: string; createdAt: number;
-  claudeInstance?: ClaudeInstancePin;
+  provider?: ProviderRef;
   /** What this project will actually bill; can differ from the server's mode. */
   billingMode?: AuthMode;
   defaultBudgetUsd: number;
@@ -68,6 +101,8 @@ export type ProjectSummary = {
   lastRun: { mission: string; title?: string; status: Status; createdAt?: number; costUsd?: number } | null;
   /** When this project last did anything; the server sorts the fleet by it. */
   lastActivityAt?: number;
+  /** Whether a key is on file for this project's provider. Never the key. */
+  providerHasKey?: boolean;
   pendingPermissions: number;
   pendingQuestions: number;
 };
@@ -75,6 +110,13 @@ export type ProjectSummary = {
 export type RunView = {
   runStatus: Status;
   mission: string;
+  /**
+   * Whether `costUsd` is real money. Through a gateway the SDK prices foreign
+   * tokens with Anthropic's table, so the figure is fiction and the meter must
+   * show what is true instead — tokens and turns.
+   */
+  metered: boolean;
+  usage: TokenUsage | null;
   /** Generated mission name, once `run_titled` arrives; '' until then. */
   title: string;
   costUsd: number;
@@ -88,7 +130,7 @@ export type RunView = {
 };
 
 const emptyRun: RunView = {
-  runStatus: 'idle', mission: '', title: '', costUsd: 0, budgetUsd: 5,
+  runStatus: 'idle', mission: '', title: '', metered: true, usage: null, costUsd: 0, budgetUsd: 5,
   agents: [], entries: [], approvals: [], questions: [], missionDoc: null,
 };
 
@@ -138,6 +180,11 @@ function applyWire(s: RunView, e: WireEvent): RunView {
       return {
         ...emptyRun, missionDoc: s.missionDoc,
         runStatus: 'running', mission: d.mission, budgetUsd: d.budgetUsd,
+        // Read here rather than waiting for a `cost` event: a run that spends
+        // no priceable dollars may never emit one, and the meter would show
+        // the previous run's units until it did.
+        metered: d.metered !== false,
+        usage: d.usage ?? null,
         agents: [{ id: 'director', status: 'running' }],
       };
     case 'run_resumed': {
@@ -153,6 +200,10 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         mission: d.mission ?? s.mission,
         budgetUsd: d.budgetUsd ?? s.budgetUsd,
         costUsd: d.costUsd ?? s.costUsd,
+        // A resume can legitimately change this: the flag is recomputed at
+        // dispatch, so a run wrongly marked metered by older code heals here.
+        metered: d.metered !== undefined ? d.metered !== false : s.metered,
+        usage: d.usage ?? s.usage,
         agents: [{ id: 'director', status: 'running' as Status }, ...others],
         entries: [...s.entries, {
           id: ++seq, ts, agent: 'system', kind: 'system',
@@ -169,12 +220,28 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         agents: s.agents.map((ag) =>
           ag.id === 'director' ? { ...ag, status: (d.status as Status) || 'done' } : ag),
       };
+    case 'mission_incomplete':
+      // Sits in the transcript as the reason the run says interrupted rather
+      // than done — otherwise the status looks arbitrary next to a director
+      // that signed off cleanly.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'error',
+          title: 'not done',
+          body: [d.text, '', ...(d.unmet ?? []).map((u: string) => `▢ ${u}`)].join('\n'),
+        }],
+      };
     case 'run_error':
       return { ...s, entries: [...s.entries, { id: ++seq, ts, agent: 'system', kind: 'error', title: 'error', body: d.error }] };
     case 'run_titled':
       return { ...s, title: String(d.title ?? '') };
     case 'cost':
-      return { ...s, costUsd: d.costUsd, budgetUsd: d.budgetUsd };
+      return {
+        ...s, costUsd: d.costUsd, budgetUsd: d.budgetUsd,
+        usage: d.usage ?? s.usage,
+        metered: d.metered !== false,
+      };
     case 'message': {
       const extra: Partial<RunView> =
         d.agent === 'director' && d.msg?.session_id ? { directorSessionId: d.msg.session_id } : {};
@@ -613,18 +680,14 @@ const post = (url: string, body: unknown) =>
   });
 
 export const api = {
-  linkProject: (folder: string, name?: string, instance?: ClaudeInstancePin) =>
-    post('/projects', {
-      folder, name,
-      claudeConfigDir: instance?.configDir || undefined,
-      claudeExecutable: instance?.executable || undefined,
-    }),
+  linkProject: (folder: string, name?: string, provider?: ProviderRef) =>
+    post('/projects', { folder, name, provider }),
   instances: () => fetch('/instances'),
   updateProject: (
     projectId: string,
     patch: {
-      claudeConfigDir?: string; claudeExecutable?: string;
-      claudeBilling?: 'inherit' | 'own-login';
+      /** A whole provider, or `null` to clear the pin back to the server default. */
+      provider?: ProviderRef | null;
       defaultBudgetUsd?: number; name?: string;
     },
   ) =>
@@ -634,13 +697,19 @@ export const api = {
     }),
   unlinkProject: (projectId: string) =>
     fetch(`/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
-  run: (projectId: string, mission: string, budgetUsd: number,
-    directorModel?: ModelChoice, workerModel?: ModelChoice, browserTools?: boolean) =>
+  run: (projectId: string, mission: string, budgetUsd: number, opts: {
+    directorModel?: ModelChoice; workerModel?: ModelChoice;
+    /** Where each role runs, from the picked model. Absent = the project's provider. */
+    directorProviderId?: string; workerProviderId?: string;
+    browserTools?: boolean;
+  } = {}) =>
     post('/run', {
       projectId, mission, budgetUsd,
-      directorModel: directorModel || undefined,
-      workerModel: workerModel || undefined,
-      browserTools: browserTools || undefined,
+      directorModel: opts.directorModel || undefined,
+      workerModel: opts.workerModel || undefined,
+      directorProviderId: opts.directorProviderId || undefined,
+      workerProviderId: opts.workerProviderId || undefined,
+      browserTools: opts.browserTools || undefined,
     }),
   resume: (runId: string) =>
     post(`/runs/${encodeURIComponent(runId)}/resume`, {}),
@@ -649,6 +718,14 @@ export const api = {
   answer: (id: string, text: string) => post('/answer', { id, text }),
   steer: (runId: string, text: string) => post('/steer', { runId, text }),
   interrupt: (runId: string) => post('/interrupt', { runId }),
+  /** Stores a provider's key. There is no read counterpart, by design. */
+  setProviderKey: (providerId: string, key: string) =>
+    fetch(`/providers/${encodeURIComponent(providerId)}/key`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key }),
+    }),
+  clearProviderKey: (providerId: string) =>
+    fetch(`/providers/${encodeURIComponent(providerId)}/key`, { method: 'DELETE' }),
   browse: (path?: string) =>
     fetch('/browse' + (path ? `?path=${encodeURIComponent(path)}` : '')),
   mkdir: (parent: string, name: string) => post('/mkdir', { parent, name }),

@@ -19,6 +19,10 @@ export interface ComposerResult {
   budget: number;
   directorModel: string;
   workerModel: string;
+  /** Provider serving each role, from the picked model's own row. Absent means
+   *  the project's provider — which is every Anthropic pick. */
+  directorProviderId?: string;
+  workerProviderId?: string;
   /** Files attached via the paperclip, drag-drop onto the editor, or pasting an image. Not persisted with the draft. */
   attachments: File[];
 }
@@ -40,6 +44,10 @@ export interface ComposerProps {
   /** From `ModelSelect.useModels('/models')`; both pickers share it. Omit for the built-in fallback list. */
   models?: ModelInfo[] | null;
   modelsLoading?: boolean;
+  /** Passed to both pickers — why the list is short or empty. */
+  modelsNote?: string;
+  /** What the pickers' Default row inherits from on this provider. */
+  modelsInheritNote?: string;
   onStart?: (v: ComposerResult) => void;
   style?: CSSProperties;
 }

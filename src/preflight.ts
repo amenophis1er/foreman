@@ -8,8 +8,8 @@
  * who pays. The check reports the active mode and only blocks when there is no
  * credential at all. Set FOREMAN_AUTH_MODE=api-key|subscription to assert the
  * one you intend; startup then fails on a mismatch rather than quietly billing
- * the other. Which Claude Code instance supplies a subscription credential is a
- * separate axis — see resolveInstance() in instance.ts.
+ * the other. Which provider a given project actually bills is a separate axis
+ * — see provider.ts.
  */
 import net from 'node:net';
 import { execFile } from 'node:child_process';
@@ -18,6 +18,8 @@ import path from 'node:path';
 import { access, mkdir, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { defaultInstance, describeInstance, effectiveConfigDir } from './instance.js';
+import { discoverOllama, ollamaHost } from './ollama.js';
+import { codexHome, codexModels, readCodexAuth } from './codex.js';
 
 export type CheckStatus = 'ok' | 'warn' | 'error';
 
@@ -141,6 +143,64 @@ function checkInstance(): Check {
   return { name: 'Claude Code', status: 'ok', detail: describeInstance(defaultInstance()) };
 }
 
+/**
+ * A local Ollama, if one is running.
+ *
+ * Absent is the common case and not a problem, so this reports nothing at all
+ * rather than a reassuring "not found" — the preflight screen exists to show
+ * what would stop a mission, and an unused capability is not that. When one IS
+ * running it is worth a line, because it means models are available with no
+ * configuration and the operator should know they are on offer.
+ */
+async function checkOllama(): Promise<Check | null> {
+  const models = await discoverOllama(1200);
+  if (!models) return null;
+  const local = models.filter((m) => !m.remote).length;
+  const cloud = models.length - local;
+  const parts = [
+    local ? `${local} local` : null,
+    cloud ? `${cloud} cloud` : null,
+  ].filter(Boolean).join(' · ');
+  return {
+    name: 'Ollama',
+    status: models.length ? 'ok' : 'warn',
+    detail: models.length ? `${ollamaHost()} — ${parts}` : `${ollamaHost()} — running, no models pulled`,
+    fix: models.length ? undefined : 'ollama pull <model>, or use a :cloud model',
+  };
+}
+
+/**
+ * A Codex install, if there is one.
+ *
+ * Silent when Codex is not installed, for the same reason as Ollama. But an
+ * install with no login IS worth a warning rather than silence: the operator
+ * put Codex there on purpose, so a project pinned to it will fail, and the fix
+ * is one command.
+ */
+async function checkCodex(): Promise<Check | null> {
+  const home = codexHome();
+  const auth = await readCodexAuth(home).catch(() => null);
+  const installed = await exists(path.join(home, 'auth.json'))
+    || await exists(path.join(home, 'config.toml'));
+  if (!installed) return null;
+
+  if (!auth) {
+    return {
+      name: 'Codex',
+      status: 'warn',
+      detail: `${home} — installed, not signed in`,
+      fix: 'codex login   (Foreman reads that login; it never mints its own token)',
+    };
+  }
+  const models = await codexModels(home);
+  const how = auth.OPENAI_API_KEY ? 'API key' : 'ChatGPT subscription';
+  return {
+    name: 'Codex',
+    status: 'ok',
+    detail: `${home} — ${how}${models.length ? ` · ${models.length} models` : ''}`,
+  };
+}
+
 async function checkPort(port: number): Promise<Check> {
   const name = `Port ${port}`;
   const inUse = await new Promise<boolean>((resolve) => {
@@ -196,13 +256,17 @@ export async function preflight(opts: {
   foremanHome: string;
   distDir: string;
 }): Promise<Check[]> {
-  return Promise.all([
+  const checks = await Promise.all([
     checkAuth(),
     checkInstance(),
+    checkOllama(),
+    checkCodex(),
     checkPort(opts.port),
     checkHome(opts.foremanHome),
     checkUi(opts.distDir),
   ]);
+  // A null is a check that had nothing worth saying — see checkOllama().
+  return checks.filter((c): c is Check => c !== null);
 }
 
 const GLYPH: Record<CheckStatus, string> = { ok: '✓', warn: '!', error: '✗' };

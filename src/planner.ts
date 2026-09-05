@@ -27,7 +27,7 @@ import {
   query, tool, createSdkMcpServer,
   type CanUseTool, type PermissionResult, type SDKMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import { instanceOptions, type ClaudeInstance } from './instance.js';
+import type { AgentEnv } from './provider.js';
 import type { MissionProposal } from './types.js';
 
 /**
@@ -92,7 +92,8 @@ export interface PlanningTurn {
   folder: string;
   text: string;
   model?: string;
-  instance: ClaudeInstance;
+  /** Credential + wire, resolved by the caller. See provider.ts. */
+  agentEnv: AgentEnv;
   /** Broadcasts and persists, exactly like a run's emitter. */
   emit: (event: string, data: unknown) => void;
 }
@@ -188,7 +189,7 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
         systemPrompt: { type: 'preset', preset: 'claude_code', append: PLANNER_CHARTER },
         mcpServers: { foreman: createSdkMcpServer({ name: 'foreman', tools: [proposeMission] }) },
         canUseTool,
-        ...instanceOptions(turn.instance),
+        ...turn.agentEnv,
       },
     });
 
