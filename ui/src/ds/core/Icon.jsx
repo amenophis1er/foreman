@@ -6,7 +6,7 @@ import React from 'react';
 import {
   Circle, Activity, Check, X, Pause, WifiOff, History, TriangleAlert, OctagonAlert,
   RotateCw, Bot, Plus, CornerLeftUp, ArrowLeft, Folder, Bell, Unlink, Sun, Moon,
-  Clock, AlignLeft, Users, ChevronDown, ChevronRight, Braces, MessageCircleQuestion,
+  Clock, AlignLeft, Users, ChevronDown, ChevronRight, ChevronLeft, Braces, MessageCircleQuestion,
   ShieldCheck, Coins, LayoutTemplate, Save, Filter, Settings, Paperclip, File as FileIcon,
   Image as ImageIcon, Code, SquareCode, Quote, PenLine, Eye, Cpu, LoaderCircle,
   MessageSquarePlus, SendHorizontal, User, Zap, ListEnd, FilePen, FilePenLine, FileText,
@@ -17,7 +17,7 @@ import {
 const LUCIDE = {
   Circle, Activity, Check, X, Pause, WifiOff, History, TriangleAlert, OctagonAlert,
   RotateCw, Bot, Plus, CornerLeftUp, ArrowLeft, Folder, Bell, Unlink, Sun, Moon,
-  Clock, AlignLeft, Users, ChevronDown, ChevronRight, Braces, MessageCircleQuestion,
+  Clock, AlignLeft, Users, ChevronDown, ChevronRight, ChevronLeft, Braces, MessageCircleQuestion,
   ShieldCheck, Coins, LayoutTemplate, Save, Filter, Settings, Paperclip, File: FileIcon,
   Image: ImageIcon, Code, SquareCode, Quote, PenLine, Eye, Cpu, LoaderCircle,
   MessageSquarePlus, SendHorizontal, User, Zap, ListEnd, FilePen, FilePenLine, FileText,
@@ -31,7 +31,7 @@ export const ICONS = {
   disconnected: 'WifiOff', readonly: 'History', warning: 'TriangleAlert', critical: 'OctagonAlert',
   caution: 'TriangleAlert', resume: 'RotateCw', orchestration: 'Bot', add: 'Plus', parent: 'CornerLeftUp',
   back: 'ArrowLeft', folder: 'Folder', needsYou: 'Bell', unlink: 'Unlink', sun: 'Sun', moon: 'Moon',
-  provider: 'Server', search: 'Search', sort: 'ArrowUpDown', timeline: 'Clock', transcript: 'AlignLeft', crew: 'Users', chevronDown: 'ChevronDown', chevronRight: 'ChevronRight',
+  provider: 'Server', search: 'Search', sort: 'ArrowUpDown', timeline: 'Clock', transcript: 'AlignLeft', crew: 'Users', chevronDown: 'ChevronDown', chevronRight: 'ChevronRight', chevronLeft: 'ChevronLeft',
   raw: 'Braces', question: 'MessageCircleQuestion', approval: 'ShieldCheck', check: 'Check', close: 'X',
   budget: 'Coins', template: 'LayoutTemplate', draft: 'Save', filter: 'Filter', settings: 'Settings',
   attach: 'Paperclip', file: 'File', image: 'Image', code: 'Code', codeBlock: 'SquareCode', quote: 'Quote',

@@ -13,7 +13,10 @@ const TEXT_CAP = 512 * 1024;
  * backdrop close it; "Open in a new tab" is still there for the person who
  * wants the raw file, so nothing is lost — only the detour.
  */
-export function ArtifactViewer({ artifact, url, onClose }) {
+export function ArtifactViewer({ artifact, url, onClose, index, count, onStep }) {
+  const canStep = typeof onStep === 'function' && typeof count === 'number' && count > 1;
+  const prev = canStep && index > 0 ? () => onStep(index - 1) : null;
+  const next = canStep && index < count - 1 ? () => onStep(index + 1) : null;
   const [text, setText] = useState(null);
   const [err, setErr] = useState(null);
   const kind = artifact?.kind;
@@ -21,10 +24,14 @@ export function ArtifactViewer({ artifact, url, onClose }) {
   const isMd = /\.md$/i.test(name);
 
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+      else if (e.key === 'ArrowLeft' && prev) { e.preventDefault(); prev(); }
+      else if (e.key === 'ArrowRight' && next) { e.preventDefault(); next(); }
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, prev, next]);
 
   useEffect(() => {
     setText(null); setErr(null);
@@ -82,6 +89,13 @@ export function ArtifactViewer({ artifact, url, onClose }) {
           <Icon name={kind === 'image' ? 'Image' : kind === 'text' ? 'transcript' : 'file'} size={14} color="var(--ink-2)" />
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }} title={artifact.path}>{artifact.path}</span>
           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }}>{size}</span>
+          {canStep && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, flex: '0 0 auto', marginLeft: 'var(--sp-1)' }}>
+              <IconButton icon="chevronLeft" label="Previous (←)" onClick={prev ?? undefined} disabled={!prev} size="sm" />
+              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', minWidth: '4.5ch', textAlign: 'center' }}>{index + 1} / {count}</span>
+              <IconButton icon="chevronRight" label="Next (→)" onClick={next ?? undefined} disabled={!next} size="sm" />
+            </span>
+          )}
           <a href={url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none', flex: '0 0 auto' }}>
             <Button variant="ghost" size="sm">Open in a new tab</Button>
           </a>

@@ -102,8 +102,9 @@ function FileRow({ f }) {
  */
 export function DeckTab({ runId, deck, loading, error, missing, style }) {
   const now = Date.now();
-  // The artifact being looked at, in place. One at a time; null when none.
-  const [viewing, setViewing] = useState(null);
+  // The artifact being looked at, in place, as an index into the display
+  // order (screenshots, then work files) so ← → walk what the eye just saw.
+  const [viewingIdx, setViewingIdx] = useState(null);
   const wrap = { padding: 'var(--sp-3)', display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)', ...style };
 
   if (error) {
@@ -121,6 +122,9 @@ export function DeckTab({ runId, deck, loading, error, missing, style }) {
   const { files, artifacts, totals } = deck;
   const images = artifacts.filter((a) => a.kind === 'image');
   const others = artifacts.filter((a) => a.kind !== 'image');
+  const ordered = [...images, ...others];
+  const setViewing = (a) => setViewingIdx(a ? ordered.findIndex((x) => x.path === a.path) : null);
+  const viewing = viewingIdx === null ? null : ordered[viewingIdx] ?? null;
   const summary = [
     `${totals.files} file${totals.files === 1 ? '' : 's'} changed`,
     `+${totals.additions} −${totals.deletions}`,
@@ -183,7 +187,8 @@ export function DeckTab({ runId, deck, loading, error, missing, style }) {
         ))}
       </section>
       {viewing && (
-        <ArtifactViewer artifact={viewing} url={artifactUrl(runId, viewing.path)} onClose={() => setViewing(null)} />
+        <ArtifactViewer artifact={viewing} url={artifactUrl(runId, viewing.path)} onClose={() => setViewing(null)}
+          index={viewingIdx} count={ordered.length} onStep={setViewingIdx} />
       )}
     </div>
   );

@@ -5,3 +5,5 @@ Structure: a dark backdrop (click closes, Escape closes) around a card up to 120
 By kind: `image` fits the body with `object-fit: contain` on an inset ground · `text` is fetched and shown as a wrapped mono `<pre>` (Markdown files render through RichText in a 72ch column) · `pdf` frames the browser's viewer · anything else says "No preview for this kind of file" and offers the download. Text is capped at 512 KB with a line saying so.
 
 Never renders artifact HTML as a document — the server serves it as plain text for that reason, and the viewer shows it as text.
+
+When given `index`, `count` and `onStep`, the header carries ‹ n / N › and the left/right arrow keys step through the list without closing; the ends disable rather than wrap. The Deck passes its artifacts in display order — screenshots first, then work files.
