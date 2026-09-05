@@ -151,6 +151,46 @@ export function normalizeUsage(raw: unknown): TokenUsage {
 const LOCAL_IGNORE_LINES = ['settings.local.json', '.gitignore'];
 
 /**
+ * The sanctioned scratch space inside a mission folder, relative to it.
+ *
+ * A director that wants a verification script, a screenshot, a helper's
+ * node_modules or some temp output has a correct instinct — keep the project
+ * root clean — and, before this existed, no in-workspace place to act on it.
+ * So it reached for /tmp, which the policy now prompts on. A prompt stops the
+ * act; it does not change the habit. This directory is the habit's outlet:
+ * inside the folder (so no prompt, no stall), gitignored (so the root stays
+ * clean), and named by path in both charters (so the model has a place, not
+ * a principle). Created at every run start so "it does not exist yet" is
+ * never the reason to go elsewhere.
+ */
+export const WORK_DIR = '.foreman/work';
+
+/**
+ * Ensures every rule in `lines` appears in the gitignore at `file`, appending
+ * only the ones missing.
+ *
+ * Shared by the `.claude/` and `.foreman/` ignore files, which need the same
+ * care: an existing file is appended to, never replaced (a project may have
+ * its own rules there); a file without a trailing newline gets one before the
+ * new rules so the last existing rule is not fused with the first new one; a
+ * missing file is created. Each list ends with `.gitignore` itself so the file
+ * introduces nothing new to `git status` — without that line the fix would
+ * trade one untracked file for another. Write failures are swallowed: this is
+ * hygiene, and a read-only folder must not fail the run over it.
+ */
+export async function ensureIgnoreLines(file: string, lines: readonly string[]): Promise<void> {
+  const existing = await readFile(file, 'utf8').catch(() => null);
+  const present = existing === null ? [] : existing.split('\n');
+  const missing = lines.filter((rule) => !present.some((line) => line.trim() === rule));
+  if (missing.length === 0) return;
+
+  // An empty file is also "nothing to separate from": without the `!existing`
+  // case it would gain a leading blank line.
+  const prefix = !existing || existing.endsWith('\n') ? (existing ?? '') : `${existing}\n`;
+  await writeFile(file, `${prefix}${missing.join('\n')}\n`).catch(() => {});
+}
+
+/**
  * Caps that hold whatever the provider is. A dollar budget is meaningless on a
  * local model and actively wrong through a gateway (the SDK prices foreign
  * tokens with Anthropic's table), but "too many turns" and "too long" are true
@@ -456,7 +496,7 @@ export type Emitter = (event: string, data: unknown) => void;
 /** Persists updated run metadata (fire-and-forget from the run's viewpoint). */
 export type MetaSink = (meta: RunMeta) => void;
 
-const DIRECTOR_CHARTER = `
+export const DIRECTOR_CHARTER = `
 You are the FOREMAN DIRECTOR. You run a mission autonomously inside one folder by
 directing worker agents. Non-negotiable rules, in priority order:
 
@@ -514,6 +554,16 @@ directing worker agents. Non-negotiable rules, in priority order:
    animations to settle, and scroll back. Then open the file and confirm the
    sections you expect are actually visible in it. A mostly-black screenshot is
    a failed capture, not a finished milestone.
+   WORK INSIDE THE WORKSPACE. Everything you or a worker creates —
+   verification scripts, screenshots, scratch tooling, node_modules for a
+   helper, temp output — goes under ${WORK_DIR}/ inside the mission folder,
+   never /tmp or anywhere outside it. It is gitignored, so it keeps the
+   project root clean without leaving the project. Anything written outside
+   the folder prompts the human and stalls the run until they answer; a
+   mission that needs the outside should say so in MISSION.md and ask via
+   mcp__foreman__ask_human, not discover it mid-run. If you are prompted for
+   a path outside the folder, the answer is almost always to redo it under
+   ${WORK_DIR}/, not to wait for approval.
 4. REPORT WHAT YOU SEE. Judge the work as a competent professional would, not
    only against the letter of the acceptance criteria. If you observe a defect
    the criteria did not name — tap targets too small to use, unreadable
@@ -529,7 +579,7 @@ directing worker agents. Non-negotiable rules, in priority order:
    entry) and end with a short summary of what was built and how you verified it.
 `;
 
-const WORKER_CHARTER = `
+export const WORKER_CHARTER = `
 You are a FOREMAN WORKER. Complete exactly the task you were given, inside the
 working directory. Never ask interactive questions — if you are blocked on a
 decision you cannot make, print "BLOCKED: <your question>" and end your turn.
@@ -538,6 +588,11 @@ sub-step, when you change approach, and immediately when you are blocked. The
 director supervises several workers and can only help with what it can see; a
 worker that goes quiet for minutes looks stalled and may be stopped. Reporting
 is never a substitute for finishing.
+WORK INSIDE THE WORKSPACE. Anything you create that is not part of the task's
+deliverable — scripts, screenshots, helper installs, temp output — goes under
+${WORK_DIR}/ inside the working directory, never /tmp or anywhere outside it.
+Writing outside the folder prompts the human and stalls you; if prompted, redo
+it under ${WORK_DIR}/ instead.
 When finished, end with a concise report of what you did and how you checked it.
 `;
 
@@ -853,12 +908,20 @@ export class MissionRun {
         `Working directory: ${this.meta.folder}. Begin by writing .foreman/MISSION.md, then execute the plan.`;
 
     try {
-      // The mission doc directory ignores itself so missions never pollute
-      // `git status` in real repositories. Inside the try so a bad folder
-      // surfaces as a failed run, never an unhandled rejection.
+      // The mission doc directory ignores itself wholesale (`*`, which also
+      // covers the scratch space) so missions never pollute `git status` in
+      // real repositories — MISSION.md is Foreman's record, not the project's.
+      // Ensured rather than overwritten, so a rule someone added by hand
+      // survives. The scratch space exists before the director's first turn,
+      // fresh start and resume alike (a resumed folder may predate WORK_DIR).
+      // The first mkdir is inside the try so a bad folder surfaces as a failed
+      // run, never an unhandled rejection; the scratch dir swallows its own
+      // errors because a missing outlet should not stop a mission, only make
+      // it ask more.
       const foremanDir = path.join(this.meta.folder, '.foreman');
       await mkdir(foremanDir, { recursive: true });
-      await writeFile(path.join(foremanDir, '.gitignore'), '*\n').catch(() => {});
+      await ensureIgnoreLines(path.join(foremanDir, '.gitignore'), ['*']);
+      await mkdir(path.join(this.meta.folder, WORK_DIR), { recursive: true }).catch(() => {});
       // Covers a .claude/ left by an earlier run; the one this run creates is
       // handled again on the way out.
       await this.ignoreLocalSettings();
@@ -1137,17 +1200,7 @@ export class MissionRun {
   private async ignoreLocalSettings(): Promise<void> {
     const dir = path.join(this.meta.folder, '.claude');
     if (!(await stat(dir).then((st) => st.isDirectory(), () => false))) return;
-
-    const file = path.join(dir, '.gitignore');
-    const existing = await readFile(file, 'utf8').catch(() => null);
-    const lines = existing === null ? [] : existing.split('\n');
-    const missing = LOCAL_IGNORE_LINES.filter(
-      (rule) => !lines.some((line) => line.trim() === rule),
-    );
-    if (missing.length === 0) return;
-
-    const prefix = existing === null || existing.endsWith('\n') ? (existing ?? '') : `${existing}\n`;
-    await writeFile(file, `${prefix}${missing.join('\n')}\n`).catch(() => {});
+    await ensureIgnoreLines(path.join(dir, '.gitignore'), LOCAL_IGNORE_LINES);
   }
 
 

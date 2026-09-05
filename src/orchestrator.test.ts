@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import {
-  DEFAULT_REPEAT_LIMIT, MissionRun, RECENT_LINES, accumulateUsage, activityHint, loopingWorkerReport,
+  DEFAULT_REPEAT_LIMIT, DIRECTOR_CHARTER, MissionRun, RECENT_LINES, WORKER_CHARTER, WORK_DIR, accumulateUsage,
+  activityHint, ensureIgnoreLines, loopingWorkerReport,
   stalledWorkerReport, workerStatusBlock,
   watchRepeats, watchSilence,
 } from './orchestrator.js';
@@ -717,4 +718,94 @@ test('the report_progress call itself is counted but not duplicated in recent', 
   ] } });
   assert.equal(w.toolCalls, 1);
   assert.deepEqual(w.recent ?? [], []);
+});
+
+// ---------------------------------------------------------------------------
+// The sanctioned scratch space and the gitignore hygiene around it
+// ---------------------------------------------------------------------------
+
+/** Runs `fn` inside a fresh temp folder and removes it afterwards. */
+async function inTempFolder<T>(fn: (folder: string) => Promise<T>): Promise<T> {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'foreman-work-'));
+  try {
+    return await fn(folder);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+}
+
+test('ensureIgnoreLines creates a missing file with exactly the rules', async () => {
+  await inTempFolder(async (folder) => {
+    const file = path.join(folder, '.gitignore');
+    await ensureIgnoreLines(file, ['work/', '.gitignore']);
+    assert.equal(await readFile(file, 'utf8'), 'work/\n.gitignore\n');
+  });
+});
+
+test('ensureIgnoreLines appends only the missing rules and keeps existing content', async () => {
+  await inTempFolder(async (folder) => {
+    const file = path.join(folder, '.gitignore');
+    await writeFile(file, '# mine\nnode_modules/\n  work/  \n');
+    await ensureIgnoreLines(file, ['work/', '.gitignore']);
+    // `work/` was already there (whitespace around a rule does not make it a
+    // different rule), so only `.gitignore` is added — after what was there.
+    assert.equal(await readFile(file, 'utf8'), '# mine\nnode_modules/\n  work/  \n.gitignore\n');
+  });
+});
+
+test('ensureIgnoreLines does not fuse a new rule onto a last line without a newline', async () => {
+  await inTempFolder(async (folder) => {
+    const file = path.join(folder, '.gitignore');
+    await writeFile(file, 'dist');
+    await ensureIgnoreLines(file, ['work/']);
+    assert.equal(await readFile(file, 'utf8'), 'dist\nwork/\n');
+  });
+});
+
+test('ensureIgnoreLines leaves a complete file untouched', async () => {
+  await inTempFolder(async (folder) => {
+    const file = path.join(folder, '.gitignore');
+    await writeFile(file, 'work/\n.gitignore\n');
+    const before = (await stat(file)).mtimeMs;
+    await ensureIgnoreLines(file, ['work/', '.gitignore']);
+    assert.equal(await readFile(file, 'utf8'), 'work/\n.gitignore\n');
+    assert.equal((await stat(file)).mtimeMs, before);
+  });
+});
+
+// start() ensures `.foreman/.gitignore` with exactly this call; it is tested
+// here directly because start() also launches the director's SDK query.
+
+test('.foreman/.gitignore ignores the directory wholesale, scratch space included', async () => {
+  await inTempFolder(async (folder) => {
+    await mkdir(path.join(folder, '.foreman'), { recursive: true });
+    const file = path.join(folder, '.foreman', '.gitignore');
+    await ensureIgnoreLines(file, ['*']);
+    assert.equal(await readFile(file, 'utf8'), '*\n');
+    // Idempotent across runs: a second start adds nothing.
+    await ensureIgnoreLines(file, ['*']);
+    assert.equal(await readFile(file, 'utf8'), '*\n');
+  });
+});
+
+test('a hand-written rule in .foreman/.gitignore survives; "*" is appended, not written over it', async () => {
+  await inTempFolder(async (folder) => {
+    await mkdir(path.join(folder, '.foreman'), { recursive: true });
+    const file = path.join(folder, '.foreman', '.gitignore');
+    await writeFile(file, '!MISSION.md\n');
+    await ensureIgnoreLines(file, ['*']);
+    assert.equal(await readFile(file, 'utf8'), '!MISSION.md\n*\n');
+  });
+});
+
+test('both charters name the scratch space by path', () => {
+  // A place, not a principle: the model needs the literal path. The charters
+  // interpolate WORK_DIR, so this also guards against the constant moving
+  // without the text following it.
+  assert.equal(WORK_DIR, '.foreman/work');
+  assert.match(DIRECTOR_CHARTER, /WORK INSIDE THE WORKSPACE/);
+  assert.match(WORKER_CHARTER, /WORK INSIDE THE WORKSPACE/);
+  assert.ok(DIRECTOR_CHARTER.includes(`${WORK_DIR}/`));
+  assert.ok(WORKER_CHARTER.includes(`${WORK_DIR}/`));
+  assert.ok(!DIRECTOR_CHARTER.includes('${'), 'WORK_DIR was not interpolated');
 });
