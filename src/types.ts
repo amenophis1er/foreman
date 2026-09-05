@@ -396,6 +396,12 @@ export interface MissionProposal {
   budgetUsd: number;
   /** Why this budget and this shape — one short paragraph. */
   rationale?: string;
+  /**
+   * The planner judged the DONE WHEN criteria need a browser (a page must
+   * load, render, be console-clean or be screenshotted). The card starts with
+   * the switch on. Absent means "the planner did not say", not "no".
+   */
+  browser?: boolean;
   createdAt: number;
 }
 

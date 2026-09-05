@@ -140,7 +140,11 @@ How to behave:
        conversation: full context, paths, constraints, and what to leave alone;
      - DONE WHEN criteria that are actually checkable by reading files or
        running commands, not "works well";
-     - a budget you can justify from the size of the work.
+     - a budget you can justify from the size of the work;
+     - browser: true whenever a DONE WHEN criterion needs a page to load,
+       render, be free of console errors, or be screenshotted. The card starts
+       with the browser on; a mission that needs one and starts without it
+       fails its own criteria an hour later.
    Do not propose on the first message unless the human's request is already
    completely unambiguous. Do not propose the same thing twice; refine it.
    BUDGET, ANCHORED: one small file or a contained fix, $1-2. A feature across
@@ -225,14 +229,21 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
         'Completion criteria that can actually be checked by reading files or running commands'),
       budget_usd: z.number().describe('Suggested cap in US dollars, justified by the size of the work'),
       rationale: z.string().optional().describe('One short paragraph: why this shape and this budget'),
+      browser: z.boolean().optional().describe(
+        'True when the mission needs a browser: any DONE WHEN criterion about pages ' +
+        'loading, rendering, console errors or screenshots. The card starts with it on.'),
     },
-    async ({ mission, done_when, budget_usd, rationale }) => {
+    async ({ mission, done_when, budget_usd, rationale, browser }) => {
       proposal = {
         id: `mp-${Date.now().toString(36)}`,
         mission,
         doneWhen: done_when,
         budgetUsd: budget_usd,
         rationale,
+        // The planner knows whether the criteria need a browser better than
+        // a default does. A mission whose DONE WHEN says "screenshots saved"
+        // once started with the browser off and lost an hour to it.
+        browser: browser === true ? true : undefined,
         createdAt: Date.now(),
       };
       turn.emit('mission_proposed', proposal);

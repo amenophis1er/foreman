@@ -695,6 +695,8 @@ export type MissionProposal = {
   doneWhen: string[];
   budgetUsd: number;
   rationale?: string;
+  /** The planner judged the criteria need a browser; the card starts with it on. */
+  browser?: boolean;
   createdAt: number;
 };
 

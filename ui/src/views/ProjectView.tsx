@@ -168,12 +168,25 @@ function Transcript({ run, filter, jump, order, header }: {
  * log — and showing them the same way is what makes the handoff read as one
  * continuous story rather than two products bolted together.
  */
-function PlanPane({ chat, folder, starting, error, onStart }: {
+function PlanPane({
+  chat, folder, starting, error, models, modelsLoading, modelsNote, modelsInheritNote, onStart,
+}: {
   chat: ReturnType<typeof useChat>;
   folder: string;
   starting: boolean;
   error: string;
-  onStart: (mission: string, budget: number) => void;
+  models: ModelInfo[] | null;
+  modelsLoading?: boolean; modelsNote?: string; modelsInheritNote?: string;
+  /**
+   * The full start shape, not just brief and budget. The proposal card is the
+   * moment of commitment, and a mission committed without a browser it needs
+   * or on a model nobody chose is the mistake that costs an hour to notice —
+   * so the card carries every lever the composer has.
+   */
+  onStart: (v: {
+    mission: string; budget: number; directorModel?: string; workerModel?: string;
+    directorProviderId?: string; workerProviderId?: string; browserTools?: boolean;
+  }) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -222,8 +235,11 @@ function PlanPane({ chat, folder, starting, error, onStart }: {
             doneWhen={chat.proposal.doneWhen}
             budgetUsd={chat.proposal.budgetUsd}
             rationale={chat.proposal.rationale}
+            browser={chat.proposal.browser}
+            models={models} modelsLoading={modelsLoading}
+            modelsNote={modelsNote} modelsInheritNote={modelsInheritNote}
             busy={starting} error={error}
-            onStart={({ mission, budget }) => onStart(mission, budget)}
+            onStart={(v) => onStart(v)}
             onDismiss={chat.dismissProposal} />
         )}
       </div>
@@ -501,7 +517,9 @@ export function ProjectView({
 
             {idleMode === 'plan' ? (
               <PlanPane chat={chat} folder={p.folder} starting={starting} error={composerErr}
-                onStart={(mission, budget) => void startMission({ mission, budget })} />
+                models={models} modelsLoading={modelsLoading}
+                modelsNote={modelsNote} modelsInheritNote={modelsInheritNote}
+                onStart={(v) => void startMission(v)} />
             ) : (
             <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
             {/* margin:auto centers the card vertically yet degrades to normal
