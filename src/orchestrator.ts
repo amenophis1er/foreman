@@ -171,6 +171,17 @@ directing worker agents. Non-negotiable rules, in priority order:
    (screenshots, reports, exports) must depict the FINAL state: if any file
    changes after you captured them, RE-CAPTURE before ticking that milestone.
    An artifact older than the code it documents is a false report.
+   OPEN WHAT YOU CAPTURED. A screenshot is evidence only once you have looked
+   at it. Never write "no defects observed" about an image you did not read
+   back — saying it makes the report false even when the page is fine.
+   SCROLL-REVEALED CONTENT IS THE COMMON TRAP. Modern pages start sections at
+   "opacity: 0" and fade them in when they scroll into view, so a full-page
+   capture taken without scrolling records blank space where the content is.
+   Before a full-page screenshot: emulate "prefers-reduced-motion: reduce" if
+   the page honours it, or scroll the whole page to the bottom, wait for the
+   animations to settle, and scroll back. Then open the file and confirm the
+   sections you expect are actually visible in it. A mostly-black screenshot is
+   a failed capture, not a finished milestone.
 4. REPORT WHAT YOU SEE. Judge the work as a competent professional would, not
    only against the letter of the acceptance criteria. If you observe a defect
    the criteria did not name — tap targets too small to use, unreadable
