@@ -7,6 +7,7 @@ import { Tabs } from '../core/Tabs';
 import { Switch } from '../forms/Switch';
 import { TextInput } from '../forms/TextInput';
 import { ModelSelect } from '../forms/ModelSelect';
+import { ProviderPicker } from './ProviderPicker';
 
 export const SETTINGS_SECTIONS = [
   { id: 'models', label: 'Models', icon: 'model' },
@@ -36,7 +37,7 @@ const GUARDED = ['Bash', 'Write', 'Edit', 'WebFetch', 'spawn_worker'];
  * Global settings with an optional per-project overlay. In project scope every row shows whether it inherits or overrides;
  * overrides can be reset to global. Nothing persists until Save.
  */
-export function SettingsModal({ global, project, projectName, models, modelsLoading, modelsNote, scope: scopeProp, onScope, section: sectionProp, onSection, onSave, onClose, onUnlink, style }) {
+export function SettingsModal({ global, project, projectName, models, modelsLoading, modelsNote, provider, providerInstances, providerOllama, scope: scopeProp, onScope, section: sectionProp, onSection, onSave, onClose, onUnlink, style }) {
   const [localScope, setLocalScope] = useState(scopeProp ?? 'global');
   const [localSection, setLocalSection] = useState(sectionProp ?? 'models');
   const scope = onScope ? scopeProp : localScope;
@@ -45,7 +46,12 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
   const setSection = onSection ?? setLocalSection;
   const [g, setG] = useState({ ...DEFAULT_SETTINGS, ...global });
   const [p, setP] = useState({ ...project });
-  const dirty = JSON.stringify(g) !== JSON.stringify({ ...DEFAULT_SETTINGS, ...global }) || JSON.stringify(p) !== JSON.stringify({ ...project });
+  // The provider pin isn't a settings key — it's saved through PATCH
+  // /projects/:id, not PUT /settings — so it gets its own bit of state and
+  // its own dirty check, then rides along in onSave for the caller to route.
+  const [prov, setProv] = useState(provider ?? null);
+  const providerDirty = JSON.stringify(prov) !== JSON.stringify(provider ?? null);
+  const dirty = JSON.stringify(g) !== JSON.stringify({ ...DEFAULT_SETTINGS, ...global }) || JSON.stringify(p) !== JSON.stringify({ ...project }) || providerDirty;
   const isProject = scope === 'project';
 
   const get = (k) => (isProject && k in p ? p[k] : g[k]);
@@ -96,6 +102,11 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
       {row('missionDir', 'Mission folder', 'Relative to the project. Holds MISSION.md and run history.', <TextInput mono width={160} value={get('missionDir')} onChange={(v) => set('missionDir', v)} />)}
       {!isProject && row('showHidden', 'Show hidden folders in picker', null, <Switch checked={get('showHidden')} onChange={(v) => set('showHidden', v)} />)}
       {isProject && (
+        <Row label="Provider" hint="Which engine runs this project's agents, who pays, and where requests go. Clearing it returns to the server default." stacked>
+          <ProviderPicker value={prov} onChange={setProv} instances={providerInstances} ollama={providerOllama} />
+        </Row>
+      )}
+      {isProject && (
         <Row label="Unlink this project" hint="Removes it from the fleet. Files on disk are untouched." danger>
           <Button variant="danger" size="sm" icon="unlink" onClick={onUnlink}>Unlink</Button>
         </Row>
@@ -113,7 +124,7 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
       </div>
       <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: '11.25rem 1fr' }}>
         <nav style={{ background: 'var(--bg-inset)', borderRight: '1px solid var(--line)', padding: 'var(--sp-2)', display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {SETTINGS_SECTIONS.map((s) => <NavItem key={s.id} s={s} selected={s.id === section} dot={isProject && sectionHasOverride(s.id, p)} onClick={() => setSection(s.id)} />)}
+          {SETTINGS_SECTIONS.map((s) => <NavItem key={s.id} s={s} selected={s.id === section} dot={isProject && (sectionHasOverride(s.id, p) || (s.id === 'projects' && prov))} onClick={() => setSection(s.id)} />)}
         </nav>
         <div style={{ minHeight: 0, overflowY: 'auto', padding: 'var(--sp-3) var(--sp-5)' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--sp-2)', marginBottom: 'var(--sp-2)' }}>
@@ -127,7 +138,7 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
         <span style={{ fontSize: 'var(--fs-xs)', color: dirty ? 'var(--status-warning)' : 'var(--ink-2)' }}>{dirty ? 'Unsaved changes' : 'Nothing to save'}</span>
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--sp-2)' }}>
           <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!dirty} onClick={() => onSave?.({ global: g, project: p })}>Save</Button>
+          <Button variant="primary" disabled={!dirty} onClick={() => onSave?.({ global: g, project: p, provider: providerDirty ? prov : undefined })}>Save</Button>
         </span>
       </ModalFooter>
     </Modal>

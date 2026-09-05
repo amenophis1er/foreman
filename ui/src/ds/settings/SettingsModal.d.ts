@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react';
 import type { ModelInfo } from '../forms/ModelSelect';
+import type { ProviderRef, DiscoveredInstance, OllamaInfo } from './ProviderPicker';
 
 export type SettingsScope = 'global' | 'project';
 export type SettingsSectionId = 'models' | 'budget' | 'approvals' | 'appearance' | 'notifications' | 'projects';
@@ -34,14 +35,27 @@ export interface SettingsModalProps {
   models?: ModelInfo[] | null;
   modelsLoading?: boolean;
   modelsNote?: string;
+  /** The open project's current provider pin. `null`/absent means the server
+   *  default. Projects section, project scope only — see `ProviderPicker`. */
+  provider?: ProviderRef | null;
+  /** Discovered Claude Code installs, passed through to `ProviderPicker`. */
+  providerInstances?: DiscoveredInstance[];
+  /** A running local Ollama daemon, passed through to `ProviderPicker`. */
+  providerOllama?: OllamaInfo | null;
   scope?: SettingsScope;
   /** Pass with `scope` to control it; without it `scope` is the initial value. */
   onScope?: (s: SettingsScope) => void;
   section?: SettingsSectionId;
   /** Pass with `section` to control it; without it `section` is the initial value. */
   onSection?: (s: SettingsSectionId) => void;
-  /** Fires on Save with the full global object and the sparse project overlay. */
-  onSave?: (v: { global: Settings; project: Settings }) => void;
+  /**
+   * Fires on Save with the full global object, the sparse project overlay,
+   * and `provider` — `undefined` when the pin wasn't touched this session,
+   * `null` to clear it back to the server default, or a `ProviderRef` to set
+   * it. Provider changes ride through `PATCH /projects/:id`, a different
+   * endpoint than the rest of Settings, so the caller must route it there.
+   */
+  onSave?: (v: { global: Settings; project: Settings; provider?: ProviderRef | null }) => void;
   onClose?: () => void;
   /** Projects section, project scope only. */
   onUnlink?: () => void;

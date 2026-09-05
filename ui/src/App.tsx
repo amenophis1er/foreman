@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useFleet, useRoute } from './state';
+import { api, useFleet, useRoute } from './state';
 import { FleetView } from './views/FleetView';
 import { ProjectView } from './views/ProjectView';
 import { SettingsModal, type Settings } from './ds/settings/SettingsModal';
+import type {
+  DiscoveredInstance, OllamaInfo, ProviderRef,
+} from './ds/settings/ProviderPicker';
 import type { ModelInfo } from './ds/forms/ModelSelect';
 
 type Theme = 'dark' | 'light';
@@ -105,6 +108,36 @@ function useModels(projectId: string | null): ModelList {
 
 type SettingsFile = { global: Settings; projects: Record<string, Settings> };
 
+/**
+ * What Settings needs to offer providers as choices rather than free text: the
+ * Claude Code installs on this machine and a running Ollama, if there is one.
+ *
+ * Fetched when the modal opens rather than at boot — an install can appear
+ * (`claude login` in another terminal) or a daemon can start while Foreman is
+ * running, and a stale list would quietly hide the thing the operator just
+ * created.
+ */
+function useProviderChoices(open: boolean) {
+  const [choices, setChoices] = useState<{
+    instances: DiscoveredInstance[];
+    ollama: OllamaInfo | null;
+  }>({ instances: [], ollama: null });
+
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    void fetch('/instances')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (live && d) setChoices({ instances: d.instances ?? [], ollama: d.ollama ?? null });
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [open]);
+
+  return choices;
+}
+
 export default function App() {
   const { projects, connected, auth, refresh, activity } = useFleet();
   const { projectId, runId, go, goRun } = useRoute();
@@ -115,6 +148,7 @@ export default function App() {
   const models = useModels(projectId);
   const [settings, setSettings] = useState<SettingsFile>({ global: {}, projects: {} });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const providerChoices = useProviderChoices(settingsOpen);
 
   useEffect(() => {
     void fetch('/settings')
@@ -125,7 +159,9 @@ export default function App() {
 
   const project = projectId ? projects.find((p) => p.id === projectId) : null;
 
-  const saveSettings = async (v: { global: Settings; project: Settings }) => {
+  const saveSettings = async (v: {
+    global: Settings; project: Settings; provider?: ProviderRef | null;
+  }) => {
     const next: SettingsFile = {
       global: v.global,
       projects: { ...settings.projects },
@@ -146,6 +182,17 @@ export default function App() {
         project: project ? next.projects[project.id] ?? {} : undefined,
       }),
     }).catch(() => {});
+
+    // A provider is a property of the project, not of the settings overlay, so
+    // it goes to its own endpoint. `undefined` means the pin was not touched;
+    // `null` clears it back to the server default.
+    if (project && v.provider !== undefined) {
+      await api.updateProject(project.id, { provider: v.provider }).catch(() => {});
+      // The fleet poll carries billingMode and the provider itself, and both
+      // just changed — refresh rather than wait up to three seconds to stop
+      // showing the old payer.
+      refresh();
+    }
   };
 
   const shared = {
@@ -172,6 +219,9 @@ export default function App() {
           project={project ? settings.projects[project.id] : undefined}
           projectName={project?.name}
           models={models.models} modelsLoading={models.loading} modelsNote={models.note}
+          provider={project?.provider ?? null}
+          providerInstances={providerChoices.instances}
+          providerOllama={providerChoices.ollama}
           onSave={(v) => void saveSettings(v)}
           onClose={() => setSettingsOpen(false)} />
       )}

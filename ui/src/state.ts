@@ -51,10 +51,13 @@ export type AuthMode =
  * so the settings form still speaks in config dirs.
  */
 export type ProviderRef =
+  // `id` is optional on the way out and always present on the way back: the
+  // server generates one when a client omits it, and it names that provider's
+  // Foreman-owned config dir for the rest of its life.
   | { kind: 'claude-code'; configDir?: string; executable?: string; ownLogin?: boolean }
-  | { kind: 'anthropic-api'; id: string; apiKeyEnv: string; model?: string }
-  | { kind: 'codex'; id: string; codexHome?: string; upstreamUrl?: string; model?: string }
-  | { kind: 'openai-compatible'; id: string; baseUrl: string; apiKeyEnv?: string; label?: string; model?: string };
+  | { kind: 'anthropic-api'; id?: string; apiKeyEnv: string; model?: string }
+  | { kind: 'codex'; id?: string; codexHome?: string; upstreamUrl?: string; model?: string }
+  | { kind: 'openai-compatible'; id?: string; baseUrl: string; apiKeyEnv?: string; label?: string; model?: string };
 
 /** Where this project's agents run, for the "via …" line and the billing source. */
 export function providerHome(p?: ProviderRef): string | undefined {

@@ -64,7 +64,7 @@ function InstanceOption({ inst, selected, onClick }) {
         {shortPath(inst.configDir)}
       </span>
       <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>{inst.origin}</span>
-      {inst.hasStoredLogin && <span title="Has a stored login" style={{ width: 6, height: 6, borderRadius: 'var(--r-pill)', background: 'var(--status-good, var(--brand))', flex: '0 0 auto' }} />}
+      {inst.hasStoredLogin && <span title="Has a stored login" style={{ width: 6, height: 6, borderRadius: 'var(--r-pill)', background: 'var(--status-good)', flex: '0 0 auto' }} />}
     </button>
   );
 }
