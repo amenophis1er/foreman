@@ -9,6 +9,8 @@ export interface ArtifactViewerProps {
   artifact: ArtifactViewerArtifact | null;
   /** The artifact route for this file; also what "Open in a new tab" links to. */
   url: string;
+  /** The sandboxed preview route for this file. When given for an HTML artifact, the header gains Rendered | Source. */
+  previewUrl?: string;
   onClose: () => void;
   /** Position in the list being browsed, 0-based. With `count` and `onStep`, the header gains prev/next and ← → step through the list. */
   index?: number;

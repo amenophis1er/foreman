@@ -3,6 +3,7 @@ import { Icon } from '../core/Icon';
 import { Button } from '../core/Button';
 import { IconButton } from '../core/IconButton';
 import { RichText } from '../core/RichText';
+import { Tabs } from '../core/Tabs';
 
 const TEXT_CAP = 512 * 1024;
 
@@ -13,7 +14,12 @@ const TEXT_CAP = 512 * 1024;
  * backdrop close it; "Open in a new tab" is still there for the person who
  * wants the raw file, so nothing is lost — only the detour.
  */
-export function ArtifactViewer({ artifact, url, onClose, index, count, onStep }) {
+export function ArtifactViewer({ artifact, url, previewUrl, onClose, index, count, onStep }) {
+  // HTML has two honest views: what was written, and what it looks like. The
+  // render lives in a sandboxed frame on the preview route (opaque origin);
+  // the source is the same text view every other file gets.
+  const isHtml = /\.html?$/i.test(artifact?.path ?? '');
+  const [htmlView, setHtmlView] = useState('rendered');
   const canStep = typeof onStep === 'function' && typeof count === 'number' && count > 1;
   const prev = canStep && index > 0 ? () => onStep(index - 1) : null;
   const next = canStep && index < count - 1 ? () => onStep(index + 1) : null;
@@ -50,7 +56,10 @@ export function ArtifactViewer({ artifact, url, onClose, index, count, onStep })
     : artifact.size >= 1024 ? `${(artifact.size / 1024).toFixed(1)} KB` : `${artifact.size} B`;
 
   let body;
-  if (kind === 'image') {
+  if (isHtml && previewUrl && htmlView === 'rendered') {
+    body = <iframe title={artifact.path} src={previewUrl} sandbox="allow-scripts"
+      style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }} />;
+  } else if (kind === 'image') {
     body = <img src={url} alt={artifact.path} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block', margin: 'auto', background: 'var(--bg-inset)' }} />;
   } else if (kind === 'pdf') {
     body = <iframe title={artifact.path} src={url} style={{ width: '100%', height: '100%', border: 'none', background: 'var(--bg-inset)' }} />;
@@ -89,6 +98,12 @@ export function ArtifactViewer({ artifact, url, onClose, index, count, onStep })
           <Icon name={kind === 'image' ? 'Image' : kind === 'text' ? 'transcript' : 'file'} size={14} color="var(--ink-2)" />
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }} title={artifact.path}>{artifact.path}</span>
           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }}>{size}</span>
+          {isHtml && previewUrl && (
+            <Tabs size="sm" value={htmlView} onChange={setHtmlView} tabs={[
+              { value: 'rendered', label: 'Rendered' },
+              { value: 'source', label: 'Source' },
+            ]} />
+          )}
           {canStep && (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 2, flex: '0 0 auto', marginLeft: 'var(--sp-1)' }}>
               <IconButton icon="chevronLeft" label="Previous (←)" onClick={prev ?? undefined} disabled={!prev} size="sm" />

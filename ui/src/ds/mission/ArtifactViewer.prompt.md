@@ -7,3 +7,5 @@ By kind: `image` fits the body with `object-fit: contain` on an inset ground · 
 Never renders artifact HTML as a document — the server serves it as plain text for that reason, and the viewer shows it as text.
 
 When given `index`, `count` and `onStep`, the header carries ‹ n / N › and the left/right arrow keys step through the list without closing; the ends disable rather than wrap. The Deck passes its artifacts in display order — screenshots first, then work files.
+
+HTML artifacts get two views, switched in the header: **Rendered** frames the file from the preview route in an `<iframe sandbox="allow-scripts">` (the server also sends a CSP `sandbox`, so the page has an opaque origin and cannot reach Foreman's cookies, storage or DOM; its own CSS, scripts and JSON load by relative path); **Source** is the mono text view. Rendered is the default.

@@ -24,6 +24,9 @@ function fmtAgo(ms, now) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+function previewUrl(runId, path) {
+  return `/runs/${encodeURIComponent(runId)}/preview/${path.split('/').map(encodeURIComponent).join('/')}`;
+}
 function artifactUrl(runId, path) {
   return `/runs/${encodeURIComponent(runId)}/artifact?path=${encodeURIComponent(path)}`;
 }
@@ -187,7 +190,7 @@ export function DeckTab({ runId, deck, loading, error, missing, style }) {
         ))}
       </section>
       {viewing && (
-        <ArtifactViewer artifact={viewing} url={artifactUrl(runId, viewing.path)} onClose={() => setViewing(null)}
+        <ArtifactViewer artifact={viewing} url={artifactUrl(runId, viewing.path)} previewUrl={previewUrl(runId, viewing.path)} onClose={() => setViewing(null)}
           index={viewingIdx} count={ordered.length} onStep={setViewingIdx} />
       )}
     </div>

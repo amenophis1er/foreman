@@ -797,13 +797,31 @@ export async function readArtifact(
 // HTTP
 // ---------------------------------------------------------------------------
 
+function pipeFile(absPath: string, res: ServerResponse): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const stream = createReadStream(absPath);
+    stream.on('error', () => { res.destroy(); resolve(); });
+    res.on('close', resolve);
+    stream.pipe(res);
+  });
+}
+
+/** Real types, for the preview route only — where the sandbox, not the type, is what keeps a page from running as Foreman. */
+const PREVIEW_MIME: Record<string, string> = {
+  html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8',
+  css: 'text/css; charset=utf-8', js: 'text/javascript; charset=utf-8', mjs: 'text/javascript; charset=utf-8',
+  json: 'application/json; charset=utf-8', svg: 'image/svg+xml',
+  woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf',
+};
+
 function sendJson(res: ServerResponse, code: number, body: unknown): void {
   res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
   res.end(JSON.stringify(body));
 }
 
 /**
- * `GET /runs/{id}/deck` and `GET /runs/{id}/artifact?path=<rel>`. Returns
+ * `GET /runs/{id}/deck`, `GET /runs/{id}/artifact?path=<rel>` and
+ * `GET /runs/{id}/preview/<rel>` (sandboxed render, see below). Returns
  * true when the URL was one of ours (whatever the outcome), false so the
  * caller's router falls through. `lookup` maps a run id to its folder; null
  * means unknown run, which is a 404 rather than an error.
@@ -812,9 +830,10 @@ export async function handleDeckRoute(
   req: IncomingMessage, res: ServerResponse, url: URL,
   lookup: (runId: string) => Promise<{ folder: string } | null>,
 ): Promise<boolean> {
-  const m = url.pathname.match(/^\/runs\/([^/]+)\/(deck|artifact)$/);
+  const m = url.pathname.match(/^\/runs\/([^/]+)\/(deck|artifact|preview)(?:\/(.*))?$/);
   if (!m) return false;
-  const [, runId, what] = m;
+  const [, runId, what, previewRel] = m;
+  if ((what === 'preview') !== (previewRel !== undefined)) return false;
   try {
     if (req.method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return true; }
     if (!RUN_ID_RE.test(runId)) { sendJson(res, 404, { error: 'not found' }); return true; }
@@ -823,6 +842,29 @@ export async function handleDeckRoute(
 
     if (what === 'deck') {
       sendJson(res, 200, await deckFor(run.folder, runId));
+      return true;
+    }
+
+    if (what === 'preview') {
+      // A rendered look at an HTML artifact. Files come out with their real
+      // types so the page's own CSS, scripts and JSON resolve by relative
+      // path — but every response carries a CSP `sandbox` (no same-origin),
+      // so the document runs in an opaque origin whether it is framed by the
+      // viewer or opened in a tab: no cookies, no storage, no dashboard DOM.
+      // Nothing an agent wrote is ever a same-origin page of Foreman's.
+      const art = await readArtifact(run.folder, decodeURIComponent(previewRel));
+      if (!art) { sendJson(res, 404, { error: 'not found' }); return true; }
+      res.writeHead(200, {
+        'content-type': PREVIEW_MIME[ext(art.absPath)] ?? art.mime,
+        'content-length': art.size,
+        'cache-control': 'no-store',
+        'content-security-policy': "sandbox allow-scripts; frame-ancestors 'self'",
+        // The sandboxed page has an opaque origin, so its own fetch() of a
+        // sibling JSON file is cross-origin. Read-only files, already jailed.
+        'access-control-allow-origin': '*',
+        'x-content-type-options': 'nosniff',
+      });
+      await pipeFile(art.absPath, res);
       return true;
     }
 
@@ -840,12 +882,7 @@ export async function handleDeckRoute(
       'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
       'x-content-type-options': 'nosniff',
     });
-    await new Promise<void>((resolve) => {
-      const stream = createReadStream(art.absPath);
-      stream.on('error', () => { res.destroy(); resolve(); });
-      res.on('close', resolve);
-      stream.pipe(res);
-    });
+    await pipeFile(art.absPath, res);
     return true;
   } catch (err) {
     if (!res.headersSent) sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });

@@ -365,3 +365,38 @@ test('readArtifact: code reads as text, unknown extensions are sniffed, binaries
   assert.match(weird?.mime ?? '', /^text\/plain/);
   assert.equal(bin?.mime, 'application/octet-stream');
 });
+
+test('preview route: real types inside a CSP sandbox, still jailed', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'deck-preview-'));
+  await writeFile(path.join(dir, 'index.html'), '<!doctype html><link rel="stylesheet" href="styles.css"><script src="app.js"></script>');
+  await writeFile(path.join(dir, 'styles.css'), 'body{margin:0}');
+  await writeFile(path.join(dir, 'app.js'), 'fetch("data.json")');
+  const server = http.createServer((req, res) => {
+    void handleDeckRoute(req, res, new URL(req.url ?? '/', 'http://x'), async (id) => id === 'run-1' ? { folder: dir } : null)
+      .then((handled) => { if (!handled) { res.statusCode = 404; res.end(); } });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const html = await fetch(`http://127.0.0.1:${port}/runs/run-1/preview/index.html`);
+    assert.equal(html.status, 200);
+    assert.match(html.headers.get('content-type') ?? '', /^text\/html/);
+    assert.match(html.headers.get('content-security-policy') ?? '', /\bsandbox allow-scripts\b/);
+    assert.doesNotMatch(html.headers.get('content-security-policy') ?? '', /allow-same-origin/);
+    const css = await fetch(`http://127.0.0.1:${port}/runs/run-1/preview/styles.css`);
+    assert.match(css.headers.get('content-type') ?? '', /^text\/css/);
+    const js = await fetch(`http://127.0.0.1:${port}/runs/run-1/preview/app.js`);
+    assert.match(js.headers.get('content-type') ?? '', /javascript/);
+    assert.equal(js.headers.get('access-control-allow-origin'), '*');
+    // The plain artifact route is unchanged: HTML there is still text, never a document.
+    const raw = await fetch(`http://127.0.0.1:${port}/runs/run-1/artifact?path=index.html`);
+    assert.match(raw.headers.get('content-type') ?? '', /^text\/plain/);
+    // Jail holds on the preview path too.
+    const out = await fetch(`http://127.0.0.1:${port}/runs/run-1/preview/..%2F..%2Fetc%2Fpasswd`);
+    assert.equal(out.status, 404);
+    const bare = await fetch(`http://127.0.0.1:${port}/runs/run-1/preview`);
+    assert.equal(bare.status, 404);
+  } finally {
+    server.close();
+  }
+});
