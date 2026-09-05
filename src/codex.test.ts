@@ -313,12 +313,15 @@ test('codexModels reads slugs faithfully from a real-shaped fixture', async () =
         models: [
           { slug: 'gpt-reserve', display_name: 'GPT-Reserve', visibility: 'hide' },
           { slug: 'gpt-5.6-sol', display_name: 'GPT-5.6 Sol', visibility: 'list' },
-          { slug: 'gpt-5.6-terra', visibility: 'list' },
+          { slug: 'gpt-5.6-terra' },
           { display_name: 'no slug here', visibility: 'list' },
         ],
       }),
     );
-    assert.deepEqual(await codexModels(home), ['gpt-reserve', 'gpt-5.6-sol', 'gpt-5.6-terra']);
+    // `gpt-reserve` is real and the API would accept it, which is exactly why
+    // it must not reach a picker: Codex marks it `visibility: hide` because it
+    // is not a thing to offer. An entry with no visibility at all is shown.
+    assert.deepEqual(await codexModels(home), ['gpt-5.6-sol', 'gpt-5.6-terra']);
   } finally {
     await rm(home, { recursive: true, force: true });
   }

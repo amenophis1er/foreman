@@ -182,6 +182,12 @@ export async function codexModels(home: string): Promise<string[]> {
     const models = parsed.models;
     if (!Array.isArray(models)) return [];
     return models
+      // Codex marks internal entries `visibility: "hide"` — `gpt-reserve` and
+      // `codex-auto-review` on a current install. They are real ids the API
+      // would accept, which is exactly why they must not reach a picker: an
+      // operator choosing one has picked something the product never meant to
+      // offer. Anything without an explicit visibility is shown.
+      .filter((m) => m.visibility !== 'hide')
       .map((m) => m.slug)
       .filter((slug): slug is string => typeof slug === 'string' && slug.length > 0);
   } catch {

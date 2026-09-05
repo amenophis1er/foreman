@@ -25,6 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { defaultInstance } from './instance.js';
+import { codexHome, isStale, readCodexAuth, refreshCodexAuth } from './codex.js';
 import type { ProviderRef, ClaudeInstanceRef } from './types.js';
 
 /**
@@ -162,30 +163,6 @@ export function ownedConfigDir(root: string, id: string): string {
   return path.join(root, 'instances', id.replace(/[^A-Za-z0-9_-]/g, '_'));
 }
 
-/** Reads the OAuth access token `codex login` stored. Never logs it. */
-async function readCodexToken(codexHome: string): Promise<{ token?: string; account?: string; problem?: string }> {
-  const file = path.join(codexHome, 'auth.json');
-  const raw = await readFile(file, 'utf8').catch(() => null);
-  if (!raw) return { problem: `no Codex login at ${file} — run \`codex login\`` };
-  try {
-    const parsed = JSON.parse(raw) as {
-      OPENAI_API_KEY?: string | null;
-      tokens?: { access_token?: string; account_id?: string };
-    };
-    // An API-key login is equally usable and simpler; prefer it when present.
-    const token = parsed.OPENAI_API_KEY || parsed.tokens?.access_token;
-    if (!token) return { problem: `${file} holds no usable credential — run \`codex login\`` };
-    return { token, account: parsed.tokens?.account_id };
-  } catch {
-    return { problem: `${file} is not readable JSON — run \`codex login\`` };
-  }
-}
-
-/** The Codex CLI's home, honouring its own env var before the default. */
-export function codexHome(override?: string): string {
-  return clean(override) ?? clean(process.env.CODEX_HOME) ?? path.join(os.homedir(), '.codex');
-}
-
 /**
  * Resolves a provider reference against the environment.
  *
@@ -234,7 +211,15 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
 
     case 'codex': {
       const home = codexHome(ref.codexHome);
-      const { token, problem } = await readCodexToken(home);
+      // Refresh here rather than at dispatch: a token that expires mid-mission
+      // fails every remaining turn, and the rotated refresh token is
+      // single-use, so the write has to happen where it can be persisted.
+      let auth = await readCodexAuth(home);
+      if (auth && isStale(auth)) auth = (await refreshCodexAuth(home, auth)) ?? auth;
+      const token = auth?.OPENAI_API_KEY || auth?.tokens?.access_token;
+      const problem = auth
+        ? (token ? undefined : `${home}/auth.json holds no usable credential — run \`codex login\``)
+        : `no Codex login at ${home}/auth.json — run \`codex login\``;
       return {
         kind: ref.kind,
         wire: 'gateway-codex',
