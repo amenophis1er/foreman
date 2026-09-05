@@ -15,7 +15,7 @@ import http from 'node:http';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import {
   ANTHROPIC_NATIVE_BASE_URL, GATEWAY_INVARIANT, normalizeOpenAiBaseUrl,
-  ownedConfigDir, providerEnv, providerFromLegacy, providerOf, providerProblem, resolveProvider, roleCost,
+  ownedConfigDir, providerEnv, providerFromLegacy, providerOf, providerProblem, resolveProvider, roleCost, withRoleModel,
 } from './provider.js';
 import type { ProviderRef } from './types.js';
 
@@ -341,4 +341,26 @@ test('refining never downgrades a basis, and survives an endpoint that will not 
   const dead = await resolveProvider(
     { kind: 'openai-compatible', id: 'o', baseUrl: 'http://127.0.0.1:1' }, root);
   assert.equal((await roleCost(dead, 'whatever')).basis, 'free');
+});
+
+test('a role provider carries the role’s model, so every alias resolves on its gateway', async (t) => {
+  // The run title asked for the haiku alias on a kimi worker's gateway and
+  // went upstream as claude-haiku-4-5 — four 404s, no title — because the
+  // per-role Ollama provider had no model of its own to pin the aliases to.
+  const root = await mkdtemp(path.join(os.tmpdir(), 'foreman-rolemodel-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bare = await resolveProvider(
+    { kind: 'openai-compatible', id: 'ollama-local', baseUrl: 'http://127.0.0.1:11434' }, root);
+  assert.equal(bare.model, undefined);
+
+  const pinned = withRoleModel(bare, 'kimi-k3:cloud');
+  const { env } = providerEnv(pinned, 'http://127.0.0.1:9');
+  assert.equal(env?.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'kimi-k3:cloud');
+  assert.equal(env?.ANTHROPIC_DEFAULT_SONNET_MODEL, 'kimi-k3:cloud');
+  assert.equal(env?.ANTHROPIC_DEFAULT_OPUS_MODEL, 'kimi-k3:cloud');
+
+  // A provider that already names a model keeps it; "inherit" changes nothing.
+  assert.equal(withRoleModel({ ...bare, model: 'qwen3:8b' }, 'kimi-k3:cloud').model, 'qwen3:8b');
+  assert.equal(withRoleModel(bare, '').model, undefined);
+  assert.equal(withRoleModel(bare, undefined), bare, 'no change returns the same object');
 });

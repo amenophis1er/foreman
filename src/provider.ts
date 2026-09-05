@@ -471,3 +471,22 @@ export function providerProblem(p: ResolvedProvider): string | null {
   if (p.wire !== 'anthropic-native' && !p.apiKey) return GATEWAY_INVARIANT;
   return null;
 }
+
+/**
+ * A role's resolved provider, carrying the model the role will actually run.
+ *
+ * `providerEnv()` pins the SDK's three aliases — haiku, sonnet, opus — to the
+ * provider's `model`, because through a gateway an alias would otherwise go
+ * upstream as a literal `claude-*` id the endpoint has never heard of. A
+ * per-role provider (the machine's own Ollama, or Codex) arrives with no
+ * `model` of its own: the choice lives on the run, per role. So the aliases
+ * were left unpinned, and the one call that still used one — the run title,
+ * on the haiku alias — went out as `claude-haiku-4-5-…` and 404'd four times
+ * while the mission itself ran fine. The role's model is the right value for
+ * every alias on that role's gateway; an empty choice ("inherit") leaves the
+ * provider as it was.
+ */
+export function withRoleModel(p: ResolvedProvider, roleModel?: string): ResolvedProvider {
+  const model = p.model || (roleModel && roleModel.trim()) || undefined;
+  return model === p.model ? p : { ...p, model };
+}

@@ -54,6 +54,7 @@ import { preflight, reportPreflight } from './preflight.js';
 import { defaultInstance, discoverInstances, effectiveConfigDir } from './instance.js';
 import {
   normalizeOpenAiBaseUrl, providerEnv, providerOf, providerProblem, resolveProvider, roleCost,
+  withRoleModel,
 } from './provider.js';
 import { ensureGateway, gatewayStatus, gatewayUsage, releaseGateways, stopGateways } from './gateway.js';
 import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
@@ -606,12 +607,21 @@ async function driveRun(
     // Resolved per role. Where both roles share a provider this resolves once
     // and starts one gateway; where they differ, the supervisor already runs a
     // process per provider.
-    const directorProvider = meta.directorProviderId
+    const directorBase = meta.directorProviderId
       ? await resolveProvider(providerForRole(meta, meta.directorProviderId), store.root)
       : resolved;
-    const workerProvider = meta.workerProviderId === meta.directorProviderId
-      ? directorProvider
+    const workerBase = meta.workerProviderId === meta.directorProviderId
+      ? directorBase
       : await resolveProvider(providerForRole(meta, meta.workerProviderId), store.root);
+    // Each role's provider carries the model that role will run, so the
+    // SDK's aliases (haiku/sonnet/opus) resolve to something its gateway
+    // actually serves. Without this, the one call that still used an alias
+    // — the run title, on haiku — went upstream as a literal claude-* id and
+    // 404'd four times on a kimi gateway while the mission itself ran fine.
+    // Two roles on one provider with different models become two objects;
+    // they still share a gateway, since the gateway is keyed by upstream.
+    const directorProvider = withRoleModel(directorBase, meta.directorModel);
+    const workerProvider = withRoleModel(workerBase, meta.workerModel);
     for (const p of new Set([directorProvider, workerProvider])) {
       const roleProblem = providerProblem(p);
       if (roleProblem) throw new Error(roleProblem);
