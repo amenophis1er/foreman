@@ -220,6 +220,18 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         agents: s.agents.map((ag) =>
           ag.id === 'director' ? { ...ag, status: (d.status as Status) || 'done' } : ag),
       };
+    case 'mission_incomplete':
+      // Sits in the transcript as the reason the run says interrupted rather
+      // than done — otherwise the status looks arbitrary next to a director
+      // that signed off cleanly.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'error',
+          title: 'not done',
+          body: [d.text, '', ...(d.unmet ?? []).map((u: string) => `▢ ${u}`)].join('\n'),
+        }],
+      };
     case 'run_error':
       return { ...s, entries: [...s.entries, { id: ++seq, ts, agent: 'system', kind: 'error', title: 'error', body: d.error }] };
     case 'run_titled':

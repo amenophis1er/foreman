@@ -17,6 +17,7 @@ export const SSE_EVENTS = [
   'message', 'steer', 'budget_alert', 'usage_limit', 'models_changed', 'auto_allowed', 'worker_started', 'worker_finished',
   'permission_request', 'permission_resolved', 'question', 'question_answered',
   'chat_message', 'chat_turn', 'chat_cost', 'chat_error', 'mission_proposed', 'mission_started',
+  'mission_incomplete',
 ] as const;
 
 const listeners = new Set<SseListener>();

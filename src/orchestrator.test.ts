@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { MissionRun, accumulateUsage } from './orchestrator.js';
 import type { AgentEnv } from './provider.js';
 import type { RunMeta } from './types.js';
@@ -118,4 +121,58 @@ test('cost event carries usage and metered alongside the dollar figure', () => {
   assert.equal(data.costUsd, 0.01);
   assert.equal(data.metered, false);
   assert.deepEqual(data.usage, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
+});
+
+// ---------------------------------------------------------------------------
+// A director's exit is not proof its mission succeeded
+// ---------------------------------------------------------------------------
+
+/** Writes a mission doc into a temp folder and reads back the unmet criteria. */
+async function unmetFor(doc: string | null): Promise<string[] | null> {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'foreman-donewhen-'));
+  if (doc !== null) {
+    await mkdir(path.join(folder, '.foreman'), { recursive: true });
+    await writeFile(path.join(folder, '.foreman', 'MISSION.md'), doc);
+  }
+  const run = new MissionRun({ ...meta(), folder }, () => {}, () => {}, noopAgentEnv);
+  try {
+    return await (run as unknown as { unmetCriteria(): Promise<string[] | null> }).unmetCriteria();
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+}
+
+test('unticked DONE WHEN criteria are reported', async () => {
+  assert.deepEqual(await unmetFor([
+    '# MISSION', '', '## DONE WHEN',
+    '- [x] The site is built',
+    '- [ ] Screenshots are saved',
+    '- [ ] The console is clean',
+    '', '## Plan',
+    '- [ ] a plan step that is NOT a completion criterion',
+  ].join('\n')), ['Screenshots are saved', 'The console is clean']);
+});
+
+test('a fully ticked doc reports nothing unmet', async () => {
+  assert.deepEqual(await unmetFor([
+    '## DONE WHEN', '- [x] one', '- [X] two (capital X counts)',
+  ].join('\n')), []);
+});
+
+test('nothing to judge by returns null, not failure', async () => {
+  // No doc at all, and a doc with no DONE WHEN section. Absence of evidence is
+  // not evidence of failure — a director that never wrote a doc has already
+  // failed more visibly than this check could report.
+  assert.equal(await unmetFor(null), null);
+  assert.equal(await unmetFor('# MISSION\n\nno criteria here'), null);
+  assert.equal(await unmetFor('## DONE WHEN\n\nprose, no checkboxes'), null);
+});
+
+test('the plan section cannot mask an unfinished criterion', async () => {
+  // The section ends at the next heading; Plan boxes describe the route, and a
+  // route can legitimately change.
+  assert.deepEqual(await unmetFor([
+    '## DONE WHEN', '- [ ] the one that matters',
+    '## Plan', '- [x] every plan step ticked',
+  ].join('\n')), ['the one that matters']);
 });

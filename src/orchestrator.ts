@@ -467,6 +467,26 @@ export class MissionRun {
       // after the work, not just before it.
       await this.ignoreLocalSettings();
       if (this.meta.status === 'running') this.meta.status = 'interrupted';
+
+      // A director's exit is not proof its mission succeeded. The charter makes
+      // it write DONE WHEN criteria and tick each one the moment it is actually
+      // verified, so criteria still unticked at exit are the director's own
+      // record that the work is unfinished — and reporting that as 'done' is
+      // the one lie a mission runner cannot afford. Downgrading to
+      // 'interrupted' is also the useful answer: it is what makes the run
+      // resumable rather than closed.
+      if (this.meta.status === 'done') {
+        const unmet = await this.unmetCriteria();
+        if (unmet?.length) {
+          this.meta.status = 'interrupted';
+          this.emit('mission_incomplete', {
+            unmet,
+            text: `The director ended with ${unmet.length} DONE WHEN criteri` +
+              `${unmet.length === 1 ? 'on' : 'a'} still unticked, so this run is not done. ` +
+              'Resume to continue it.',
+          });
+        }
+      }
       this.meta.endedAt = Date.now();
       this.saveMeta(this.meta);
       this.emit('run_finished', {
@@ -496,6 +516,41 @@ export class MissionRun {
     // addCost persists meta, so the title lands on disk with its own cost.
     if (named.costUsd > 0) this.addCost(named.costUsd);
     else this.saveMeta(this.meta);
+  }
+
+  /**
+   * DONE WHEN criteria the director never ticked.
+   *
+   * Reads the mission doc rather than trusting the transcript, because the doc
+   * is the mission's contract and the thing a resumed director reads back.
+   * Only the DONE WHEN section counts: Plan milestones describe the route, and
+   * a route can legitimately change, but the criteria are what "finished"
+   * means for this mission.
+   *
+   * Null when there is nothing to judge by — no doc, or a doc with no criteria
+   * — because absence of evidence is not evidence of failure, and a mission
+   * whose director never wrote a doc has already failed more visibly.
+   */
+  private async unmetCriteria(): Promise<string[] | null> {
+    const doc = await readFile(path.join(this.meta.folder, '.foreman', 'MISSION.md'), 'utf8')
+      .catch(() => null);
+    if (!doc) return null;
+
+    const lines = doc.split('\n');
+    const start = lines.findIndex((l) => /^#{1,6}\s*DONE\s*WHEN/i.test(l.trim()));
+    if (start === -1) return null;
+
+    const unmet: string[] = [];
+    let sawAny = false;
+    for (const line of lines.slice(start + 1)) {
+      // The section ends at the next heading; checkboxes below it are the plan.
+      if (/^#{1,6}\s/.test(line)) break;
+      const box = line.match(/^\s*[-*]\s*\[( |x|X)\]\s*(.*)$/);
+      if (!box) continue;
+      sawAny = true;
+      if (box[1] === ' ') unmet.push(box[2].trim());
+    }
+    return sawAny ? unmet : null;
   }
 
   /**
