@@ -3,7 +3,7 @@ import type { ModelInfo } from '../forms/ModelSelect';
 import type { ProviderRef, DiscoveredInstance, OllamaInfo } from './ProviderPicker';
 
 export type SettingsScope = 'global' | 'project';
-export type SettingsSectionId = 'models' | 'budget' | 'approvals' | 'appearance' | 'notifications' | 'projects';
+export type SettingsSectionId = 'provider' | 'models' | 'budget' | 'approvals' | 'appearance' | 'notifications' | 'projects';
 
 export interface Settings {
   directorModel?: string; workerModel?: string;
@@ -42,13 +42,15 @@ export interface SettingsModalProps {
   providerInstances?: DiscoveredInstance[];
   /** A running local Ollama daemon, passed through to `ProviderPicker`. */
   providerOllama?: OllamaInfo | null;
+  /** A Codex install, for the global-scope "what this machine offers" panel. */
+  providerCodex?: { home: string; signedIn: boolean } | null;
   /** Whether a key is on file for the project's provider. Never the key. */
   providerHasKey?: boolean;
   providerKeyBusy?: boolean;
   providerKeyError?: string;
   /** Stores/clears the key immediately — its own endpoint, not part of Save. */
-  onStoreProviderKey?: (key: string) => void;
-  onClearProviderKey?: () => void;
+  onStoreProviderKey?: (providerId: string, key: string) => void;
+  onClearProviderKey?: (providerId: string) => void;
   scope?: SettingsScope;
   /** Pass with `scope` to control it; without it `scope` is the initial value. */
   onScope?: (s: SettingsScope) => void;

@@ -55,6 +55,7 @@ import {
 import { ensureGateway, gatewayStatus, stopGateways } from './gateway.js';
 import { discoverOllama, ollamaHost } from './ollama.js';
 import { deleteSecret, hasSecret, putSecret } from './secrets.js';
+import { codexHome, readCodexAuth } from './codex.js';
 import { describeModel, discoverModels } from './models.js';
 import type { ResolvedProvider } from './provider.js';
 import {
@@ -796,6 +797,14 @@ const server = http.createServer(async (req, res) => {
         // absence of this key is what "none detected" looks like.
         ollama: await discoverOllama().then((models) =>
           models ? { host: ollamaHost(), models } : null),
+        // Presence and sign-in state only — never the token.
+        codex: await (async () => {
+          const home = codexHome();
+          const auth = await readCodexAuth(home).catch(() => null);
+          const installed = await stat(path.join(home, 'auth.json')).then(() => true, () => false)
+            || await stat(path.join(home, 'config.toml')).then(() => true, () => false);
+          return installed ? { home, signedIn: Boolean(auth) } : null;
+        })(),
         instances,
       });
 

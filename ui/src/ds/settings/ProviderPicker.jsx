@@ -18,12 +18,22 @@ const KIND_TABS = [
 /** A fresh, minimal value for a kind — never fields carried over from another
  *  kind. That is the whole point of the union: "subscription login + custom
  *  base URL" must not be constructible by clicking through the tabs. */
+/**
+ * A fresh value for a kind — never a merge of the previous one, so a
+ * combination the union forbids cannot be reached by tabbing between kinds.
+ *
+ * Ids are minted here rather than by the server, because a key can be stored
+ * before the provider is ever saved: the key endpoint is addressed by provider
+ * id, and waiting for a round trip would mean the key field is dead until
+ * after the first Save. The server honours a client-supplied id.
+ */
 function blank(kind) {
+  const id = `pr-${Math.random().toString(16).slice(2, 10)}`;
   switch (kind) {
     case 'claude-code': return { kind };
-    case 'anthropic-api': return { kind, apiKeyEnv: '' };
-    case 'codex': return { kind };
-    case 'openai-compatible': return { kind, baseUrl: '' };
+    case 'anthropic-api': return { kind, id, apiKeyEnv: '' };
+    case 'codex': return { kind, id };
+    case 'openai-compatible': return { kind, id, baseUrl: '' };
     default: return null;
   }
 }
@@ -52,11 +62,13 @@ function EnvVarHint() {
  * to a different endpoint than the rest of Settings, and a half-saved
  * credential is worse than an explicit one.
  */
-function StoredKey({ hasKey, busy, error, onStore, onClear }) {
+function StoredKey({ providerId, hasKey, busy, error, onStore, onClear }) {
   const [draft, setDraft] = useState('');
   const [open, setOpen] = useState(false);
 
-  if (!onStore) return null;
+  // No handler is a caller that does not support stored keys at all. A missing
+  // id would be a bug — every kind that can take a key mints one in blank().
+  if (!onStore || !providerId) return null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -74,7 +86,8 @@ function StoredKey({ hasKey, busy, error, onStore, onClear }) {
             {open ? 'Cancel' : hasKey ? 'Replace' : 'Add a key'}
           </Button>
           {hasKey && (
-            <Button size="sm" variant="danger" disabled={busy} onClick={onClear}>Remove</Button>
+            <Button size="sm" variant="danger" disabled={busy}
+              onClick={() => onClear?.(providerId)}>Remove</Button>
           )}
         </span>
       </div>
@@ -84,10 +97,10 @@ function StoredKey({ hasKey, busy, error, onStore, onClear }) {
           <TextInput mono type="password" placeholder="paste the key" value={draft}
             onChange={setDraft} autoFocus
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && draft.trim()) { onStore(draft.trim()); setDraft(''); setOpen(false); }
+              if (e.key === 'Enter' && draft.trim()) { onStore(providerId, draft.trim()); setDraft(''); setOpen(false); }
             }} />
           <Button size="sm" variant="good" disabled={busy || !draft.trim()}
-            onClick={() => { onStore(draft.trim()); setDraft(''); setOpen(false); }}>
+            onClick={() => { onStore(providerId, draft.trim()); setDraft(''); setOpen(false); }}>
             {busy ? 'Saving…' : 'Save key'}
           </Button>
         </div>
@@ -204,7 +217,7 @@ export function ProviderPicker({
 
       {kind === 'anthropic-api' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
-          <StoredKey hasKey={hasKey} busy={keyBusy} error={keyError}
+          <StoredKey providerId={value.id} hasKey={hasKey} busy={keyBusy} error={keyError}
             onStore={onStoreKey} onClear={onClearKey} />
           <Field label="Environment variable (optional fallback)">
             <TextInput mono placeholder="ANTHROPIC_API_KEY_ALPHA" value={value.apiKeyEnv ?? ''}
@@ -294,7 +307,7 @@ export function ProviderPicker({
               onChange={(v) => patch({ apiKeyEnv: v || undefined })} />
           </Field>
           {!!value.apiKeyEnv && <EnvVarHint />}
-          <StoredKey hasKey={hasKey} busy={keyBusy} error={keyError}
+          <StoredKey providerId={value.id} hasKey={hasKey} busy={keyBusy} error={keyError}
             onStore={onStoreKey} onClear={onClearKey} />
           {/* Without this, "no key stored and none named" is indistinguishable
               from "this endpoint wants none" — a local Ollama and an

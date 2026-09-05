@@ -121,7 +121,8 @@ function useProviderChoices(open: boolean) {
   const [choices, setChoices] = useState<{
     instances: DiscoveredInstance[];
     ollama: OllamaInfo | null;
-  }>({ instances: [], ollama: null });
+    codex: { home: string; signedIn: boolean } | null;
+  }>({ instances: [], ollama: null, codex: null });
 
   useEffect(() => {
     if (!open) return;
@@ -129,7 +130,9 @@ function useProviderChoices(open: boolean) {
     void fetch('/instances')
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
-        if (live && d) setChoices({ instances: d.instances ?? [], ollama: d.ollama ?? null });
+        if (live && d) {
+          setChoices({ instances: d.instances ?? [], ollama: d.ollama ?? null, codex: d.codex ?? null });
+        }
       })
       .catch(() => {});
     return () => { live = false; };
@@ -168,11 +171,7 @@ export default function App() {
    * different rules (write-only, 0600 on disk), and a credential that is
    * half-saved because someone hit Cancel is worse than one saved plainly.
    */
-  const providerId = project && 'id' in (project.provider ?? {})
-    ? (project.provider as { id?: string }).id : undefined;
-
-  const writeKey = async (key: string | null) => {
-    if (!providerId) return;
+  const writeKey = async (providerId: string, key: string | null) => {
     setKeyError('');
     setKeyBusy(true);
     const r = await (key === null
@@ -246,10 +245,11 @@ export default function App() {
           provider={project?.provider ?? null}
           providerInstances={providerChoices.instances}
           providerOllama={providerChoices.ollama}
+          providerCodex={providerChoices.codex}
           providerHasKey={project?.providerHasKey}
           providerKeyBusy={keyBusy} providerKeyError={keyError}
-          onStoreProviderKey={providerId ? (k) => void writeKey(k) : undefined}
-          onClearProviderKey={providerId ? () => void writeKey(null) : undefined}
+          onStoreProviderKey={(id, k) => void writeKey(id, k)}
+          onClearProviderKey={(id) => void writeKey(id, null)}
           onSave={(v) => void saveSettings(v)}
           onClose={() => setSettingsOpen(false)} />
       )}

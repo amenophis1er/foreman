@@ -11,7 +11,7 @@ import {
   Image as ImageIcon, Code, SquareCode, Quote, PenLine, Eye, Cpu, LoaderCircle,
   MessageSquarePlus, SendHorizontal, User, Zap, ListEnd, FilePen, FilePenLine, FileText,
   Terminal, Search, FolderSearch, FolderOpen, Globe, ListChecks, UserPlus, MessageSquare,
-  CornerDownLeft, Power, Wrench, Bug, Shuffle, SearchCheck, ArrowUpDown,
+  CornerDownLeft, Power, Wrench, Bug, Shuffle, SearchCheck, ArrowUpDown, Server,
 } from 'lucide-react';
 
 const LUCIDE = {
@@ -22,7 +22,7 @@ const LUCIDE = {
   Image: ImageIcon, Code, SquareCode, Quote, PenLine, Eye, Cpu, LoaderCircle,
   MessageSquarePlus, SendHorizontal, User, Zap, ListEnd, FilePen, FilePenLine, FileText,
   Terminal, Search, FolderSearch, FolderOpen, Globe, ListChecks, UserPlus, MessageSquare,
-  CornerDownLeft, Power, Wrench, Bug, Shuffle, SearchCheck, ArrowUpDown,
+  CornerDownLeft, Power, Wrench, Bug, Shuffle, SearchCheck, ArrowUpDown, Server,
 };
 
 /** Semantic → Lucide name. Change an icon here, never at a call site. */
@@ -31,7 +31,7 @@ export const ICONS = {
   disconnected: 'WifiOff', readonly: 'History', warning: 'TriangleAlert', critical: 'OctagonAlert',
   caution: 'TriangleAlert', resume: 'RotateCw', orchestration: 'Bot', add: 'Plus', parent: 'CornerLeftUp',
   back: 'ArrowLeft', folder: 'Folder', needsYou: 'Bell', unlink: 'Unlink', sun: 'Sun', moon: 'Moon',
-  search: 'Search', sort: 'ArrowUpDown', timeline: 'Clock', transcript: 'AlignLeft', crew: 'Users', chevronDown: 'ChevronDown', chevronRight: 'ChevronRight',
+  provider: 'Server', search: 'Search', sort: 'ArrowUpDown', timeline: 'Clock', transcript: 'AlignLeft', crew: 'Users', chevronDown: 'ChevronDown', chevronRight: 'ChevronRight',
   raw: 'Braces', question: 'MessageCircleQuestion', approval: 'ShieldCheck', check: 'Check', close: 'X',
   budget: 'Coins', template: 'LayoutTemplate', draft: 'Save', filter: 'Filter', settings: 'Settings',
   attach: 'Paperclip', file: 'File', image: 'Image', code: 'Code', codeBlock: 'SquareCode', quote: 'Quote',

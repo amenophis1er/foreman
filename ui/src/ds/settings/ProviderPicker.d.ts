@@ -51,8 +51,8 @@ export interface ProviderPickerProps {
   keyError?: string;
   /** Stores a key immediately — a different endpoint from the rest of
    *  Settings, so it does not wait for Save. Omit to hide the row entirely. */
-  onStoreKey?: (key: string) => void;
-  onClearKey?: () => void;
+  onStoreKey?: (providerId: string, key: string) => void;
+  onClearKey?: (providerId: string) => void;
   style?: CSSProperties;
 }
 
