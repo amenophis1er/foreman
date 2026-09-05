@@ -1080,6 +1080,21 @@ const server = http.createServer(async (req, res) => {
           // strip. `plannerQuestion` lets the strip say which one it is.
           pendingQuestions: (run?.pendingQuestionIds.length ?? 0) + (plannerAsk ? 1 : 0),
           plannerQuestion: Boolean(plannerAsk),
+          // Everything blocking on the human, with enough to answer it from
+          // the board: the same ids the tab's cards resolve, so a click here
+          // and a click there are the same call.
+          needs: [
+            ...(run?.pendingAsks() ?? []).map((a) => ({
+              kind: a.kind, id: a.id, runId: run!.meta.id, text: a.text,
+              options: a.options, toolName: a.toolName, since: a.since,
+            })),
+            ...(plannerAsk ? [{
+              kind: 'planner' as const, id: plannerAsk.id,
+              text: plannerAsk.questions[0]?.question ?? 'The planner is asking',
+              options: plannerAsk.questions[0]?.options.map((o) => o.label),
+              since: plannerAsk.askedAt,
+            }] : []),
+          ],
         };
       }));
       json(res, 200, {

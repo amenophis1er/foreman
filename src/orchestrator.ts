@@ -736,6 +736,14 @@ export class MissionRun {
   private readonly pendingPermissions = new Map<string, PendingPermission & { agent: string }>();
   private readonly pendingQuestions = new Map<string, (answer: string) => void>();
   /**
+   * What each pending ask *is*, for surfaces that answer it away from the
+   * transcript — the fleet board, a phone. The resolvers above know only how
+   * to settle an ask; this is the text, the options and when it was raised.
+   */
+  private readonly askMeta = new Map<string, {
+    kind: 'permission' | 'question'; text: string; options?: string[]; toolName?: string; since: number;
+  }>();
+  /**
    * The unattended-default timer per pending ask (permission or question),
    * keyed by the ask's id. Cancelled on any normal resolution and swept in
    * the run's `finally`, so a timer never fires into a run that is over.
@@ -894,7 +902,13 @@ export class MissionRun {
     return [...this.pendingQuestions.keys()];
   }
 
+  /** Every ask still open, with the text and options a remote surface needs to answer it. */
+  pendingAsks(): Array<{ id: string; kind: 'permission' | 'question'; text: string; options?: string[]; toolName?: string; since: number }> {
+    return [...this.askMeta].map(([id, m]) => ({ id, ...m }));
+  }
+
   resolvePermission(id: string, decision: 'allow' | 'allow_always' | 'deny', message?: string): boolean {
+    this.askMeta.delete(id);
     const pending = this.pendingPermissions.get(id);
     if (!pending) return false;
     this.pendingPermissions.delete(id);
@@ -926,6 +940,7 @@ export class MissionRun {
   }
 
   answerQuestion(id: string, text: string): boolean {
+    this.askMeta.delete(id);
     const resolve = this.pendingQuestions.get(id);
     if (!resolve) return false;
     this.pendingQuestions.delete(id);
@@ -1332,7 +1347,13 @@ export class MissionRun {
     return makePolicy(agent, this.meta.folder, this.runAllowed, this.allowedRoots, {
       onAutoAllow: (a, toolName, reason) => this.emit('auto_allowed', { agent: a, toolName, reason }),
       onAutoDeny: (a, toolName, reason) => this.emit('auto_denied', { agent: a, toolName, reason }),
-      onAsk: (a, id, req) => this.emit('permission_request', { id, agent: a, ...req }),
+      onAsk: (a, id, req) => {
+        this.askMeta.set(id, {
+          kind: 'permission', toolName: req.toolName, since: Date.now(),
+          text: `${a} wants ${req.toolName}${req.description ? ` — ${req.description}` : ''}`,
+        });
+        this.emit('permission_request', { id, agent: a, ...req });
+      },
       register: (id, pending) => {
         // `pending` carries `escapedPath` through untouched: resolvePermission
         // reads it to decide whether "always" grants the path or the tool.
@@ -1347,6 +1368,7 @@ export class MissionRun {
         });
       },
       unregister: (id) => {
+        this.askMeta.delete(id);
         const existed = this.pendingPermissions.delete(id);
         this.cancelAsk(id);
         if (existed) this.emit('permission_resolved', { id, behavior: 'aborted' });
@@ -1771,11 +1793,13 @@ export class MissionRun {
     const question =
       `${workerId} ${why} on ${this.meta.workerModel || 'the worker model'}. ` +
       `Continue and let the director decide, or retry the same brief once on ${directorLabel}?`;
+    this.askMeta.set(id, { kind: 'question', text: question, options, since: Date.now() });
     this.emit('question', { id, question, options, harness: true });
     const answer = await new Promise<string>((resolve) => {
       this.pendingQuestions.set(id, resolve);
       this.armAsk(id, (afterMs) => {
         if (!this.pendingQuestions.delete(id)) return;
+        this.askMeta.delete(id);
         this.emit('question_timeout', { id, afterMs });
         resolve(options[0]);
       });
@@ -2221,6 +2245,7 @@ export class MissionRun {
       async ({ question, options }) => {
         const id = `q-${Date.now()}-${this.pendingQuestions.size}`;
         const opts = options?.map((o) => o.trim()).filter(Boolean).slice(0, 6);
+        this.askMeta.set(id, { kind: 'question', text: question, options: opts?.length ? opts : undefined, since: Date.now() });
         this.emit('question', { id, question, ...(opts?.length ? { options: opts } : {}) });
         // Same unattended default as a permission card, with the opposite
         // polarity: a question is not refused, it is handed back. The
@@ -2230,6 +2255,8 @@ export class MissionRun {
           this.pendingQuestions.set(id, resolve);
           this.armAsk(id, (afterMs) => {
             if (!this.pendingQuestions.delete(id)) return;
+        this.askMeta.delete(id);
+            this.askMeta.delete(id);
             timedOut = true;
             this.emit('question_timeout', { id, afterMs });
             resolve(unattendedAnswer(afterMs));

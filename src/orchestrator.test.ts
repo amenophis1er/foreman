@@ -1117,3 +1117,31 @@ test('the SDK’s dollar figure is discarded for a gateway role — it prices th
   mixed.addCost(9, 'worker');
   assert.equal(mixed.meta.costUsd, 0.4);
 });
+
+test('pendingAsks exposes an open question with its text and options, and forgets it once answered', async () => {
+  // The fleet board and a phone answer asks away from the transcript; they
+  // need what the ask *is*, not just that one exists.
+  const events: Array<{ event: string; data: any }> = [];
+  const directorEnv = { env: { A: 'd' } } as unknown as AgentEnv;
+  const workerEnv = { env: { A: 'w' } } as unknown as AgentEnv;
+  const run = new MissionRun(
+    meta({ directorModel: 'sonnet', workerModel: 'glm', costBasis: 'free', askTimeoutMs: 60_000 }),
+    (event, data) => events.push({ event, data }), () => {},
+    { director: directorEnv, worker: workerEnv }, {}, undefined, { director: 'priced', worker: 'free' },
+  ) as unknown as {
+    askFallback(id: string, prompt: string, out: { report: string; isError: boolean }, why: string): Promise<unknown>;
+    pendingAsks(): Array<{ id: string; kind: string; text: string; options?: string[]; since: number }>;
+    answerQuestion(id: string, text: string): boolean;
+  };
+  const p = run.askFallback('worker-1', 'brief', { report: 'stalled', isError: true }, 'stalled');
+  await new Promise((r) => setTimeout(r, 10));
+  const open = run.pendingAsks();
+  assert.equal(open.length, 1);
+  assert.equal(open[0].kind, 'question');
+  assert.match(open[0].text, /worker-1 stalled/);
+  assert.equal(open[0].options?.length, 2);
+  assert.ok(Date.now() - open[0].since < 5000);
+  run.answerQuestion(open[0].id, open[0].options![0]);
+  await p;
+  assert.deepEqual(run.pendingAsks(), []);
+});
