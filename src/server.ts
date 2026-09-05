@@ -62,8 +62,9 @@ import type { ResolvedProvider } from './provider.js';
 import {
   dirHasCredentials, detectAuth, hasKeychainCredentials, readAccount, type AuthMode,
 } from './preflight.js';
+import { combineBasis } from './types.js';
 import type {
-  ChatMeta, ForemanEvent, ModelChoice, Project, ProviderRef, RunMeta, ToolPolicy,
+  ChatMeta, CostBasis, ForemanEvent, ModelChoice, Project, ProviderRef, RunMeta, ToolPolicy,
 } from './types.js';
 
 /**
@@ -182,6 +183,11 @@ function newProviderId(): string {
   return `pr-${crypto.randomBytes(4).toString('hex')}`;
 }
 
+/** A basis and the deprecated boolean that shadows it, so they cannot drift. */
+function basisOf(costBasis: CostBasis): { costBasis: CostBasis; metered: boolean } {
+  return { costBasis, metered: costBasis === 'priced' };
+}
+
 /** Billing modes the UI understands; a superset of the server's own AuthMode. */
 type BillingMode = AuthMode | 'local' | 'provider';
 
@@ -195,7 +201,9 @@ interface ModelOption {
   providerLabel: string;
   cost?: number;
   note?: string;
-  /** Whether spending on it is real money Foreman can price. */
+  /** What spending on this model is: priced, free, or real-but-unquantified. */
+  costBasis: CostBasis;
+  /** @deprecated Mirrors `costBasis === 'priced'` for older clients. */
   metered: boolean;
 }
 
@@ -217,7 +225,7 @@ async function availableModels(project: Project | null): Promise<{
   // Anthropic, via whichever Claude Code install or key the server resolves.
   // Always offered: it is the default, and the shipped configuration.
   for (const m of MODELS) {
-    out.push({ ...m, providerLabel: 'Anthropic', metered: true });
+    out.push({ ...m, providerLabel: 'Anthropic', costBasis: 'priced', metered: true });
   }
 
   // The project's own provider, when it is an endpoint of its own. Asked
@@ -234,7 +242,11 @@ async function availableModels(project: Project | null): Promise<{
         id: m.id, label: m.id, model: m.id,
         providerId: pinned.id, providerLabel: pinned.label ?? 'Custom endpoint',
         cost: m.remote ? 2 : 0, note: describeModel(m),
-        metered: !isLoopback(resolved.upstreamUrl),
+        // The endpoint decides the floor and the model can raise it: a daemon
+        // on this machine is free, but a `:cloud` model it merely proxies runs
+        // on somebody's paid servers, and calling that free is the error that
+        // costs money.
+        ...basisOf(m.remote || !isLoopback(resolved.upstreamUrl) ? 'unpriced' : 'free'),
       });
     }
   }
@@ -249,9 +261,10 @@ async function availableModels(project: Project | null): Promise<{
         id: m.id, label: m.id, model: m.id,
         providerId: 'ollama-local', providerLabel: 'Ollama',
         cost: m.remote ? 2 : 0, note: describeModel(m),
-        // A model served from this machine costs nothing per token; a :cloud
-        // one is real spend Foreman cannot price. Neither is a dollar figure.
-        metered: false,
+        // A model served from this machine costs nothing per token; a `:cloud`
+        // one is real spend Foreman cannot price. Neither gets a dollar
+        // figure, but they are not the same thing to tell someone.
+        ...basisOf(m.remote ? 'unpriced' : 'free'),
       });
     }
   }
@@ -265,7 +278,8 @@ async function availableModels(project: Project | null): Promise<{
         id, label: id, model: id,
         providerId: 'codex-local', providerLabel: 'Codex',
         cost: 2, note: 'Runs on your ChatGPT subscription.',
-        metered: false,
+        // A plan being drawn down, not a free lunch.
+        ...basisOf('unpriced'),
       });
     }
   }
@@ -543,7 +557,7 @@ async function driveRun(
     return;
   }
   let agentEnv;
-  let roleMetered = resolved.metered;
+  let roleBasis = resolved.costBasis;
   try {
     // Resolved per role. Where both roles share a provider this resolves once
     // and starts one gateway; where they differ, the supervisor already runs a
@@ -564,7 +578,7 @@ async function driveRun(
         ? await agentEnvFor(directorProvider, meta.id)
         : await agentEnvFor(workerProvider, meta.id),
     };
-    roleMetered = directorProvider.metered || workerProvider.metered;
+    roleBasis = combineBasis(directorProvider.costBasis, workerProvider.costBasis);
   } catch (err) {
     meta.status = 'error';
     meta.endedAt = Date.now();
@@ -579,10 +593,10 @@ async function driveRun(
   //
   // Decided by the ROLES, not the project's own provider. A run whose director
   // is on Codex and whose workers are on Ollama spends no real dollars, even
-  // though the project is nominally a Claude Code one — reading meteredness
+  // though the project is nominally a Claude Code one — reading the basis
   // off the project would show that run a dollar meter and arm a dollar cap
-  // over spend that never happens. Metered if ANY role bills real money, so
-  // the cap still protects a mixed run where part of the spend is genuine.
+  // over spend that never happens. See combineBasis() for how two roles fold
+  // into one answer.
   //
   // Recomputed on every dispatch, including a resume, rather than frozen once.
   // The inputs are already frozen — the role providers live in this run's own
@@ -590,7 +604,10 @@ async function driveRun(
   // it does allow is a run whose flag was computed by older, wrong code to
   // heal when it is resumed, instead of being permanently stuck against a cap
   // it should never have had.
-  meta.metered = roleMetered;
+  meta.costBasis = roleBasis;
+  // Written in step so a run started here still reads correctly if it is ever
+  // handled by a build from before the split.
+  meta.metered = roleBasis === 'priced';
   const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv);
   activeByProject.set(projectId, run);
   try {

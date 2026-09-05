@@ -120,6 +120,73 @@ export interface ForemanEvent {
 }
 
 /**
+ * What a run's spend *is* — which is a different question from how much.
+ *
+ * A boolean `metered` used to carry this, and it collapsed two states that
+ * are not the same thing at all: a local model that costs nothing and an
+ * OpenAI key that costs real money Foreman holds no price table for both
+ * answered `false`, and rendered identically. "You are spending nothing" and
+ * "you are spending an amount I cannot tell you" are different sentences to
+ * put in front of someone, and only one of them is a reason to go and look at
+ * a vendor's dashboard.
+ *
+ *  - `priced`   — the dollar figure is the real one. Dollars are displayed,
+ *                 and the budget cap binds.
+ *  - `free`     — nothing is charged per token; the model runs on hardware
+ *                 the operator already owns. Tokens and turns are the only
+ *                 true units.
+ *  - `unpriced` — real spend, of an amount Foreman cannot state: a paid
+ *                 endpoint with no price source, or a subscription allowance
+ *                 being consumed. Shown in tokens and turns like `free`, but
+ *                 said out loud to be untracked rather than passed off as
+ *                 costing nothing.
+ *
+ * Only `priced` may display or enforce dollars. `free` and `unpriced` differ
+ * in what they say and never in what they enforce — which is why this is
+ * three states and not four: the fourth distinction people reach for
+ * (subscription vs. pay-as-you-go) changes no behaviour here, and the
+ * provider label already carries it in words.
+ */
+export type CostBasis = 'priced' | 'free' | 'unpriced';
+
+/**
+ * A run's cost basis, including for runs that predate the field.
+ *
+ * The old `metered: false` meant "not priceable", which is the union of
+ * `free` and `unpriced` — so it cannot be split after the fact. This reads it
+ * as `unpriced`, because of the two possible errors, describing real spend as
+ * free is the one that costs somebody money.
+ */
+export function costBasisOf(meta: { costBasis?: CostBasis; metered?: boolean }): CostBasis {
+  if (meta.costBasis) return meta.costBasis;
+  return meta.metered === false ? 'unpriced' : 'priced';
+}
+
+/**
+ * One cost basis for a run whose two roles may not share one.
+ *
+ * `priced` wins outright: if any part of the run bills real dollars, the
+ * dollar cap must still arm, because the alternative is an uncapped run
+ * spending genuine money. It is not a *precise* figure on a mixed run — the
+ * SDK prices the gateway role's tokens with Anthropic's table too, so the
+ * total overstates — but overstating a real bill is a safe error in a way
+ * that ignoring one is not. A per-role price table is what fixes it properly.
+ *
+ * Otherwise `unpriced` beats `free`, on the same principle that decides a
+ * single provider: never call a run free when part of it is not.
+ */
+export function combineBasis(a: CostBasis, b: CostBasis): CostBasis {
+  if (a === 'priced' || b === 'priced') return 'priced';
+  if (a === 'unpriced' || b === 'unpriced') return 'unpriced';
+  return 'free';
+}
+
+/** Whether dollars may be displayed or enforced at all. The one real branch. */
+export function isPriced(meta: { costBasis?: CostBasis; metered?: boolean }): boolean {
+  return costBasisOf(meta) === 'priced';
+}
+
+/**
  * Real token usage. `costUsd` is notional on a subscription plan and
  * fictional through a gateway (the SDK prices foreign tokens with
  * Anthropic's rate table) — token counts are what actually moved on any
@@ -199,9 +266,16 @@ export interface RunMeta {
   mission: string;
   budgetUsd: number;
   /**
-   * Whether `costUsd` is real money. False through a gateway, where the SDK
-   * prices foreign tokens with Anthropic's table — see provider.ts. An
-   * unmetered run is capped by {@link maxTurns} and {@link maxSeconds}.
+   * What this run's spend *is* — see {@link CostBasis}. Absent on runs
+   * recorded before the split; read it through {@link costBasisOf}, never
+   * directly, so those runs keep answering.
+   */
+  costBasis?: CostBasis;
+  /**
+   * @deprecated Superseded by {@link costBasis}, which distinguishes the two
+   * states this boolean collapsed. Still read for runs recorded before the
+   * split, and still written beside `costBasis` so a downgrade is survivable.
+   * Nothing new should branch on it.
    */
   metered?: boolean;
   /** Director turns before the run winds down. Universal; provider-independent. */

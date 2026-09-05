@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import {
   ANTHROPIC_NATIVE_BASE_URL, GATEWAY_INVARIANT, normalizeOpenAiBaseUrl,
   ownedConfigDir, providerEnv, providerFromLegacy, providerOf, providerProblem, resolveProvider,
@@ -235,4 +235,61 @@ test('a resolvable gateway provider reports no problem', async () => {
   const p = await resolveProvider(
     { kind: 'openai-compatible', id: 'ollama', baseUrl: 'http://127.0.0.1:11434' }, ROOT);
   assert.equal(providerProblem(p), null);
+});
+
+// ---------------------------------------------------------------------------
+// What each provider's spend actually is
+// ---------------------------------------------------------------------------
+
+test('each provider kind resolves to the cost basis that is true of it', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'foreman-basis-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const basis = async (ref: ProviderRef) => (await resolveProvider(ref, root)).costBasis;
+
+  // Anthropic prices its own tokens, so the SDK figure is the real one.
+  assert.equal(await basis({ kind: 'claude-code' }), 'priced');
+  assert.equal(await basis({
+    kind: 'anthropic-api', id: 'a', apiKeyEnv: 'NOPE',
+  }), 'priced');
+
+  // A ChatGPT plan is drawn down rather than billed per token — real, finite,
+  // and not something Foreman can put a number on.
+  assert.equal(await basis({ kind: 'codex', id: 'c', codexHome: path.join(root, 'codex') }), 'unpriced');
+
+  // The operator's own hardware, whether on this machine or their LAN.
+  assert.equal(await basis({
+    kind: 'openai-compatible', id: 'o', baseUrl: 'http://127.0.0.1:11434',
+  }), 'free');
+  assert.equal(await basis({
+    kind: 'openai-compatible', id: 'o', baseUrl: 'http://192.168.1.9:11434',
+  }), 'free');
+
+  // Somebody's paid service. Unpriced, never free — guessing free about a
+  // billed endpoint is the error that costs money.
+  assert.equal(await basis({
+    kind: 'openai-compatible', id: 'o', baseUrl: 'https://openrouter.ai/api',
+  }), 'unpriced');
+  assert.equal(await basis({
+    kind: 'openai-compatible', id: 'o', baseUrl: 'https://ollama.com',
+  }), 'unpriced');
+});
+
+test('the deprecated metered boolean never disagrees with the basis', async (t) => {
+  // Both are written by one helper precisely so they cannot drift; if that
+  // ever stops being true, a run's enforcement and its display disagree.
+  const root = await mkdtemp(path.join(os.tmpdir(), 'foreman-basis-drift-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const refs: ProviderRef[] = [
+    { kind: 'claude-code' },
+    { kind: 'anthropic-api', id: 'a', apiKeyEnv: 'NOPE' },
+    { kind: 'codex', id: 'c', codexHome: path.join(root, 'codex') },
+    { kind: 'openai-compatible', id: 'o', baseUrl: 'http://127.0.0.1:11434' },
+    { kind: 'openai-compatible', id: 'p', baseUrl: 'https://openrouter.ai/api' },
+  ];
+  for (const ref of refs) {
+    const p = await resolveProvider(ref, root);
+    assert.equal(p.metered, p.costBasis === 'priced', `${ref.kind} drifted`);
+  }
 });

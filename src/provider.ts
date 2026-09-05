@@ -27,7 +27,7 @@ import { readFile } from 'node:fs/promises';
 import { defaultInstance } from './instance.js';
 import { codexHome, isStale, readCodexAuth, refreshCodexAuth } from './codex.js';
 import { getSecret } from './secrets.js';
-import type { ProviderRef, ClaudeInstanceRef } from './types.js';
+import type { CostBasis, ProviderRef, ClaudeInstanceRef } from './types.js';
 
 /**
  * Anthropic's real endpoint. Set explicitly on gateway providers so a reused
@@ -108,12 +108,18 @@ export interface ResolvedProvider {
    */
   ownLogin?: boolean;
   /**
-   * Whether the SDK's `total_cost_usd` is a real number for this provider.
+   * What spending on this provider *is* — see {@link CostBasis}.
    *
    * The SDK prices every response with Anthropic's table. Through a gateway
    * the token counts are real but the prices are not, so a dollar cap would be
    * enforced against fiction — and it does not merely mislead, it terminates
-   * working runs. Unmetered providers cap on turns and wall-clock instead.
+   * working runs. Anything but `priced` caps on turns and wall-clock instead.
+   */
+  costBasis: CostBasis;
+  /**
+   * @deprecated Kept in step with {@link costBasis} for callers not yet moved
+   * over. `metered === false` is `costBasis !== 'priced'`, which is exactly
+   * the conflation the split exists to undo — do not branch on it.
    */
   metered: boolean;
   /** Why this provider cannot run right now, if it cannot. */
@@ -192,7 +198,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       return {
         kind: ref.kind,
         wire: 'anthropic-native',
-        metered: true,
+        ...basis('priced'),
         label: `Claude Code · ${configDir}${ref.ownLogin ? ' (its own login pays)' : ''}`,
         configDir,
         executable: clean(ref.executable) ?? base.executable,
@@ -205,7 +211,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       return {
         kind: ref.kind,
         wire: 'anthropic-native',
-        metered: true,
+        ...basis('priced'),
         label: `Anthropic API key · $${ref.apiKeyEnv}`,
         // Foreman-owned: an API-key provider has no business reading a user
         // install's settings, plugins or login.
@@ -230,7 +236,7 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       return {
         kind: ref.kind,
         wire: 'gateway-codex',
-        metered: false,
+        ...basis('unpriced'),
         label: `Codex · ${home}`,
         configDir: ownedConfigDir(root, ref.id),
         upstreamUrl: ref.upstreamUrl ?? 'https://chatgpt.com/backend-api',
@@ -251,7 +257,12 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
       return {
         kind: ref.kind,
         wire: 'gateway-openai',
-        metered: false,
+        // An endpoint on this machine is the operator's own hardware and
+        // costs nothing per token. Anything reachable only over the network
+        // is somebody's paid service — unpriced until a price source says
+        // otherwise, never free by default, because guessing "free" about a
+        // billed endpoint is the error that costs money.
+        ...basis(isPrivateHost(hostOf(ref.baseUrl)) ? 'free' : 'unpriced'),
         label: `${ref.label ?? 'OpenAI-compatible'} · ${ref.baseUrl}`,
         configDir: ownedConfigDir(root, ref.id),
         upstreamUrl: normalizeOpenAiBaseUrl(ref.baseUrl),
@@ -304,6 +315,23 @@ export function normalizeOpenAiBaseUrl(url: string): string {
     base = `${isPrivateHost(base.split('/')[0]) ? 'http' : 'https'}://${base}`;
   }
   return base.replace(/\/+$/, '').replace(/\/v1$/, '');
+}
+
+/** The host[:port] of a base URL, however sloppily it was typed. */
+function hostOf(url: string): string {
+  const bare = url.trim().replace(/^https?:\/\//i, '');
+  return bare.split('/')[0] ?? '';
+}
+
+/**
+ * A cost basis and the deprecated boolean that shadows it, written together.
+ *
+ * They are set in one place so they cannot drift: a resolver that set one and
+ * forgot the other would leave a provider whose enforcement and whose display
+ * disagree, which is the failure this whole split exists to remove.
+ */
+function basis(costBasis: CostBasis): { costBasis: CostBasis; metered: boolean } {
+  return { costBasis, metered: costBasis === 'priced' };
 }
 
 /** Loopback, a private range, or a LAN name — somewhere https is unlikely. */

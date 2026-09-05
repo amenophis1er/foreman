@@ -85,6 +85,7 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
 import { makePolicy, type PendingPermission } from './policy.js';
 import type { AgentEnv } from './provider.js';
 import { generateRunTitle } from './title.js';
+import { costBasisOf, isPriced } from './types.js';
 import type { RunMeta, TokenUsage, WorkerMeta } from './types.js';
 
 /** A run's usage before its first `result` message. */
@@ -354,8 +355,9 @@ export class MissionRun {
       costUsd: this.meta.costUsd,
       // Carried here, not only on `cost`, because a run that spends no
       // priceable dollars may never emit a cost event at all — and the UI
-      // would then keep replaying an older run's meteredness forever.
-      metered: this.meta.metered !== false,
+      // would then keep replaying an older run's cost basis forever.
+      costBasis: costBasisOf(this.meta),
+      metered: isPriced(this.meta),
       usage: this.meta.usage,
     });
 
@@ -669,7 +671,8 @@ export class MissionRun {
       costUsd: this.meta.costUsd,
       budgetUsd: this.meta.budgetUsd,
       usage: this.meta.usage,
-      metered: this.meta.metered,
+      costBasis: costBasisOf(this.meta),
+      metered: isPriced(this.meta),
       turns: this.turns,
     });
   }
@@ -691,9 +694,9 @@ export class MissionRun {
     const { costUsd, budgetUsd } = this.meta;
     if (budgetUsd <= 0) return;
     // The hard 125% kill is the one that ends a run outright, so it must never
-    // fire on a figure that is not real money. An unmetered run is bounded by
-    // the turn and time caps in capReached() instead.
-    if (this.meta.metered === false) return;
+    // fire on a figure that is not real money. A run that is not `priced` is
+    // bounded by the turn and time caps in capReached() instead.
+    if (!isPriced(this.meta)) return;
     if (!this.budgetKillSent && costUsd >= budgetUsd * 1.25) {
       this.budgetKillSent = true;
       this.budgetNoticeSent = true; // the kill supersedes the wind-down notice
@@ -732,16 +735,27 @@ export class MissionRun {
    * restored context long after the cap itself is gone.
    */
   private budgetLine(): string {
-    if (this.meta.metered === false) {
-      return `This run is not billed per token, so there is no spend cap. ` +
-        `It is bounded by ${this.meta.maxTurns ?? DEFAULT_MAX_TURNS} director turns.`;
+    const turns = this.meta.maxTurns ?? DEFAULT_MAX_TURNS;
+    switch (costBasisOf(this.meta)) {
+      case 'free':
+        return `This run costs nothing per token — it is served by hardware the ` +
+          `operator already owns — so there is no spend cap. It is bounded by ` +
+          `${turns} director turns.`;
+      case 'unpriced':
+        // Deliberately still "no spend cap", and deliberately not silent about
+        // the spend. A director told only that money is being spent, with no
+        // figure and no cap, invents a limit and winds itself down early.
+        return `This run does draw on a paid account, but Foreman cannot price it, ` +
+          `so there is no dollar cap and no figure to reason about — do not ration ` +
+          `yourself against one. It is bounded by ${turns} director turns.`;
+      case 'priced':
+        return `Budget: $${this.meta.budgetUsd.toFixed(2)} total for this run.`;
     }
-    return `Budget: $${this.meta.budgetUsd.toFixed(2)} total for this run.`;
   }
 
   private budgetNote(): string {
-    if (this.meta.metered === false) {
-      return 'Budget note: this run is not billed per token — any earlier message ' +
+    if (!isPriced(this.meta)) {
+      return 'Budget note: this run has no dollar cap — any earlier message ' +
         'about a spend cap no longer applies, and you do not need authorisation ' +
         'to continue. Carry on to DONE WHEN.';
     }
@@ -752,11 +766,13 @@ export class MissionRun {
   /** Appended to worker reports so the director can see the true burn rate
    *  (its own turn costs are invisible to it otherwise). */
   private costFooter(): string {
-    if (this.meta.metered === false) {
+    if (!isPriced(this.meta)) {
       const u = this.meta.usage;
       const tokens = u ? u.inputTokens + u.outputTokens : 0;
+      const basis = costBasisOf(this.meta) === 'free'
+        ? 'not billed per token' : 'spend not tracked';
       return `\n\n[Run so far: ${this.turns} director turns` +
-        `${tokens ? `, ${Math.round(tokens / 1000)}k tokens` : ''} — not billed per token]`;
+        `${tokens ? `, ${Math.round(tokens / 1000)}k tokens` : ''} — ${basis}]`;
     }
     return `\n\n[Run cost so far: $${this.meta.costUsd.toFixed(2)} of ` +
       `$${this.meta.budgetUsd.toFixed(2)} budget — includes director turns]`;
@@ -774,7 +790,7 @@ export class MissionRun {
     }
     // Money only binds where the figure is real. Enforcing it through a
     // gateway ends working runs over spend that never happened.
-    if (this.meta.metered === false) return null;
+    if (!isPriced(this.meta)) return null;
     if (this.meta.costUsd < this.meta.budgetUsd) return null;
     return `BUDGET CAP REACHED: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)}.`;
   }
@@ -782,7 +798,7 @@ export class MissionRun {
   private overBudget(): string | null {
     const cap = this.capReached();
     if (!cap) return null;
-    if (this.meta.metered === false) {
+    if (!isPriced(this.meta)) {
       return `${cap} Do not start new work. Update MISSION.md, summarize the state, and stop.`;
     }
     return (
@@ -813,7 +829,8 @@ export class MissionRun {
     this.emit('budget_stop', {
       costUsd: this.meta.costUsd,
       budgetUsd: this.meta.budgetUsd,
-      metered: this.meta.metered !== false,
+      costBasis: costBasisOf(this.meta),
+      metered: isPriced(this.meta),
       reason: cap,
     });
     return (
