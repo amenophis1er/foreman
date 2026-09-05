@@ -579,7 +579,14 @@ async function driveRun(
   // off the project would show that run a dollar meter and arm a dollar cap
   // over spend that never happens. Metered if ANY role bills real money, so
   // the cap still protects a mixed run where part of the spend is genuine.
-  if (meta.metered === undefined) meta.metered = roleMetered;
+  //
+  // Recomputed on every dispatch, including a resume, rather than frozen once.
+  // The inputs are already frozen — the role providers live in this run's own
+  // metadata — so this is deterministic and cannot drift with settings. What
+  // it does allow is a run whose flag was computed by older, wrong code to
+  // heal when it is resumed, instead of being permanently stuck against a cap
+  // it should never have had.
+  meta.metered = roleMetered;
   const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv);
   activeByProject.set(projectId, run);
   try {
