@@ -37,6 +37,8 @@ export interface ProjectCardProps {
   pendingPermissions?: number;
   /** Pending director questions. */
   pendingQuestions?: number;
+  /** One of the pending questions is the planner's; the strip names it. */
+  plannerQuestion?: boolean;
   onOpen?: () => void;
   /** Should open a ConfirmDialog — unlinking is no longer a one-click action. */
   onUnlink?: () => void;

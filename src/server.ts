@@ -71,7 +71,7 @@ import type { ModelPrice } from './prices.js';
 import {
   dirHasCredentials, detectAuth, hasKeychainCredentials, readAccount, type AuthMode,
 } from './preflight.js';
-import { combineBasis } from './types.js';
+import { combineBasis, costBasisOf } from './types.js';
 import type {
   ChatMeta, CostBasis, ForemanEvent, ModelChoice, Project, ProviderRef, RunMeta, ToolPolicy,
 } from './types.js';
@@ -1051,6 +1051,7 @@ const server = http.createServer(async (req, res) => {
       ]);
       const cards = await Promise.all(projects.map(async (p) => {
         const run = activeByProject.get(p.id);
+        const plannerAsk = pendingChatQuestion(p.id);
         // Newest finished run for the idle-card summary (runs are newest-first).
         const lastRun = allRuns.find((r) => r.projectId === p.id && r.status !== 'running') ?? null;
         return {
@@ -1065,13 +1066,20 @@ const server = http.createServer(async (req, res) => {
           lastRun: lastRun && {
             mission: lastRun.mission, title: lastRun.title, status: lastRun.status,
             createdAt: lastRun.createdAt, costUsd: lastRun.costUsd,
+            // The card may print a dollar only where the dollar was real.
+            costBasis: costBasisOf(lastRun), usage: lastRun.usage,
           },
           // When this project last did anything, so the fleet can lead with it.
-          // A never-run project falls back to when it was linked.
+          // A planner parked on a question is doing something — waiting on
+          // you — and a never-run project falls back to when it was linked.
           lastActivityAt:
-            run?.meta.createdAt ?? lastRun?.endedAt ?? lastRun?.createdAt ?? p.createdAt,
+            plannerAsk?.askedAt ?? run?.meta.createdAt ?? lastRun?.endedAt ?? lastRun?.createdAt ?? p.createdAt,
           pendingPermissions: run?.pendingPermissionIds.length ?? 0,
-          pendingQuestions: run?.pendingQuestionIds.length ?? 0,
+          // A planner question blocks the human exactly as a director's does,
+          // so it counts here: the card floats to the top tier and wears the
+          // strip. `plannerQuestion` lets the strip say which one it is.
+          pendingQuestions: (run?.pendingQuestionIds.length ?? 0) + (plannerAsk ? 1 : 0),
+          plannerQuestion: Boolean(plannerAsk),
         };
       }));
       json(res, 200, {

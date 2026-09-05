@@ -160,6 +160,7 @@ export function FleetView({
             activity={p.activeRun ? activity[p.id] : undefined}
             pendingPermissions={p.pendingPermissions}
             pendingQuestions={p.pendingQuestions}
+            plannerQuestion={p.plannerQuestion}
             onOpen={() => onOpen(p.id)}
             onUnlink={() => setUnlinking(p)} />
         ))}

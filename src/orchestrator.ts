@@ -1416,7 +1416,12 @@ export class MissionRun {
 
   private addCost(usd: number | undefined, role: AgentRole = 'director'): void {
     if (typeof usd !== 'number') return;
-    if (this.prices[role]) return;
+    // Two cases where the SDK's dollar figure is not a fact about this run:
+    // a role Foreman prices itself, and a role behind a gateway at all. The
+    // second is the one that leaked — Anthropic's table applied to 5.8M
+    // Ollama tokens produced "$30.14" on a fleet card for a run that cost
+    // nothing measurable. Stopped at the source, not hidden at the display.
+    if (this.prices[role] || this.ledger?.roles[role]) return;
     this.costParts.native += usd;
     this.recomputeCost();
     this.saveMeta(this.meta);

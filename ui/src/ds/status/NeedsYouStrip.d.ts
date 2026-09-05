@@ -9,6 +9,8 @@ export interface NeedsYouStripProps {
   approvals?: number;
   /** Pending director questions. */
   questions?: number;
+  /** One of `questions` is the planner's; the strip names it, since it is answered in the chat, not a run. */
+  planner?: boolean;
   style?: CSSProperties;
 }
 

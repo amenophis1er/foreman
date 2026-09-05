@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { StatusBadge } from '../status/StatusBadge';
-import { BudgetMeter } from '../status/BudgetMeter';
+import { BudgetMeter, formatTokens } from '../status/BudgetMeter';
 import { NeedsYouStrip } from '../status/NeedsYouStrip';
 import { Icon } from '../core/Icon';
 import { shortPath } from '../core/path';
@@ -26,7 +26,7 @@ function Dot() {
  * running or an agent is waiting on the human; an idle card carries none, so
  * the one card that wants you is the one that stands out across a full grid.
  */
-export function ProjectCard({ name, folder, instance, run, mission, title, costUsd, budgetUsd, activity, lastRun, pendingPermissions = 0, pendingQuestions = 0, onOpen, onUnlink, style }) {
+export function ProjectCard({ name, folder, instance, run, mission, title, costUsd, budgetUsd, activity, lastRun, pendingPermissions = 0, pendingQuestions = 0, plannerQuestion = false, onOpen, onUnlink, style }) {
   const [hover, setHover] = useState(false);
   const [unlinkHover, setUnlinkHover] = useState(false);
   const active = run ?? (mission ? { mission, title, costUsd, budgetUsd } : null);
@@ -77,7 +77,7 @@ export function ProjectCard({ name, folder, instance, run, mission, title, costU
         }}>via {shortPath(instance)}</div>
       )}
 
-      <NeedsYouStrip approvals={pendingPermissions} questions={pendingQuestions} />
+      <NeedsYouStrip approvals={pendingPermissions} questions={pendingQuestions} planner={plannerQuestion} />
 
       <div style={{
         marginTop: 'auto', paddingTop: 'var(--sp-3)', borderTop: '1px solid var(--line)',
@@ -118,7 +118,14 @@ export function ProjectCard({ name, folder, instance, run, mission, title, costU
             }}>
               <StatusBadge status={lastRun.status} />
               {lastRun.createdAt && <><Dot />{fmtDate(lastRun.createdAt)}</>}
-              <Dot />${(Number(lastRun.costUsd) || 0).toFixed(2)}
+              {/* The same honesty rule as the meter: a dollar only where the
+                  dollar was real. "$30.14" once stood here for a run on free
+                  and unpriced models — Anthropic's table on Ollama tokens. */}
+              {lastRun.costBasis === 'priced' || lastRun.costBasis === undefined
+                ? <><Dot />${(Number(lastRun.costUsd) || 0).toFixed(2)}</>
+                : lastRun.usage
+                  ? <><Dot />{formatTokens(lastRun.usage.inputTokens + lastRun.usage.outputTokens)} tok</>
+                  : null}
             </div>
           </>
         ) : (

@@ -1099,3 +1099,21 @@ test('a worker already on the director’s provider is not asked — there is no
   await bare.run.askFallback('worker-1', 'brief', { report: 'r', isError: true }, 'stalled');
   assert.equal(bare.events.filter((e) => e.event === 'question').length, 0);
 });
+
+test('the SDK’s dollar figure is discarded for a gateway role — it prices the wrong tokens', () => {
+  // "$30.14" on a fleet card for a run on free and unpriced models: Anthropic's
+  // table applied to 5.8M Ollama tokens. Stopped where it is recorded.
+  const run = new MissionRun(meta({ costBasis: 'unpriced' }), () => {}, () => {}, noopAgentEnv, {},
+    { key: 'r.0', roles: { director: true, worker: true }, read: async () => null },
+  ) as unknown as { addCost(usd: number, role?: string): void; meta: RunMeta };
+  run.addCost(30.14, 'director');
+  run.addCost(1.5, 'worker');
+  assert.equal(run.meta.costUsd, 0);
+  // A native role's figure is still real and still counted.
+  const mixed = new MissionRun(meta({ costBasis: 'priced' }), () => {}, () => {}, noopAgentEnv, {},
+    { key: 'r.0', roles: { director: false, worker: true }, read: async () => null },
+  ) as unknown as { addCost(usd: number, role?: string): void; meta: RunMeta };
+  mixed.addCost(0.4, 'director');
+  mixed.addCost(9, 'worker');
+  assert.equal(mixed.meta.costUsd, 0.4);
+});

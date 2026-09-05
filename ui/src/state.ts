@@ -137,7 +137,13 @@ export type ProjectSummary = {
   billingMode?: AuthMode;
   defaultBudgetUsd: number;
   activeRun: RunSummary | null;
-  lastRun: { mission: string; title?: string; status: Status; createdAt?: number; costUsd?: number } | null;
+  lastRun: {
+    mission: string; title?: string; status: Status; createdAt?: number; costUsd?: number;
+    /** The card prints a dollar only when this is `priced`; otherwise tokens, or nothing. */
+    costBasis?: CostBasis; usage?: TokenUsage;
+  } | null;
+  /** The planner is parked on a question for this project — counted in pendingQuestions too. */
+  plannerQuestion?: boolean;
   /** When this project last did anything; the server sorts the fleet by it. */
   lastActivityAt?: number;
   /** Whether a key is on file for this project's provider. Never the key. */
