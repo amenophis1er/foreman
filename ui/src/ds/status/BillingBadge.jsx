@@ -45,10 +45,12 @@ export const BILLING_META = {
  */
 export function BillingBadge({ mode, source, account, compact, style }) {
   const m = BILLING_META[mode] ?? BILLING_META.none;
-  // "subscription" alone cannot answer "whose?" — and on a machine with more
-  // than one Claude login that is the only question worth asking.
+  // The account answers "whose?" in the tooltip, not on the face: a header
+  // that prints an e-mail address on every project screen reads as a login
+  // widget, and "whose subscription" is a question for the rare machine with
+  // two logins, asked by hovering.
   const who = account?.email;
-  const label = who ?? m.label;
+  const label = m.label;
   const title = [m.hint, who && account.org ? `Account: ${who} (${account.org})` : who && `Account: ${who}`,
     source && `Source: ${source}`].filter(Boolean).join('\n');
   const loud = mode === 'api-key' || mode === 'none' || mode === 'provider';

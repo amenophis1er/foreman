@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Card } from '../core/Card';
 import { Icon } from '../core/Icon';
 import { AgentDot, agentColor } from '../status/AgentDot';
@@ -40,8 +40,35 @@ export function TranscriptEntry({ agent, title, kind = 'text', body, ts, to, tim
         ? <ToolCall tool={toolName} body={body} />
         : kind === 'text' && typeof body === 'string'
           ? <RichText text={body} />
-          : <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{body}</div>}
+          : <FoldedBody body={body} />}
     </Card>
+  );
+}
+
+const FOLD_LINES = 12;
+
+/**
+ * A long payload — a worker's tool result, a file it read back — folded to
+ * its first lines with the rest one click away. A 90-line JSON dump is
+ * evidence, not narrative; it must not push the next decision off screen.
+ */
+function FoldedBody({ body }) {
+  const [open, setOpen] = useState(false);
+  const text = typeof body === 'string' ? body : null;
+  const lines = text ? text.split('\n') : [];
+  const long = text !== null && (lines.length > FOLD_LINES + 4 || text.length > 1600);
+  if (!long) return <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{body}</div>;
+  const shown = open ? text : lines.slice(0, FOLD_LINES).join('\n').slice(0, 1600);
+  return (
+    <div>
+      <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{shown}{!open && '\n…'}</div>
+      <button type="button" onClick={() => setOpen(!open)} style={{
+        marginTop: 4, padding: 0, background: 'none', border: 'none', cursor: 'pointer',
+        font: 'inherit', fontFamily: 'var(--font-ui)', fontSize: 'var(--fs-xs)', color: 'var(--brand)',
+      }}>
+        {open ? 'Show less' : `Show all · ${lines.length} lines`}
+      </button>
+    </div>
   );
 }
 
