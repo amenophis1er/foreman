@@ -278,6 +278,14 @@ but the choice of tool matters:
 
 ## 9. Auth & billing (the real gate)
 
+> **Superseded in part.** This section predates instance pinning. Foreman now
+> points at an *installed* Claude Code and uses whatever that install is logged
+> into, which is how a personal Foreman rides a subscription without any third
+> party minting tokens. The generalisation of that idea — Codex installs, local
+> Ollama, OpenAI-compatible endpoints — is designed in
+> [docs/provider-model.md](docs/provider-model.md). The last bullet below still
+> governs everything.
+
 - **API key only.** SDK apps authenticate via `ANTHROPIC_API_KEY` (or a cloud
   provider: Bedrock/Vertex/Foundry). Anthropic does **not** permit third-party
   SDK apps to offer claude.ai login to end users — so a distributed Foreman
