@@ -36,6 +36,7 @@
  *   DELETE /chat?projectId=      Forget the conversation and its session
  */
 import http from 'node:http';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -46,7 +47,9 @@ import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
 import { defaultInstance, discoverInstances, effectiveConfigDir } from './instance.js';
-import { providerEnv, providerOf, providerProblem, resolveProvider } from './provider.js';
+import {
+  normalizeOpenAiBaseUrl, providerEnv, providerOf, providerProblem, resolveProvider,
+} from './provider.js';
 import { ensureGateway, gatewayStatus, stopGateways } from './gateway.js';
 import { discoverOllama, ollamaHost } from './ollama.js';
 import { describeModel, discoverModels } from './models.js';
@@ -111,6 +114,71 @@ function fleetOrder(
   b: { pendingPermissions: number; pendingQuestions: number; activeRun: unknown; lastActivityAt: number },
 ): number {
   return fleetTier(a) - fleetTier(b) || b.lastActivityAt - a.lastActivityAt;
+}
+
+/**
+ * Parses a provider from a request body.
+ *
+ * The union is the product's safety property — "subscription login" and
+ * "custom base URL" must not be expressible together — so it is validated
+ * here, at the boundary, rather than trusted from a client. Anything
+ * unrecognised is rejected outright: silently coercing a malformed provider to
+ * `claude-code` would run a mission on a credential nobody chose.
+ *
+ * Returns `null` for "not supplied" and a string for "supplied but wrong".
+ */
+function parseProvider(v: unknown): ProviderRef | null | string {
+  if (v === undefined) return null;
+  if (v === null) return null; // an explicit clear; the caller distinguishes
+  if (typeof v !== 'object') return 'provider must be an object';
+  const p = v as Record<string, unknown>;
+  const str = (k: string): string | undefined => {
+    const raw = p[k];
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+  };
+
+  switch (p.kind) {
+    case 'claude-code':
+      return {
+        kind: 'claude-code',
+        ...(str('configDir') ? { configDir: str('configDir')! } : {}),
+        ...(str('executable') ? { executable: str('executable')! } : {}),
+        ...(p.ownLogin === true ? { ownLogin: true } : {}),
+      };
+    case 'anthropic-api': {
+      const apiKeyEnv = str('apiKeyEnv');
+      if (!apiKeyEnv) return 'anthropic-api needs apiKeyEnv';
+      return { kind: 'anthropic-api', id: str('id') ?? newProviderId(), apiKeyEnv, model: str('model') };
+    }
+    case 'codex':
+      return {
+        kind: 'codex', id: str('id') ?? newProviderId(),
+        codexHome: str('codexHome'), upstreamUrl: str('upstreamUrl'), model: str('model'),
+      };
+    case 'openai-compatible': {
+      const baseUrl = str('baseUrl');
+      if (!baseUrl) return 'openai-compatible needs baseUrl';
+      // Reject a URL the gateway would choke on before it reaches a run,
+      // rather than after the agent's first call fails.
+      try {
+        new URL(normalizeOpenAiBaseUrl(baseUrl));
+      } catch {
+        return `not a usable base URL: ${baseUrl}`;
+      }
+      return {
+        kind: 'openai-compatible', id: str('id') ?? newProviderId(),
+        baseUrl: normalizeOpenAiBaseUrl(baseUrl),
+        apiKeyEnv: str('apiKeyEnv'), label: str('label'), model: str('model'),
+      };
+    }
+    default:
+      return `unknown provider kind: ${String(p.kind)}`;
+  }
+}
+
+/** Names a provider's Foreman-owned config dir; stable for its lifetime. */
+function newProviderId(): string {
+  return `pr-${crypto.randomBytes(4).toString('hex')}`;
 }
 
 /** Billing modes the UI understands; a superset of the server's own AuthMode. */
@@ -631,7 +699,9 @@ const server = http.createServer(async (req, res) => {
       });
 
     } else if (req.method === 'POST' && url.pathname === '/projects') {
-      const { folder, name, claudeConfigDir, claudeExecutable } = await readBody(req);
+      const { folder, name, provider: providerIn, claudeConfigDir, claudeExecutable } = await readBody(req);
+      const parsed = parseProvider(providerIn);
+      if (typeof parsed === 'string') return json(res, 400, { error: parsed });
       if (typeof folder !== 'string' || !folder) return json(res, 400, { error: 'folder is required' });
       if (!path.isAbsolute(folder)) return json(res, 400, { error: `folder must be an absolute path: ${folder}` });
       const st = await stat(folder).catch(() => null);
@@ -640,21 +710,28 @@ const server = http.createServer(async (req, res) => {
       // The HTTP shape still speaks "Claude Code install"; storage speaks
       // providers. Translating here keeps the UI working unchanged while the
       // union becomes the only thing written to disk.
-      const pin: ProviderRef | undefined =
+      // A provider wins; the older claudeConfigDir/claudeExecutable pair still
+      // works and means the same thing, so existing callers keep functioning.
+      const pin: ProviderRef | undefined = parsed ?? (
         typeof claudeConfigDir === 'string' || typeof claudeExecutable === 'string'
           ? {
               kind: 'claude-code',
               ...(typeof claudeConfigDir === 'string' ? { configDir: claudeConfigDir } : {}),
               ...(typeof claudeExecutable === 'string' ? { executable: claudeExecutable } : {}),
             }
-          : undefined;
+          : undefined);
       json(res, 200, {
         project: await store.addProject(folder, typeof name === 'string' ? name : undefined, pin),
       });
 
     } else if (req.method === 'PATCH' && projectMatch) {
-      const { name, defaultBudgetUsd, claudeConfigDir, claudeExecutable, claudeBilling } =
+      const { name, defaultBudgetUsd, provider: providerIn, claudeConfigDir, claudeExecutable, claudeBilling } =
         await readBody(req);
+      const parsedPatch = parseProvider(providerIn);
+      if (typeof parsedPatch === 'string') return json(res, 400, { error: parsedPatch });
+      // `provider: null` clears the pin outright; the legacy triple below
+      // expresses the same thing by going empty.
+      const providerCleared = providerIn === null;
       // null clears the pin; undefined leaves it untouched.
       const pinGiven =
         claudeConfigDir !== undefined || claudeExecutable !== undefined || claudeBilling !== undefined;
@@ -665,7 +742,9 @@ const server = http.createServer(async (req, res) => {
       const updated = await store.updateProject(projectMatch[1], {
         name: typeof name === 'string' ? name : undefined,
         defaultBudgetUsd: typeof defaultBudgetUsd === 'number' ? defaultBudgetUsd : undefined,
-        provider: !pinGiven
+        provider: parsedPatch ?? (providerCleared
+          ? null
+          : !pinGiven
           ? undefined
           : cleared
             ? null
@@ -674,7 +753,7 @@ const server = http.createServer(async (req, res) => {
                 ...(toPath(claudeConfigDir) ? { configDir: toPath(claudeConfigDir)! } : {}),
                 ...(toPath(claudeExecutable) ? { executable: toPath(claudeExecutable)! } : {}),
                 ...(ownLogin ? { ownLogin: true } : {}),
-              },
+              }),
       });
       json(res, updated ? 200 : 404, updated ? { project: updated } : { error: 'unknown project' });
 

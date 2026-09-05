@@ -217,6 +217,20 @@ test('base URLs are normalised the way people paste them', () => {
     'a local http endpoint must not be upgraded to https');
 });
 
+test('a scheme-less local host gets http, a public one gets https', () => {
+  // Typing the host and port is how a person adds a local daemon, and
+  // defaulting that to https guarantees a handshake failure on the first call.
+  for (const local of ['127.0.0.1:11434', 'localhost:11434', 'box:11434', 'nas.local:11434',
+    '192.168.1.9:11434', '10.0.0.4:11434', '172.20.1.1:11434']) {
+    assert.equal(normalizeOpenAiBaseUrl(local).slice(0, 5), 'http:', `${local} should not be https`);
+  }
+  for (const remote of ['api.openai.com', 'openrouter.ai/api', 'ollama.com']) {
+    assert.equal(normalizeOpenAiBaseUrl(remote).slice(0, 6), 'https:', `${remote} should be https`);
+  }
+  // An explicit scheme always wins, in both directions.
+  assert.equal(normalizeOpenAiBaseUrl('https://box:11434'), 'https://box:11434');
+});
+
 test('a resolvable gateway provider reports no problem', async () => {
   const p = await resolveProvider(
     { kind: 'openai-compatible', id: 'ollama', baseUrl: 'http://127.0.0.1:11434' }, ROOT);

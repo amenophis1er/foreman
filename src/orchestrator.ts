@@ -85,7 +85,32 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
 import { makePolicy, type PendingPermission } from './policy.js';
 import type { AgentEnv } from './provider.js';
 import { generateRunTitle } from './title.js';
-import type { RunMeta, WorkerMeta } from './types.js';
+import type { RunMeta, TokenUsage, WorkerMeta } from './types.js';
+
+/** A run's usage before its first `result` message. */
+function emptyUsage(): TokenUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+}
+
+/**
+ * Folds one SDK `result` message's `usage` object into a running total.
+ *
+ * Exported (pure, no `this`) so the accumulation is testable without
+ * spinning up the Agent SDK: the shape it defends against is a message that
+ * omits `usage` entirely, or reports it with some fields missing — both
+ * observed across providers a gateway sits in front of — never a thrown
+ * error or a poisoned NaN that a partial sum would otherwise carry forever.
+ */
+export function accumulateUsage(current: TokenUsage, raw: unknown): TokenUsage {
+  const u = (raw ?? {}) as Record<string, unknown>;
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return {
+    inputTokens: current.inputTokens + num(u.input_tokens),
+    outputTokens: current.outputTokens + num(u.output_tokens),
+    cacheReadTokens: current.cacheReadTokens + num(u.cache_read_input_tokens),
+    cacheWriteTokens: current.cacheWriteTokens + num(u.cache_creation_input_tokens),
+  };
+}
 
 /**
  * What Foreman keeps out of git inside a mission folder's .claude/.
@@ -207,6 +232,11 @@ export class MissionRun {
     private readonly agentEnv: AgentEnv,
   ) {
     this.meta = meta;
+    // Usage and turns are counted from zero on a fresh run, but a resumed one
+    // must keep the running total rather than quietly under-reporting
+    // everything before the restart — same reasoning as the workers map below.
+    this.meta.usage = meta.usage ?? emptyUsage();
+    this.turns = meta.turns ?? 0;
     // Rehydrate orchestrator state from persisted metadata so a resumed run
     // behaves like the original process: message_worker can reach prior
     // workers, new worker ids never collide with old ones, and "always
@@ -373,6 +403,7 @@ export class MissionRun {
           }
           lastTurnFailed = Boolean(m.is_error);
           this.turns++;
+          this.addUsage(m.usage);
           this.noteUsageLimit(String(m.result ?? ''));
 
           // Enforce the cap against the director's own spend, at the only
@@ -530,8 +561,28 @@ export class MissionRun {
     if (typeof usd !== 'number') return;
     this.meta.costUsd += usd;
     this.saveMeta(this.meta);
-    this.emit('cost', { costUsd: this.meta.costUsd, budgetUsd: this.meta.budgetUsd });
+    // usage/metered ride along so a client can render turns and tokens
+    // instead of a dollar figure that is notional (subscription) or
+    // fictional (gateway) on an unmetered run — see enforceBudget().
+    this.emit('cost', {
+      costUsd: this.meta.costUsd,
+      budgetUsd: this.meta.budgetUsd,
+      usage: this.meta.usage,
+      metered: this.meta.metered,
+    });
     this.enforceBudget();
+  }
+
+  /**
+   * Folds one result message's token usage into the run total and persists
+   * it. Called alongside addCost() from the same two call sites (director
+   * loop, runWorker) so usage and cost are always in step — the honest
+   * counterpart to a dollar figure that is not honest on every provider.
+   */
+  private addUsage(raw: unknown): void {
+    this.meta.usage = accumulateUsage(this.meta.usage ?? emptyUsage(), raw);
+    this.meta.turns = this.turns;
+    this.saveMeta(this.meta);
   }
 
   /**
@@ -685,6 +736,7 @@ export class MissionRun {
           isError = Boolean(m.is_error);
           this.noteUsageLimit(report);
           this.addCost(m.total_cost_usd as number | undefined);
+          this.addUsage(m.usage);
           w.costUsd += (m.total_cost_usd as number | undefined) ?? 0;
         }
         this.emit('message', { agent: workerId, msg });

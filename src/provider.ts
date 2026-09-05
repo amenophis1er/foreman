@@ -278,8 +278,27 @@ export async function resolveProvider(ref: ProviderRef, root: string): Promise<R
  */
 export function normalizeOpenAiBaseUrl(url: string): string {
   let base = url.trim();
-  if (!/^https?:\/\//i.test(base)) base = `https://${base}`;
+  if (!/^https?:\/\//i.test(base)) {
+    // Scheme-less is how people type a local daemon — `127.0.0.1:11434`, or a
+    // hostname on a private network. Defaulting those to https guarantees a
+    // handshake failure on the first call, so infer from the host: public
+    // names get https, anything that cannot plausibly hold a certificate does
+    // not. An explicit scheme is always honoured.
+    base = `${isPrivateHost(base.split('/')[0]) ? 'http' : 'https'}://${base}`;
+  }
   return base.replace(/\/+$/, '').replace(/\/v1$/, '');
+}
+
+/** Loopback, a private range, or a LAN name — somewhere https is unlikely. */
+function isPrivateHost(hostPort: string): boolean {
+  const host = hostPort.replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
+  if (host === 'localhost' || host === '::1' || host.endsWith('.local') || host.endsWith('.internal')) {
+    return true;
+  }
+  if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+  // A bare single-label name (`box:11434`) is a LAN host, not a public domain.
+  return /^[a-z0-9-]+$/.test(host);
 }
 
 // ---------------------------------------------------------------------------

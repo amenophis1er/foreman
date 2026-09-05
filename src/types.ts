@@ -108,6 +108,20 @@ export interface ForemanEvent {
   data: unknown;
 }
 
+/**
+ * Real token usage. `costUsd` is notional on a subscription plan and
+ * fictional through a gateway (the SDK prices foreign tokens with
+ * Anthropic's rate table) — token counts are what actually moved on any
+ * provider, so this is what an unmetered run's meter should show instead of
+ * a dollar figure nobody billed.
+ */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
 /** Snapshot of one worker, persisted in run metadata. */
 export interface WorkerMeta {
   id: string;
@@ -175,6 +189,17 @@ export interface RunMeta {
   maxSeconds?: number;
   status: RunStatus;
   costUsd: number;
+  /**
+   * Token counts accumulated from every director and worker `result`
+   * message's `usage` object. Absent on runs recorded before this landed.
+   */
+  usage?: TokenUsage;
+  /**
+   * Director turns taken so far, persisted so a resumed run keeps counting
+   * against {@link maxTurns} instead of restarting the cap from zero — the
+   * orchestrator's private counter is only ever accurate within one process.
+   */
+  turns?: number;
   createdAt: number;
   endedAt?: number;
   directorSessionId?: string;

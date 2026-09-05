@@ -633,21 +633,14 @@ const post = (url: string, body: unknown) =>
   });
 
 export const api = {
-  // The HTTP shape still speaks "Claude Code install"; the server translates
-  // it into a provider. Widening this waits until more than one kind is
-  // settable from the UI.
-  linkProject: (folder: string, name?: string, instance?: { configDir?: string; executable?: string }) =>
-    post('/projects', {
-      folder, name,
-      claudeConfigDir: instance?.configDir || undefined,
-      claudeExecutable: instance?.executable || undefined,
-    }),
+  linkProject: (folder: string, name?: string, provider?: ProviderRef) =>
+    post('/projects', { folder, name, provider }),
   instances: () => fetch('/instances'),
   updateProject: (
     projectId: string,
     patch: {
-      claudeConfigDir?: string; claudeExecutable?: string;
-      claudeBilling?: 'inherit' | 'own-login';
+      /** A whole provider, or `null` to clear the pin back to the server default. */
+      provider?: ProviderRef | null;
       defaultBudgetUsd?: number; name?: string;
     },
   ) =>
