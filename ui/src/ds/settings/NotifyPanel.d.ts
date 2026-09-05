@@ -15,8 +15,12 @@ export interface NotifyStatus {
     /** Masked: the last four digits only. */
     chatId: string | null;
     chatLabel: string | null;
-    /** A linking attempt in progress: the code to send to the bot. */
-    linking: { code: string; startedAt: number } | null;
+    /**
+     * A linking attempt in progress: the code to send to the bot, and the
+     * `t.me/<bot>?start=<code>` deep link that pre-fills it. The panel renders
+     * the link as a QR (`GET /notify/telegram/qr.svg`) and as an anchor.
+     */
+    linking: { code: string; startedAt: number; deepLink?: string } | null;
   };
 }
 

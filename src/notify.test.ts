@@ -199,3 +199,11 @@ test('linking gives up at its deadline and can be aborted', async (t) => {
   l2.abort();
   assert.equal(await l2.done, null);
 });
+
+test('the deep link opens the bot with the code pre-filled, whatever form the username took', async () => {
+  const { telegramStartLink } = await import('./notify/telegram.js');
+  assert.equal(telegramStartLink('@ForemanAgentBot', 'W55TMZ'), 'https://t.me/ForemanAgentBot?start=W55TMZ');
+  assert.equal(telegramStartLink('ForemanAgentBot', 'W55TMZ'), 'https://t.me/ForemanAgentBot?start=W55TMZ');
+  // Telegram delivers that payload as the message "/start W55TMZ" — exactly
+  // what linkByCode waits for, so scanning is the same act as typing.
+});

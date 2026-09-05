@@ -955,7 +955,7 @@ export type NotifyStatus = {
   failures: number;
   telegram: {
     hasToken: boolean; bot: string | null; chatId: string | null; chatLabel: string | null;
-    linking: { code: string; startedAt: number } | null;
+    linking: { code: string; startedAt: number; deepLink?: string } | null;
   };
 };
 

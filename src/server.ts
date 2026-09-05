@@ -60,7 +60,8 @@ import { ensureGateway, gatewayStatus, gatewayUsage, releaseGateways, stopGatewa
 import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
 import { deleteSecret, getSecret, hasSecret, putSecret } from './secrets.js';
 import { NotifyHub } from './notify.js';
-import { getMe, linkByCode, linkCode, telegramTransport } from './notify/telegram.js';
+import { getMe, linkByCode, linkCode, telegramStartLink, telegramTransport } from './notify/telegram.js';
+import QRCode from 'qrcode';
 import { ANTHROPIC_MODELS } from './anthropic-models.js';
 import { codexHome, codexModels, readCodexAuth } from './codex.js';
 import { costRank, describeModel, discoverModels } from './models.js';
@@ -1183,9 +1184,25 @@ const server = http.createServer(async (req, res) => {
           bot: s.telegramBot ?? null,
           chatId: s.telegramChatId ? `…${s.telegramChatId.slice(-4)}` : null,
           chatLabel: s.telegramChatLabel ?? null,
-          linking: telegramLink ? { code: telegramLink.code, startedAt: telegramLink.startedAt } : null,
+          linking: telegramLink ? {
+            code: telegramLink.code, startedAt: telegramLink.startedAt,
+            // Opens the bot with /start <code> pre-filled: the QR below and
+            // the "Open in Telegram" link both carry this.
+            deepLink: s.telegramBot ? telegramStartLink(s.telegramBot, telegramLink.code) : undefined,
+          } : null,
         },
       });
+
+    } else if (url.pathname === '/notify/telegram/qr.svg' && req.method === 'GET') {
+      // The deep link as a QR, only while a linking attempt is open — the code
+      // is single-use and expires, so there is nothing to render otherwise.
+      const s = await notifySettings();
+      if (!telegramLink || !s.telegramBot) return json(res, 404, { error: 'no linking attempt in progress' });
+      const svg = await QRCode.toString(telegramStartLink(s.telegramBot, telegramLink.code), {
+        type: 'svg', margin: 1, errorCorrectionLevel: 'M',
+      });
+      res.writeHead(200, { 'content-type': 'image/svg+xml', 'cache-control': 'no-store' });
+      res.end(svg);
 
     } else if (url.pathname === '/notify/telegram/token') {
       // Write-only, like a provider key. Validated with getMe so a typo is

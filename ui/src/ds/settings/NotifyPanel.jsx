@@ -86,16 +86,34 @@ export function NotifyPanel({
             <Button size="sm" variant="ghost" onClick={onUnlink} disabled={busy}>Unlink</Button>
           </div>
         ) : linking ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 'var(--fs-sm)' }}>
-            <div>Send this to your bot, then wait a moment:</div>
-            <code style={{
-              alignSelf: 'flex-start', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-lg)',
-              padding: '4px 10px', background: 'var(--bg-inset)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)',
-            }}>/start {linking.code}</code>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
-              <span className="pulse" style={{ display: 'inline-flex' }}><Icon name="loading" size={12} /></span>
-              waiting for the message… the code expires in 10 minutes
-              <Button size="sm" variant="ghost" onClick={onLink} disabled={busy}>New code</Button>
+          <div style={{ display: 'flex', gap: 'var(--sp-3)', alignItems: 'flex-start' }}>
+            {/* One scan, one tap: the QR is the t.me deep link, which opens the
+                bot with the /start command pre-filled. The code stays visible
+                for a desktop Telegram, or for anyone who would rather type. */}
+            {linking.deepLink && (
+              <a href={linking.deepLink} target="_blank" rel="noreferrer" title="Open in Telegram"
+                style={{ flex: '0 0 auto', display: 'block', padding: 6, background: '#fff', borderRadius: 'var(--r-sm)', border: '1px solid var(--line-strong)', lineHeight: 0 }}>
+                <img src={`/notify/telegram/qr.svg?c=${encodeURIComponent(linking.code)}`} alt={`QR: ${linking.deepLink}`}
+                  width={132} height={132} style={{ display: 'block' }} />
+              </a>
+            )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 'var(--fs-sm)', minWidth: 0 }}>
+              <div>Scan with your phone, or send this to your bot:</div>
+              <code style={{
+                alignSelf: 'flex-start', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-lg)',
+                padding: '4px 10px', background: 'var(--bg-inset)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)',
+              }}>/start {linking.code}</code>
+              {linking.deepLink && (
+                <a href={linking.deepLink} target="_blank" rel="noreferrer"
+                  style={{ fontSize: 'var(--fs-xs)', color: 'var(--brand)', textDecoration: 'none' }}>
+                  Open in Telegram on this computer →
+                </a>
+              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', flexWrap: 'wrap' }}>
+                <span className="pulse" style={{ display: 'inline-flex' }}><Icon name="loading" size={12} /></span>
+                waiting… the code expires in 10 minutes
+                <Button size="sm" variant="ghost" onClick={onLink} disabled={busy}>New code</Button>
+              </div>
             </div>
           </div>
         ) : (

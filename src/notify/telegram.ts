@@ -59,6 +59,18 @@ export function telegramTransport(token: string, chatId: string, apiBase = TELEG
   };
 }
 
+/**
+ * The deep link that opens the bot with `/start <code>` pre-filled.
+ *
+ * Telegram delivers the `start` payload as exactly the message `linkByCode`
+ * waits for, so a QR of this URL turns linking into one scan and one tap —
+ * no typing a code on a phone. Only the bot's username is public here; the
+ * code is single-use and expires, which is why it is safe on a screen.
+ */
+export function telegramStartLink(bot: string, code: string): string {
+  return `https://t.me/${bot.replace(/^@/, '')}?start=${encodeURIComponent(code)}`;
+}
+
 /** Six characters from an alphabet with no look-alikes: typed on a phone, read off a screen. */
 export function linkCode(): string {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
