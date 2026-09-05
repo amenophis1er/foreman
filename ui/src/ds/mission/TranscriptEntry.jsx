@@ -2,14 +2,15 @@ import React from 'react';
 import { Card } from '../core/Card';
 import { Icon } from '../core/Icon';
 import { AgentDot, agentColor } from '../status/AgentDot';
-import { ToolCall } from './ToolCall';
+import { ToolCall, parseToolInput, summarizeTool } from './ToolCall';
 import { RichText } from '../core/RichText';
 
 const MCP = new Set(['spawn_worker', 'message_worker', 'ask_human']);
 
 /** One transcript row. Kind decides the accent; tool entries render as structured ToolCall chips. */
-export function TranscriptEntry({ agent, title, kind = 'text', body, ts, to, timing, style }) {
+export function TranscriptEntry({ agent, title, kind = 'text', body, ts, to, timing, dense = false, style }) {
   const isTool = kind === 'tool';
+  if (isTool && dense) return <DenseToolLine agent={agent} title={title} body={body} ts={ts} style={style} />;
   const steer = kind === 'steer';
   const mono = kind === 'result';
   const accent = kind === 'error' ? 'var(--status-critical)' : steer ? 'var(--ink-0)' : kind === 'text' ? agentColor(agent) : undefined;
@@ -41,5 +42,31 @@ export function TranscriptEntry({ agent, title, kind = 'text', body, ts, to, tim
           ? <RichText text={body} />
           : <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{body}</div>}
     </Card>
+  );
+}
+
+/**
+ * A tool call as one quiet mono line — no card, no chip, no payload. Weight
+ * follows meaning: a run makes hundreds of these and a handful of decisions,
+ * and when every Read is a card the decisions drown. The full call is still
+ * one hover away in the title; the deck shows what the writes amounted to.
+ */
+function DenseToolLine({ agent, title, body, ts, style }) {
+  const tool = String(title || 'tool').replace(/^[^\w]+/, '');
+  const summary = summarizeTool(tool, parseToolInput(body)) || (typeof body === 'string' ? body : '');
+  const args = String(summary).replace(/\s+/g, ' ').slice(0, 90);
+  const time = ts ? new Date(ts).toLocaleTimeString(undefined, { hour12: false }) : null;
+  return (
+    <div title={typeof body === 'string' ? body.slice(0, 2000) : undefined} style={{
+      display: 'flex', alignItems: 'center', gap: 6, padding: '1px var(--sp-2)',
+      fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
+      whiteSpace: 'nowrap', overflow: 'hidden', minWidth: 0, ...style,
+    }}>
+      <AgentDot agent={agent} size="sm" />
+      <Icon name={tool} size={12} />
+      <span style={{ color: MCP.has(tool) ? 'var(--brand)' : 'var(--ink-1)', flex: '0 0 auto' }}>{tool}</span>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{args}</span>
+      {time && <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }}>{time}</span>}
+    </div>
   );
 }

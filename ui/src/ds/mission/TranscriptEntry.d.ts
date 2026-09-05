@@ -16,6 +16,12 @@ export interface TranscriptEntryProps {
   to?: string;
   /** `steer` only: how it was delivered. */
   timing?: 'next' | 'now';
+  /**
+   * `kind="tool"` only: render as one quiet mono line (dot · icon · tool · first 90 chars of
+   * the args · time) with no card chrome. Other kinds ignore it and stay cards. The live
+   * transcript sets this so decisions and asks outweigh the tool churn between them.
+   */
+  dense?: boolean;
   style?: CSSProperties;
 }
 
