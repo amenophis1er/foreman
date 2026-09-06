@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   api, basisOf, providerHome, useChat, useRunHistory, useRunView,
   type CostBasis, type Entry, type ProjectSummary, type RunSummary,
-  type RunView as RunViewState, type TokenUsage,
+  type RunView as RunViewState, type TokenUsage, withAttachments,
 } from '../state';
 import { useDeck } from '../deck';
 import { AppHeader } from '../ds/shell/AppHeader';
@@ -236,7 +236,7 @@ function Transcript({ run, filter, jump, order, header }: {
  * continuous story rather than two products bolted together.
  */
 function PlanPane({
-  chat, folder, starting, error, models, modelsLoading, modelsNote, modelsInheritNote, onStart, onCompose, hasRuns,
+  chat, folder, starting, error, models, modelsLoading, modelsNote, modelsInheritNote, onStart, onCompose, hasRuns, projectId, onSettings,
 }: {
   chat: ReturnType<typeof useChat>;
   folder: string;
@@ -253,12 +253,23 @@ function PlanPane({
   onStart: (v: {
     mission: string; budget: number; directorModel?: string; workerModel?: string;
     directorProviderId?: string; workerProviderId?: string; browserTools?: boolean;
+    attachments?: File[];
   }) => void;
   /** "Skip the talk": open the mission composer instead. */
   onCompose: () => void;
   /** The project has finished runs — the empty state can point at "Plan the next step". */
   hasRuns?: boolean;
+  projectId: string;
+  /** Opens Settings, where the planner's model lives. */
+  onSettings: () => void;
 }) {
+  const [sendErr, setSendErr] = useState('');
+  // Files ride along as paths in the project folder; the planner reads them.
+  const send = async (text: string, files: File[] = []) => {
+    setSendErr('');
+    try { await chat.send(await withAttachments(projectId, text, files)); }
+    catch (e) { setSendErr((e as Error).message); }
+  };
   const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
 
@@ -275,21 +286,41 @@ function PlanPane({
     return (
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
         <div style={{ margin: 'auto', width: '100%', maxWidth: 'var(--composer-max)', padding: 'var(--sp-4) var(--sp-3)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
-          <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
+          <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: 'var(--sp-1)' }}>
             <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 'var(--fw-semibold)' }}>
               What should this project do next?
             </span>
-            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-1)', lineHeight: 'var(--lh-prose)' }}>
-              The foreman reads <span style={{ fontFamily: 'var(--font-mono)' }}>{folder}</span> and
-              thinks it through with you — what you want, what is already there, what could go wrong.
-              When the shape is clear it drafts a mission for you to start.
-            </span>
-            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
-              It can read the project. It cannot change it — only a mission does that.
-              {hasRuns && <> To build on a finished run, open it and choose <b style={{ color: 'var(--ink-1)' }}>Plan the next step</b>.</>}
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-2)' }}>
+              Describe it, paste a spec or a screenshot, or start from one of these.
             </span>
           </div>
-          <ChatBar busy={chat.thinking} who={chat.who} onSend={(t) => void chat.send(t)} autoFocus />
+          {/* Starters: each is a real first message, sent on click. They
+              teach what the planner is for better than a paragraph did. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 'var(--sp-2)' }}>
+            {[
+              hasRuns
+                ? { t: 'Review the last run', q: 'Look at what the last mission built and verify it still holds. What would you fix or finish next?' }
+                : { t: 'Survey the project', q: 'Read this project and tell me what it is, how it is built, and what state it is in.' },
+              { t: 'Find risks worth a mission', q: 'Audit this project for bugs, security holes and missing tests. Rank what you find and propose the one mission most worth running first.' },
+              { t: 'Scope a feature', q: 'I have a feature in mind. Ask me what you need to know to scope it, then draft the mission.' },
+              { t: 'Plan a refactor', q: 'Where is this codebase hardest to change? Propose one contained refactor with clear DONE WHEN criteria.' },
+            ].map((s) => (
+              <button key={s.t} type="button" onClick={() => void send(s.q)} disabled={chat.thinking} style={{
+                textAlign: 'left', padding: '8px 10px', background: 'var(--bg-card)', border: '1px solid var(--line)',
+                borderRadius: 'var(--r-sm)', cursor: 'pointer', font: 'inherit', color: 'inherit',
+                display: 'flex', flexDirection: 'column', gap: 2,
+              }}>
+                <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-semibold)', color: 'var(--ink-0)' }}>{s.t}</span>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', lineHeight: 'var(--lh)' }}>{s.q}</span>
+              </button>
+            ))}
+          </div>
+          <ChatBar busy={chat.thinking} who={chat.who} onSend={(t, f) => void send(t, f)} onChangeModel={onSettings} autoFocus />
+          {sendErr && <Banner tone="error" inline>{sendErr}</Banner>}
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textAlign: 'center' }}>
+            Planning reads the project and never changes it — a mission does that.
+            {hasRuns && <> To build on a finished run, open it and choose <b style={{ color: 'var(--ink-1)' }}>Plan the next step</b>.</>}
+          </span>
           <button type="button" onClick={onCompose} style={{
             display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', width: '100%', boxSizing: 'border-box',
             background: 'none', border: '1px dashed var(--line-strong)', borderRadius: 'var(--r-sm)',
@@ -366,10 +397,11 @@ function PlanPane({
             askedAt={chat.question.askedAt}
             who={chat.who}
             onAnswer={(answers) => void chat.answer(chat.question!.id, answers)}
-            onFreeText={(t) => void chat.send(t)} />
+            onFreeText={(t) => void send(t)} />
         ) : (
-          <ChatBar busy={chat.thinking} who={chat.who} onSend={(t) => void chat.send(t)} />
+          <ChatBar busy={chat.thinking} who={chat.who} onSend={(t, f) => void send(t, f)} onChangeModel={onSettings} />
         )}
+        {sendErr && <Banner tone="error" inline style={{ marginTop: 4 }}>{sendErr}</Banner>}
         {/* The conversation's own line, under the input where its actions are:
             what it has cost, and the way to start over. Clearing waits for a
             reply in flight — the server refuses mid-turn — and says so. */}
@@ -626,11 +658,16 @@ export function ProjectView({
   const startMission = async (v: {
     mission: string; budget: number; directorModel?: string; workerModel?: string;
     directorProviderId?: string; workerProviderId?: string; browserTools?: boolean;
+    attachments?: File[];
   }) => {
     setComposerErr('');
     setStarting(true);
+    // The composer collected files all along; until now they went nowhere.
+    let mission = v.mission;
+    try { mission = await withAttachments(p.id, v.mission, v.attachments ?? []); }
+    catch (e) { setComposerErr((e as Error).message); setStarting(false); return; }
     const r = await api
-      .run(p.id, v.mission, v.budget, {
+      .run(p.id, mission, v.budget, {
         directorModel: v.directorModel, workerModel: v.workerModel,
         directorProviderId: v.directorProviderId, workerProviderId: v.workerProviderId,
         browserTools: v.browserTools,
@@ -912,7 +949,8 @@ export function ProjectView({
                 models={models} modelsLoading={modelsLoading}
                 modelsNote={modelsNote} modelsInheritNote={modelsInheritNote}
                 onStart={(v) => void startMission(v)}
-                onCompose={() => setComposeOpen(true)} hasRuns={history.length > 0} />
+                onCompose={() => setComposeOpen(true)} hasRuns={history.length > 0}
+                projectId={p.id} onSettings={onSettings} />
             </>
           )}
         </div>

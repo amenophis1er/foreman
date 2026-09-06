@@ -34,6 +34,7 @@
  *   GET    /locate?name=         Find folders by name under $HOME (drag-drop)
  *   GET    /chat?projectId=      A project's planning conversation (log + meta)
  *   POST   /chat                 Send a message to the planner {projectId, text}
+ *   POST   /attachments          Save files into <folder>/.foreman/attachments {projectId, files:[{name,data}]}
  *   DELETE /chat?projectId=      Forget the conversation and its session
  *   PUT    /providers/{id}/key   Store a provider's key {key}
  *   DELETE /providers/{id}/key   Forget it
@@ -50,6 +51,7 @@ import {
   forkSeed,
 } from './planner.js';
 import { DEFAULT_TOOL_POLICY } from './policy.js';
+import { saveAttachments } from './attachments.js';
 import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
 import { defaultInstance, discoverInstances, effectiveConfigDir } from './instance.js';
@@ -1454,6 +1456,21 @@ const server = http.createServer(async (req, res) => {
 
       } else {
         json(res, 405, { error: 'method not allowed' });
+      }
+
+    } else if (req.method === 'POST' && url.pathname === '/attachments') {
+      // Files for a message — to the planner or in a mission brief. Saved
+      // into the project folder so whoever reads the message can read them
+      // too; the client appends the returned paths to its text.
+      const { projectId: id, files } = await readBody(req);
+      if (typeof id !== 'string') return json(res, 400, { error: 'projectId is required' });
+      const project = await store.getProject(id);
+      if (!project) return json(res, 404, { error: 'unknown project' });
+      try {
+        const saved = await saveAttachments(project.folder, files as Parameters<typeof saveAttachments>[1]);
+        json(res, 200, { files: saved });
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : String(err) });
       }
 
     } else if (req.method === 'POST' && url.pathname === '/chat/fork') {

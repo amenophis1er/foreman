@@ -1128,6 +1128,19 @@ export const api = {
   permission: (id: string, behavior: 'allow' | 'allow_always' | 'deny', message?: string) =>
     post('/permission', { id, behavior, message }),
   answer: (id: string, text: string) => post('/answer', { id, text }),
+  /** Saves files into the project folder; returns their project-relative paths. */
+  attach: async (projectId: string, files: File[]) => {
+    const encoded = await Promise.all(files.map(async (f) => ({
+      name: f.name, type: f.type,
+      data: await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result).split(',')[1] ?? '');
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(f);
+      }),
+    })));
+    return post('/attachments', { projectId, files: encoded });
+  },
   /** Opens a new planning conversation seeded with a finished run. */
   forkPlan: (projectId: string, runId: string) => post('/chat/fork', { projectId, runId }),
   steer: (runId: string, text: string) => post('/steer', { runId, text }),
@@ -1158,3 +1171,17 @@ export const api = {
   mkdir: (parent: string, name: string) => post('/mkdir', { parent, name }),
   locate: (name: string) => fetch(`/locate?name=${encodeURIComponent(name)}`),
 };
+
+/**
+ * Uploads a message's files and returns the text with their paths appended,
+ * so the reader — planner or director — knows what came with it. Throws the
+ * server's message when a file is refused, so the caller can show it.
+ */
+export async function withAttachments(projectId: string, text: string, files: File[]): Promise<string> {
+  if (!files.length) return text;
+  const r = await api.attach(projectId, files);
+  const body = (await r.json().catch(() => ({}))) as { error?: string; files?: { path: string }[] };
+  if (!r.ok) throw new Error(body.error || 'could not save the attachments');
+  const paths = (body.files ?? []).map((f: { path: string }) => f.path);
+  return `${text}\n\nAttached files (in the project folder — read them):\n${paths.map((q: string) => `- ${q}`).join('\n')}`;
+}

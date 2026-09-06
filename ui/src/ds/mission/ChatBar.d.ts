@@ -10,7 +10,8 @@ export interface ChatBarProps {
   value?: string;
   onChange?: (v: string) => void;
   /** Fires on Send / ⌘↵ with the trimmed text. */
-  onSend?: (text: string) => void;
+  /** Text and the files picked, dropped or pasted since the last send. Files alone send with a stand-in line. */
+  onSend?: (text: string, files: File[]) => void;
   /** A turn is in flight: the icon pulses and Send is held until the reply lands. */
   busy?: boolean;
   /** Focus the input on mount — for an empty state where the input is the page. */
@@ -27,6 +28,8 @@ export interface ChatBarProps {
    * gateway — which decides both the quality of the advice and who pays.
    */
   who?: { model: string; provider: string; costBasis: 'priced' | 'free' | 'unpriced' } | null;
+  /** When given, the model name in the footer is a link that opens where it can be changed. */
+  onChangeModel?: () => void;
   style?: CSSProperties;
 }
 

@@ -12,3 +12,5 @@ The planning conversation's input, docked at the bottom of the transcript column
 - Waiting borrows the existing `.pulse` class on the icon. Do not add a spinner — the design system moves two things and no more.
 
 `autoFocus` puts the caret in the input on mount; the planning screen's empty state uses it, since the input is the whole page there.
+
+The bar takes files: an Attach button, drop onto the bar, or paste an image. Picked files show as `AttachmentChip`s above the footer until sent; `onSend` receives them with the text. With `onChangeModel`, the model name in the footer is a dotted-underline link to Settings → Models — the one place the planner's model is named is also the way to change it.

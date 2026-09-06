@@ -15,3 +15,5 @@ One settings surface for the whole app. Opened from the gear in the header; from
 
 - **Provider leads the sidebar** because it decides what every other section can offer — the model list is scoped to it, and it names who pays. It lived under Projects first, where nobody found it.
 - In global scope Provider cannot be set (it is per-project) so it lists what the machine can serve instead: discovered Claude Code installs, a running Ollama, a Codex install. An empty panel there reads as broken; this turns a dead end into the answer to "what are my options".
+
+Models has a third row, **Planner**: the model of the planning conversation (default Sonnet), per project like the others.

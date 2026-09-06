@@ -8,6 +8,8 @@ export type SettingsSectionId = 'provider' | 'models' | 'budget' | 'approvals' |
 
 export interface Settings {
   directorModel?: string; workerModel?: string;
+  /** The planning conversation's model. Sonnet by default. */
+  plannerModel?: string;
   /** Provider serving each role, from the picked model's row. */
   directorProviderId?: string; workerProviderId?: string;
   budgetCap?: number; budgetWarnAt?: number; budgetHardStop?: boolean;
