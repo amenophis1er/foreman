@@ -21,6 +21,8 @@ import { defaultInstance, describeInstance, effectiveConfigDir } from './instanc
 import { discoverOllama, ollamaHost } from './ollama.js';
 import { tailnetUrl, type Tailnet } from './tailscale.js';
 import { codexHome, codexModels, readCodexAuth } from './codex.js';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 export type CheckStatus = 'ok' | 'warn' | 'error';
 
@@ -237,6 +239,42 @@ async function checkHome(root: string): Promise<Check> {
   }
 }
 
+/**
+ * The browser missions get when "browser" is on. The Playwright MCP defaults
+ * to the `chrome` channel — the Google Chrome already on the machine — which
+ * is why a fresh install needs no browser download. `FOREMAN_BROWSER` picks
+ * another channel or Playwright's own Chromium (installed with
+ * `npx playwright install chromium`).
+ */
+async function checkBrowser(): Promise<Check> {
+  const name = 'Browser';
+  const want = (process.env.FOREMAN_BROWSER || 'chrome').toLowerCase();
+  const candidates: Record<string, string[]> = {
+    chrome: process.platform === 'darwin'
+      ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', path.join(os.homedir(), 'Applications/Google Chrome.app/Contents/MacOS/Google Chrome')]
+      : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/opt/google/chrome/chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium'],
+    msedge: process.platform === 'darwin' ? ['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'] : ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable'],
+    firefox: process.platform === 'darwin' ? ['/Applications/Firefox.app/Contents/MacOS/firefox'] : ['/usr/bin/firefox'],
+  };
+  let found: string | null = null;
+  if (want === 'chromium') {
+    // Playwright's own build, wherever the MCP's playwright-core says it lives.
+    try {
+      const req = createRequire(fileURLToPath(new URL('../node_modules/@playwright/mcp/cli.js', import.meta.url)));
+      const { chromium } = req('playwright-core') as { chromium: { executablePath(): string } };
+      const p = chromium.executablePath();
+      if (await exists(p)) found = p;
+    } catch { /* no playwright-core to ask */ }
+    return found
+      ? { name, status: 'ok', detail: `Playwright Chromium — ${found}` }
+      : { name, status: 'warn', detail: 'FOREMAN_BROWSER=chromium but Playwright Chromium is not installed; browser missions will fail', fix: 'npx playwright install chromium' };
+  }
+  for (const p of candidates[want] ?? []) if (await exists(p)) { found = p; break; }
+  return found
+    ? { name, status: 'ok', detail: `${want === 'chrome' ? 'Google Chrome' : want} — ${found}` }
+    : { name, status: 'warn', detail: `no ${want === 'chrome' ? 'Google Chrome' : want} found; missions with browser on will fail`, fix: 'Install Google Chrome, or: npx playwright install chromium && FOREMAN_BROWSER=chromium foreman' };
+}
+
 /** Where the phone can reach this. Says so plainly either way — the answer decides which links work. */
 function checkTailnet(t: Tailnet | null, port: number): Check {
   return t
@@ -273,6 +311,7 @@ export async function preflight(opts: {
     checkOllama(),
     checkCodex(),
     checkPort(opts.port),
+    checkBrowser(),
     checkHome(opts.foremanHome),
     checkUi(opts.distDir),
   ]);

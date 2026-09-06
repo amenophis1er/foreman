@@ -12,16 +12,45 @@ driven by this app instead of terminal sessions observed by a plugin.
 (Golden-eye still observes Foreman's agents for free — they are real Claude
 Code sessions.)
 
-## Run it
+## Install
+
+Foreman needs Node 20 or newer and a Claude Code login (or an API key) on the
+machine it runs on. Then:
 
 ```sh
-npm ci && npm --prefix ui ci   # ci, not install — honours the lockfiles
-npm run ui:build               # build the dashboard
-npm start                      # serves http://localhost:4177
+npx @amenophis1er/foreman            # try it — starts the server, serves http://localhost:4177
+npm install -g @amenophis1er/foreman # keep it — then `foreman` from any shell
 ```
 
-Installed as a package, `foreman` starts the server from any directory;
-`foreman --help` lists the environment variables.
+```sh
+foreman doctor             # what this machine can run, what is missing, how to fix it
+foreman                    # start the server and serve the dashboard
+foreman open               # the dashboard, in your browser
+foreman service install    # keep it running: start at login, restart if it dies
+foreman --help             # the rest, and the environment variables
+```
+
+`foreman doctor` prints the same checklist the server prints on start —
+credentials and which account pays, the Claude Code install, Ollama and Codex
+if present, the browser missions will use, the port, Tailscale, the data
+directory — and exits. Nothing blocks unless it says so.
+
+**On the move.** If the machine is on a [Tailscale] tailnet, Foreman listens
+on the tailnet address too (never on every interface — there is no login),
+and the links it sends to your phone use the tailnet name. Link the Telegram
+bot in Settings → Notifications and the phone can answer asks, plan and start
+missions, and open what the crew built. `foreman service install` is what
+keeps the server up while the lid is closed.
+
+**From a checkout** (contributing):
+
+```sh
+npm ci && npm run setup      # dependencies, then the dashboard build
+npm start                    # serves http://localhost:4177
+npm test · npm run typecheck · npm run dev   # tests · both tsconfigs · API + Vite together
+```
+
+[Tailscale]: https://tailscale.com
 
 ### Which account pays
 
@@ -46,8 +75,9 @@ install, and choose whether it inherits the server's billing or uses that
 install's own login — which is what makes personal and work projects coexist on
 one server.
 
-Dev loop: `npm run ui:dev` (Vite, proxies to :4177) · `npm test` (store
-tests) · `npx tsc -p .` and `npm --prefix ui run typecheck`.
+Dev loop: `npm run dev` (API + Vite, proxied to :4177) · `npm test` ·
+`npm run typecheck` · `scripts/dev-restart.sh` (restarts the server only when
+no run, ask or planner turn would be lost).
 
 ## Using it
 

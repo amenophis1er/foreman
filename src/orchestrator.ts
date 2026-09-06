@@ -1360,7 +1360,9 @@ export class MissionRun {
         // Absolute path: the server runs with the mission folder as cwd,
         // where npx cannot resolve Foreman's own dependency.
         command: process.execPath,
-        args: [PLAYWRIGHT_MCP_CLI, '--headless', '--isolated'],
+        // Chrome channel by default (the machine's own Chrome, no download);
+        // FOREMAN_BROWSER picks another channel or Playwright's Chromium.
+        args: [PLAYWRIGHT_MCP_CLI, '--headless', '--isolated', '--browser', process.env.FOREMAN_BROWSER || 'chrome'],
       },
     };
   }

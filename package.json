@@ -1,15 +1,16 @@
 {
-  "name": "foreman",
+  "name": "@amenophis1er/foreman",
   "version": "1.0.0",
-  "description": "Autonomous mission runner on the Claude Agent SDK: a director agent plans, delegates to workers, verifies, and reports — driven from a browser dashboard.",
+  "description": "Autonomous mission runner on the Claude Agent SDK: a director plans, delegates to workers, verifies, and reports \u2014 from one dashboard, your phone, or the CLI.",
   "keywords": [
     "claude",
-    "claude-code",
-    "agent-sdk",
+    "agent",
     "agents",
-    "orchestration",
+    "orchestrator",
     "autonomous",
-    "ai"
+    "mission",
+    "claude-code",
+    "dashboard"
   ],
   "homepage": "https://github.com/amenophis1er/foreman#readme",
   "bugs": {
@@ -28,6 +29,7 @@
   "files": [
     "bin",
     "src",
+    "scripts/prepare.mjs",
     "ui/dist",
     "skills",
     "README.md",
@@ -42,18 +44,25 @@
     "start": "tsx src/server.ts",
     "dev": "node scripts/dev.mjs",
     "ui:dev": "npm --prefix ui run dev",
-    "ui:build": "npm --prefix ui run build"
+    "ui:build": "npm --prefix ui run build",
+    "prepack": "node scripts/prepare.mjs --force",
+    "typecheck": "tsc --noEmit -p . && npm --prefix ui run typecheck",
+    "doctor": "node bin/foreman.mjs doctor",
+    "setup": "node scripts/prepare.mjs --force"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.259",
     "@playwright/mcp": "^0.0.80",
     "qrcode": "^1.5.4",
     "tsx": "^4.23.13",
-    "typescript": "^7.0.2",
     "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
-    "@types/qrcode": "^1.5.6"
+    "@types/qrcode": "^1.5.6",
+    "typescript": "^7.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

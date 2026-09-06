@@ -1,0 +1,213 @@
+/**
+ * The subcommands behind `foreman` that are not "start the server".
+ *
+ *  doctor   The preflight, and nothing else: what this machine can run, what
+ *           is missing, how to fix it. Exit 0 when nothing blocks.
+ *  open     The dashboard, in the default browser.
+ *  service  Keep Foreman up without a terminal: a launchd agent on macOS, a
+ *           systemd user unit on Linux. Start at login, restart on crash,
+ *           log to ~/.foreman/logs. Foreman on the move needs the server to
+ *           be up when the laptop lid is closed; this is that.
+ */
+import { execFile, spawn } from 'node:child_process';
+import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { preflight, reportPreflight } from './preflight.js';
+import { detectTailscale } from './tailscale.js';
+
+const PORT = Number(process.env.PORT ?? 4177);
+const HOME_DIR = process.env.FOREMAN_HOME || path.join(os.homedir(), '.foreman');
+const LABEL = 'dev.foreman.server';
+
+function sh(cmd: string, args: string[]): Promise<{ code: number; out: string; err: string }> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: 20_000 }, (e, out, err) => {
+      const code = e ? (typeof (e as { code?: unknown }).code === 'number' ? (e as { code: number }).code : 1) : 0;
+      resolve({ code, out: String(out), err: String(err) });
+    });
+  });
+}
+
+/** The PATH a login agent gets is thin; node's own dir and the usual prefixes are added so `claude`, `tailscale`, `ollama` resolve. */
+export function servicePath(execPath: string, current = process.env.PATH ?? ''): string {
+  const parts = [path.dirname(execPath), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin', ...current.split(':')];
+  return [...new Set(parts.filter(Boolean))].join(':');
+}
+
+/** The launchd property list for the agent. Pure, so it can be read in a test and by a human. */
+export function launchdPlist(opts: { label: string; node: string; bin: string; home: string; logDir: string; env: Record<string, string> }): string {
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const envXml = Object.entries(opts.env).map(([k, v]) => `    <key>${esc(k)}</key><string>${esc(v)}</string>`).join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${esc(opts.label)}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${esc(opts.node)}</string>
+    <string>${esc(opts.bin)}</string>
+    <string>start</string>
+  </array>
+  <key>WorkingDirectory</key><string>${esc(opts.home)}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+${envXml}
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>${esc(path.join(opts.logDir, 'server.log'))}</string>
+  <key>StandardErrorPath</key><string>${esc(path.join(opts.logDir, 'server.log'))}</string>
+</dict>
+</plist>
+`;
+}
+
+/** The systemd user unit. Same shape as the plist: start at login, restart on failure, one log. */
+export function systemdUnit(opts: { node: string; bin: string; home: string; env: Record<string, string> }): string {
+  const envLines = Object.entries(opts.env).map(([k, v]) => `Environment=${k}=${v.replace(/"/g, '\\"')}`).join('\n');
+  return `[Unit]
+Description=Foreman — autonomous mission runner
+After=network-online.target
+
+[Service]
+ExecStart=${opts.node} ${opts.bin} start
+WorkingDirectory=${opts.home}
+Restart=always
+RestartSec=5
+${envLines}
+
+[Install]
+WantedBy=default.target
+`;
+}
+
+function serviceEnv(): Record<string, string> {
+  const env: Record<string, string> = { PATH: servicePath(process.execPath), HOME: os.homedir(), FOREMAN_HOME: HOME_DIR, PORT: String(PORT) };
+  for (const k of ['FOREMAN_BIND', 'FOREMAN_BROWSER', 'FOREMAN_CLAUDE_CONFIG_DIR', 'FOREMAN_CLAUDE_EXECUTABLE', 'FOREMAN_AUTH_MODE', 'CLAUDE_CONFIG_DIR']) {
+    if (process.env[k]) env[k] = process.env[k]!;
+  }
+  return env;
+}
+
+async function serviceInstall(bin: string): Promise<number> {
+  const logDir = path.join(HOME_DIR, 'logs');
+  await mkdir(logDir, { recursive: true });
+  const env = serviceEnv();
+  if (process.platform === 'darwin') {
+    const dir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+    const file = path.join(dir, `${LABEL}.plist`);
+    await mkdir(dir, { recursive: true });
+    await writeFile(file, launchdPlist({ label: LABEL, node: process.execPath, bin, home: HOME_DIR, logDir, env }));
+    await chmod(file, 0o644);
+    const uid = String(os.userInfo().uid);
+    await sh('launchctl', ['bootout', `gui/${uid}/${LABEL}`]); // replace a previous registration quietly
+    const r = await sh('launchctl', ['bootstrap', `gui/${uid}`, file]);
+    if (r.code !== 0) { console.error(`launchctl bootstrap failed: ${r.err.trim() || r.out.trim()}`); return 1; }
+    console.log(`Installed ${file}\nForeman starts at login and restarts if it dies. Logs: ${path.join(logDir, 'server.log')}\nDashboard: http://localhost:${PORT}`);
+    return 0;
+  }
+  if (process.platform === 'linux') {
+    const dir = path.join(os.homedir(), '.config', 'systemd', 'user');
+    const file = path.join(dir, 'foreman.service');
+    await mkdir(dir, { recursive: true });
+    await writeFile(file, systemdUnit({ node: process.execPath, bin, home: HOME_DIR, env }));
+    for (const args of [['--user', 'daemon-reload'], ['--user', 'enable', '--now', 'foreman']]) {
+      const r = await sh('systemctl', args);
+      if (r.code !== 0) { console.error(`systemctl ${args.join(' ')} failed: ${r.err.trim() || r.out.trim()}`); return 1; }
+    }
+    console.log(`Installed ${file}\nForeman starts at login and restarts if it dies. Logs: journalctl --user -u foreman -f\nTip: \`loginctl enable-linger $USER\` keeps it up when you are logged out.\nDashboard: http://localhost:${PORT}`);
+    return 0;
+  }
+  console.error(`No service integration for ${process.platform} yet. Run \`foreman\` under your own supervisor.`);
+  return 2;
+}
+
+async function serviceUninstall(): Promise<number> {
+  if (process.platform === 'darwin') {
+    const file = path.join(os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
+    await sh('launchctl', ['bootout', `gui/${os.userInfo().uid}/${LABEL}`]);
+    await rm(file, { force: true });
+    console.log('Removed. Foreman no longer starts at login.');
+    return 0;
+  }
+  if (process.platform === 'linux') {
+    await sh('systemctl', ['--user', 'disable', '--now', 'foreman']);
+    await rm(path.join(os.homedir(), '.config', 'systemd', 'user', 'foreman.service'), { force: true });
+    await sh('systemctl', ['--user', 'daemon-reload']);
+    console.log('Removed. Foreman no longer starts at login.');
+    return 0;
+  }
+  return 2;
+}
+
+async function serviceStatus(): Promise<number> {
+  if (process.platform === 'darwin') {
+    const r = await sh('launchctl', ['print', `gui/${os.userInfo().uid}/${LABEL}`]);
+    if (r.code !== 0) { console.log('Not installed. `foreman service install` keeps Foreman running.'); return 1; }
+    const state = /state = (\w+)/.exec(r.out)?.[1] ?? 'unknown';
+    const pid = /pid = (\d+)/.exec(r.out)?.[1];
+    console.log(`Installed · ${state}${pid ? ` · pid ${pid}` : ''} · http://localhost:${PORT}`);
+    return 0;
+  }
+  if (process.platform === 'linux') {
+    const r = await sh('systemctl', ['--user', 'is-active', 'foreman']);
+    console.log(r.out.trim() === 'active' ? `Installed · active · http://localhost:${PORT}` : `Installed? ${r.out.trim() || 'no'} — \`foreman service install\``);
+    return r.out.trim() === 'active' ? 0 : 1;
+  }
+  return 2;
+}
+
+async function serviceLogs(): Promise<number> {
+  if (process.platform === 'linux') {
+    const child = spawn('journalctl', ['--user', '-u', 'foreman', '-f', '-n', '100'], { stdio: 'inherit' });
+    return new Promise((r) => child.on('exit', (c) => r(c ?? 0)));
+  }
+  const file = path.join(HOME_DIR, 'logs', 'server.log');
+  const child = spawn('tail', ['-n', '100', '-f', file], { stdio: 'inherit' });
+  return new Promise((r) => child.on('exit', (c) => r(c ?? 0)));
+}
+
+async function doctor(): Promise<number> {
+  const tailnet = await detectTailscale();
+  const distDir = fileURLToPath(new URL('../ui/dist', import.meta.url));
+  const checks = await preflight({ port: PORT, foremanHome: HOME_DIR, distDir, tailnet });
+  // Port-in-use is an error for `start` and a fact for `doctor`: it usually means Foreman is already up.
+  for (const c of checks) {
+    if (c.name.startsWith('Port') && c.status === 'error') { c.status = 'warn'; c.detail = 'in use — Foreman is probably already running'; c.fix = `foreman open · or PORT=${PORT + 1} foreman`; }
+  }
+  const ok = reportPreflight(checks);
+  return ok ? 0 : 1;
+}
+
+async function open(): Promise<number> {
+  const url = `http://localhost:${PORT}`;
+  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+  const r = await sh(cmd, [url]);
+  if (r.code !== 0) console.log(url);
+  return 0;
+}
+
+export async function runCli(command: string, rest: string[], ctx: { version: string; bin: URL }): Promise<number> {
+  const bin = fileURLToPath(ctx.bin);
+  switch (command) {
+    case 'doctor': return doctor();
+    case 'open': return open();
+    case 'service': {
+      const sub = rest[0];
+      if (sub === 'install') return serviceInstall(bin);
+      if (sub === 'uninstall') return serviceUninstall();
+      if (sub === 'status') return serviceStatus();
+      if (sub === 'logs') return serviceLogs();
+      console.error('foreman service <install|uninstall|status|logs>');
+      return 1;
+    }
+    default: return 1;
+  }
+}
+
+/** For a test: where the plist would go. */
+export function plistPathFor(home = os.homedir()): string { return path.join(home, 'Library', 'LaunchAgents', `${LABEL}.plist`); }
