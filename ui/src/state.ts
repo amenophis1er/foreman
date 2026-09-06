@@ -1041,19 +1041,25 @@ export function useNotify(): {
   };
 }
 
+export type RailTab = 'mission' | 'files';
+
 /** Hash router: '#/' → fleet, '#/p/<projectId>' → project view,
- *  '#/p/<projectId>/r/<runId>' → a specific run (survives refresh). */
+ *  '#/p/<projectId>/r/<runId>' → a specific run, '…/r/<runId>/files' → its
+ *  Files tab (Mission is the default and carries no suffix). All survive
+ *  refresh and can be sent as links. */
 export function useRoute(): {
   projectId: string | null;
   runId: string | null;
+  tab: RailTab;
   go: (projectId: string | null) => void;
-  goRun: (projectId: string, runId: string | null) => void;
+  goRun: (projectId: string, runId: string | null, tab?: RailTab) => void;
 } {
   const parse = () => {
-    const m = window.location.hash.match(/^#\/p\/([^/]+)(?:\/r\/([^/]+))?/);
+    const m = window.location.hash.match(/^#\/p\/([^/]+)(?:\/r\/([^/]+)(?:\/(files))?)?/);
     return {
       projectId: m ? decodeURIComponent(m[1]) : null,
       runId: m?.[2] ? decodeURIComponent(m[2]) : null,
+      tab: (m?.[3] === 'files' ? 'files' : 'mission') as RailTab,
     };
   };
   const [route, setRoute] = useState(parse);
@@ -1065,9 +1071,9 @@ export function useRoute(): {
   const go = useCallback((id: string | null) => {
     window.location.hash = id ? `#/p/${encodeURIComponent(id)}` : '#/';
   }, []);
-  const goRun = useCallback((projectId: string, runId: string | null) => {
+  const goRun = useCallback((projectId: string, runId: string | null, tab: RailTab = 'mission') => {
     window.location.hash = runId
-      ? `#/p/${encodeURIComponent(projectId)}/r/${encodeURIComponent(runId)}`
+      ? `#/p/${encodeURIComponent(projectId)}/r/${encodeURIComponent(runId)}${tab === 'files' ? '/files' : ''}`
       : `#/p/${encodeURIComponent(projectId)}`;
   }, []);
   return { ...route, go, goRun };

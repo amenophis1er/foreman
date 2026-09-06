@@ -143,7 +143,7 @@ function useProviderChoices(open: boolean) {
 
 export default function App() {
   const { projects, connected, auth, refresh, activity } = useFleet();
-  const { projectId, runId, go, goRun } = useRoute();
+  const { projectId, runId, tab, go, goRun } = useRoute();
   const [theme, toggleTheme, applyTheme] = useTheme();
   const applyTextSize = useTextSize();
   // Settings can be opened over a project, so both surfaces want the same
@@ -232,6 +232,7 @@ export default function App() {
         <ProjectView p={project} models={models.models} modelsLoading={models.loading}
           modelsNote={models.note} modelsInheritNote={models.inheritNote} routeRunId={runId}
           onSelectRun={(id) => goRun(project.id, id)}
+          routeTab={tab} onSelectTab={(t) => runId && goRun(project.id, runId, t)}
           onBack={() => go(null)} refreshFleet={refresh} {...shared} />
       ) : (
         <FleetView projects={projects} connected={connected} activity={activity}

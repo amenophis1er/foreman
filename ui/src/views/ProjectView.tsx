@@ -471,16 +471,18 @@ function RunDetails({ r, live, liveCost, liveBasis, liveUsage, liveTurns, onChan
     </div>
   );
 }
-type RailTab = 'mission' | 'files';
+type RailTab = import('../state').RailTab;
 
 export function ProjectView({
-  p, models, modelsLoading, modelsNote, modelsInheritNote, routeRunId, onSelectRun, onBack,
+  p, models, modelsLoading, modelsNote, modelsInheritNote, routeRunId, onSelectRun, routeTab, onSelectTab, onBack,
   refreshFleet, auth, theme, onToggleTheme, onSettings,
 }: {
   p: ProjectSummary; models: ModelInfo[] | null;
   modelsLoading?: boolean; modelsNote?: string; modelsInheritNote?: string;
   auth: { mode: BillingMode; source: string; account?: { email?: string; org?: string } };
   routeRunId: string | null; onSelectRun: (runId: string | null) => void;
+  /** The rail tab lives in the URL, so a Files view can be linked and survives refresh. */
+  routeTab: RailTab; onSelectTab: (tab: RailTab) => void;
   onBack: () => void; refreshFleet: () => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
 }) {
@@ -502,7 +504,8 @@ export function ProjectView({
   const isRunning = viewingLive && run.runStatus === 'running';
   const [filter, setFilter] = useState<string | null>(null);
   const [jump, setJump] = useState<{ id: number; n: number } | null>(null);
-  const [railTab, setRailTab] = useState<RailTab>('mission');
+  const railTab = routeTab;
+  const setRailTab = onSelectTab;
   // The rail's width is the reader's, dragged from its left edge and kept in
   // this browser. Bounded so neither the transcript nor the rail can vanish.
   const [railWidth, setRailWidthState] = useState<number>(() => {
@@ -584,9 +587,9 @@ export function ProjectView({
     return () => clearInterval(t);
   }, [pendingCount]);
 
-  // A new run resets the reading position: a fresh mission opens on its
-  // checklist, whatever rail tab the last one was left on.
-  useEffect(() => { setRailTab('mission'); setFilter(null); }, [selectedRunId]);
+  // A new run resets the reading position. The rail tab is in the URL, and
+  // a run change writes a URL without the suffix, so it resets by itself.
+  useEffect(() => { setFilter(null); }, [selectedRunId]);
 
   const activity = useMemo(() => (isRunning ? nowActivity(run) : null), [isRunning, run]);
   const doneWhen = useMemo(() => parseDoneWhen(run.missionDoc), [run.missionDoc]);
