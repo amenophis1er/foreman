@@ -31,7 +31,7 @@ export const DEFAULT_SETTINGS = {
   budgetCap: 5, budgetWarnAt: 80, budgetHardStop: true,
   autoAllowReadOnly: true, alwaysSurvivesResume: true,
   toolPolicy: { Bash: 'allow', Write: 'allow', Edit: 'allow', WebFetch: 'allow', spawn_worker: 'allow' },
-  theme: 'system', textSize: 'default', density: 'comfortable', showTimestamps: true,
+  theme: 'light', textSize: 'default', density: 'comfortable', showTimestamps: true,
   notifyNeedsYou: true, notifyDone: true, notifyBudget: true, sound: false,
   projectsRoot: '~/Projects', missionDir: '.foreman', showHidden: false,
 };

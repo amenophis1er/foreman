@@ -1,21 +1,31 @@
-/* Foreman color system. Dark is the default look; `[data-theme="light"]` on <html> flips every
-   surface/ink token while identity and status hues stay recognisably the same. */
+/* Foreman color system. Light is the default look — Foreman is read more than
+   watched — and `[data-theme="dark"]` (the :root values below, applied by the
+   app) is the night mode. Identity and status hues stay recognisably the same
+   in both.
+
+   Dark, retuned 2026-09-06: near-black neutrals with the faintest cool bias,
+   not mid-slate and not sepia (a warm pass was tried and read brown beside
+   the gold). The old greys sat four points apart and text at the third tier
+   fell to 3.3:1. Now: three planes you can tell apart on a ground dark enough
+   that off-white text has real contrast, every ink tier ≥ 4.7:1 on a card,
+   and the gold and the violets carry all the warmth themselves. */
 :root {
   color-scheme: dark;
 
-  /* Surfaces — four stacked planes, app darkest-but-one, inset darkest */
-  --bg-app: #121417;
-  --bg-panel: #1a1d22;
-  --bg-card: #22262d;
-  --bg-inset: #14161a;
-  --bg-hover: #1e2228;
-  --line: #2d323b;
-  --line-strong: #3a4048;
+  /* Surfaces — near-black ground, panel and card lifted by a step and a line */
+  --bg-app: #0c0d10;
+  --bg-panel: #121317;
+  --bg-card: #181a1f;
+  --bg-inset: #08090b;
+  --bg-hover: #1e2026;
+  --line: #262930;
+  --line-strong: #363a43;
 
-  /* Ink — text never wears identity or status color */
-  --ink-0: #e8e6df;
-  --ink-1: #a7afb9;
-  --ink-2: #6d7683;
+  /* Ink — text never wears identity or status color. Off-white, not white:
+     pure white on near-black halates on long paragraphs. */
+  --ink-0: #e7e8eb;
+  --ink-1: #b0b4bb;
+  --ink-2: #8b9099;
 
   /* Identity — fixed per role, never cycled or reassigned */
   --brand: #e8b04b;
@@ -36,9 +46,10 @@
   --status-serious: #ec835a;
   --status-critical: #e5484d;
 
-  /* Derived washes — the only transparencies in the system */
-  --brand-wash: rgba(232, 176, 75, 0.06);
-  --brand-wash-strong: rgba(232, 176, 75, 0.12);
+  /* Derived washes — the only transparencies in the system. A touch stronger
+     than before: the same 6% that read on slate vanishes on near-black. */
+  --brand-wash: rgba(232, 176, 75, 0.09);
+  --brand-wash-strong: rgba(232, 176, 75, 0.16);
   --scrim: rgba(0, 0, 0, 0.55);
 
   /* Diff rendering (tool payloads) */
@@ -57,7 +68,7 @@
   --line-strong: #c2beb2;
   --ink-0: #1c1e22;
   --ink-1: #555c67;
-  --ink-2: #7b828d;
+  --ink-2: #6b727d;
   --brand: #c98f1f;
   --brand-ink: #ffffff;
   --agent-worker: #6f57d6;

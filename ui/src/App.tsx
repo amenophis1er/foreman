@@ -43,7 +43,7 @@ function useTextSize(): (t: TextSize) => void {
 
 function useTheme(): [Theme, () => void, (t: Theme | 'system') => void] {
   const [theme, setTheme] = useState<Theme>(() =>
-    (localStorage.getItem('foreman:theme') as Theme) || 'dark');
+    (localStorage.getItem('foreman:theme') as Theme) || 'light');
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('foreman:theme', theme);
