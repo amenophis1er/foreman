@@ -73,17 +73,26 @@ function groupByProvider(list) {
 export function ModelSelect({ align = 'left', value = '', onChange, models, loading, note, inheritNote, allowDefault = true, disabled, style }) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(null);
+  const [q, setQ] = useState('');
   const root = useRef(null);
   const listRef = useRef(null);
+  const filterRef = useRef(null);
   // "inherits your Claude Code default" is only true on a Claude Code provider.
   // Elsewhere the caller says what Default actually inherits.
   const inherit = inheritNote ? { ...INHERIT, model: inheritNote } : INHERIT;
   const rows = models || FALLBACK_MODELS;
   const list = [...(allowDefault ? [inherit] : []), ...rows];
   const current = list.find((m) => m.id === value) || (value ? { id: value, label: value, model: value } : inherit);
+  // Type-to-filter, once the list is long enough to need it. Matches the
+  // label, the id, the provider and the note, so "cloud", "codex", "haiku"
+  // and "cheap" all narrow the way a person would expect.
+  const filterable = rows.length > 6;
+  const needle = q.trim().toLowerCase();
+  const hit = (m) => !needle || [m.label, m.model, m.id, m.providerLabel, m.note].some((s) => String(s ?? '').toLowerCase().includes(needle));
+  const shownRows = filterable && needle ? rows.filter(hit) : rows;
   // Real providers only — the inherit row isn't one of the server's groups
   // and would otherwise show up as its own single-row "Anthropic" bucket.
-  const groups = groupByProvider(rows);
+  const groups = groupByProvider(shownRows);
   // A single provider (the common case: Anthropic-only, or the fallback list
   // before `/models` answers) gets no headings — grouping earns its screen
   // space only once there's something to distinguish.
@@ -104,6 +113,15 @@ export function ModelSelect({ align = 'left', value = '', onChange, models, load
     const el = listRef.current.querySelector('[data-selected="true"]');
     if (el) el.scrollIntoView({ block: 'nearest' });
   }, [open]);
+  useEffect(() => {
+    // The filter starts empty and focused each time the menu opens.
+    if (!open) { setQ(''); return; }
+    filterRef.current?.focus();
+  }, [open]);
+  const pickFirst = () => {
+    const first = groups[0]?.items[0];
+    if (first) { onChange?.(first.id, first); setOpen(false); }
+  };
 
   // A chosen non-default provider must not read like a chosen Anthropic model
   // at a glance — the whole point of this build is that the two now sit side
@@ -157,8 +175,22 @@ export function ModelSelect({ align = 'left', value = '', onChange, models, load
               10 Ollama + 6 Codex is 20 rows, well past what fits under a
               trigger sitting mid-modal. Scrolls internally; the effect above
               lands on the current selection instead of the top. */}
+          {filterable && (
+            <div style={{ padding: 6, borderBottom: '1px solid var(--line)' }}>
+              <input ref={filterRef} value={q} onChange={(e) => setQ(e.target.value)}
+                placeholder={`Filter ${rows.length} models…`} aria-label="Filter models"
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); pickFirst(); } }}
+                style={{
+                  width: '100%', boxSizing: 'border-box', padding: '5px 8px', font: 'inherit', fontSize: 'var(--fs-sm)',
+                  color: 'var(--ink-0)', background: 'var(--bg-inset)', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', outline: 'none',
+                }} />
+            </div>
+          )}
           <div ref={listRef} style={{ maxHeight: 360, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-            {allowDefault && (
+            {filterable && needle && shownRows.length === 0 && (
+              <div style={{ padding: '10px', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>No model matches “{q.trim()}”.</div>
+            )}
+            {allowDefault && !needle && (
               <ModelRow key={inherit.id} m={inherit} selected={current.id === inherit.id}
                 hover={hover === inherit.id} onHover={setHover}
                 onClick={() => { onChange?.(inherit.id, inherit); setOpen(false); }} />
