@@ -554,6 +554,7 @@ export function ProjectView({
   const [showDoc, setShowDoc] = useState(false);
   const [showDoneWhen, setShowDoneWhen] = useState(false);
   const [showFilesNarrow, setShowFilesNarrow] = useState(false);
+  const [showRunsNarrow, setShowRunsNarrow] = useState(false);
   const [headerErr, setHeaderErr] = useState('');
   const [forking, setForking] = useState(false);
   const forkPlan = async (runId: string) => {
@@ -640,8 +641,34 @@ export function ProjectView({
     </span>
   ) : null;
 
+  // The run's identity, first thing in the rail: what am I looking at.
+  const runHead = selectedRun && (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+      <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-semibold)', color: 'var(--ink-0)', lineHeight: 'var(--lh)' }}
+        title={selectedRun.mission}>
+        {selectedRun.title || selectedRun.mission.split('\n').find((l) => l.trim()) || 'Untitled run'}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', flexWrap: 'wrap' }}>
+        <span>{new Date(selectedRun.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+        <StatusBadge status={viewingLive ? run.runStatus : selectedRun.status} />
+        {!viewingLive && <span>read-only</span>}
+      </div>
+    </div>
+  );
+  const runsPane = (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {history.length === 0 && <Empty>No runs yet.</Empty>}
+      {history.map((r) => (
+        <RunRow key={r.id} mission={r.mission} title={r.title} createdAt={r.createdAt}
+          costUsd={r.costUsd} costBasis={basisOf(r)} usage={r.usage} status={r.status}
+          selected={r.id === selectedRunId} current={r.id === activeRunId}
+          onSelect={r.id === selectedRunId ? undefined : () => setSelectedRunId(r.id)} />
+      ))}
+    </div>
+  );
   const missionDocPane = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
+      {runHead}
       <DoneWhenList doc={run.missionDoc} />
       <Disclosure label="Mission doc" open={showDoc} onToggle={() => setShowDoc(!showDoc)}>
         <PlanBoard doc={run.missionDoc ?? undefined} />
@@ -666,6 +693,7 @@ export function ProjectView({
     <Tabs size="sm" value={railTab} onChange={(v) => setRailTab(v as RailTab)} tabs={[
       { value: 'mission', label: 'Mission' },
       { value: 'files', label: 'Files', count: fileCount },
+      { value: 'runs', label: 'Runs', count: history.length },
     ]} />
   );
 
@@ -715,6 +743,9 @@ export function ProjectView({
           </Disclosure>
           <Disclosure label={`Files · ${fileCount}`} open={showFilesNarrow} onToggle={() => setShowFilesNarrow(!showFilesNarrow)}>
             {filesPane}
+          </Disclosure>
+          <Disclosure label={`Runs · ${history.length}`} open={showRunsNarrow} onToggle={() => setShowRunsNarrow(!showRunsNarrow)}>
+            {runsPane}
           </Disclosure>
         </div>
       )}
@@ -793,8 +824,13 @@ export function ProjectView({
         </Banner>
       )}
 
-      <RunSwitcher history={history} selectedRunId={selectedRunId} live={viewingLive}
-        onSelectRun={setSelectedRunId} />
+      {/* While planning there is no rail, so the past runs are reached here.
+          In a run, the rail's Mission tab names the run and its Runs tab lists
+          the rest — a strip under the header was the only home they had. */}
+      {idle && (
+        <RunSwitcher history={history} selectedRunId={selectedRunId} live={viewingLive}
+          onSelectRun={setSelectedRunId} />
+      )}
 
       {idle ? (
         <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
@@ -889,7 +925,7 @@ export function ProjectView({
                   style={{ position: 'absolute', left: -4, top: 0, bottom: 0, width: 8, cursor: 'col-resize', zIndex: 2 }} />
                 <div style={{ padding: 'var(--sp-2) var(--sp-3) 0', flex: '0 0 auto' }}>{railTabs}</div>
                 <div style={{ minHeight: 0, overflowY: 'auto', padding: 'var(--sp-3)' }}>
-                  {railTab === 'mission' ? missionDocPane : filesPane}
+                  {railTab === 'mission' ? missionDocPane : railTab === 'files' ? filesPane : runsPane}
                 </div>
               </aside>
             </div>
