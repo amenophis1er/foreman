@@ -35,6 +35,8 @@ export interface Transport {
   send(text: string, opts?: { buttons?: Button[][] }): Promise<string | null>;
   /** Replaces the text and drops any buttons unless new ones are given. */
   edit(id: string, text: string, opts?: { buttons?: Button[][] }): Promise<void>;
+  /** Shows "working" for as long as the returned stop function is not called, where the channel has such a thing. */
+  busy?(): () => void;
 }
 
 /** The same envelope the SSE clients get, plus the event name. */
@@ -309,6 +311,15 @@ export class NotifyHub {
   constructor(private ctx: () => NotifyContext) {}
 
   attach(t: Transport): void { this.transports.push(t); }
+  /**
+   * The channel's "working" indicator, for the whole of a planner turn. A
+   * phone that shows nothing for thirty seconds and then a paragraph reads
+   * as a bot that ignored you; the typing bubble is the difference.
+   */
+  busy(): () => void {
+    const stops = this.transports.map((t) => t.busy?.()).filter((f): f is () => void => typeof f === 'function');
+    return () => { for (const s of stops) s(); };
+  }
   detach(name: string): void { this.transports = this.transports.filter((t) => t.name !== name); }
   get active(): string[] { return this.transports.map((t) => t.name); }
 

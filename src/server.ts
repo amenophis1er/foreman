@@ -24,6 +24,9 @@
  *   POST   /runs/{id}/resume     Resume an interrupted/failed run
  *   POST   /permission           Resolve an approval {id, behavior, message?}
  *   POST   /answer               Answer a director question {id, text}
+ *   POST   /fleet/chat           One turn with the fleet planner {text} → {text, costUsd}
+ *   POST   /fleet/stop           Stop the fleet planner reply in flight
+ *   DELETE /fleet/chat           Forget the fleet conversation
  *   POST   /steer                Send an operator note to a running director {runId, text}
  *   POST   /interrupt            Interrupt a run {runId}
  *   GET    /runs?projectId=      Persisted run summaries, newest first
@@ -57,7 +60,11 @@ import { saveAttachments } from './attachments.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
 import { ServiceRegistry, SVC_PREFIX, parseServicePath, portOpen, proxyToService, servicePath } from './services.js';
-import { HELP_TEXT, parseCommand, projectsRoot, slug } from './notify/commands.js';
+import { HELP_TEXT, expandHome, parseCommand, projectsRoot, slug } from './notify/commands.js';
+import {
+  DEFAULT_FLEET_MODEL, FLEET_CHAT_ID, PHONE_CONTEXT_MS, phoneRoute, runFleetTurn,
+  type FleetHost, type FleetProjectView,
+} from './fleet-planner.js';
 import { escapeHtml as escTg } from './notify.js';
 import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
@@ -84,7 +91,7 @@ import {
 } from './preflight.js';
 import { combineBasis, costBasisOf } from './types.js';
 import type {
-  ChatMeta, CostBasis, ForemanEvent, ModelChoice, Project, ProviderRef, RunMeta, ToolPolicy,
+  ChatMeta, CostBasis, ForemanEvent, MissionProposal, ModelChoice, Project, ProviderRef, RunMeta, ToolPolicy,
 } from './types.js';
 
 /**
@@ -419,7 +426,7 @@ const PORT = Number(process.env.PORT ?? 4177);
  * `FOREMAN_BIND=local` keeps it to this machine even with Tailscale up.
  */
 const BIND = (process.env.FOREMAN_BIND ?? 'auto') as 'auto' | 'all' | 'local';
-const tailnet = BIND === 'local' ? null : await detectTailscale();
+const tailnet = BIND === 'local' ? null : await detectTailscale(PORT);
 /** Dev servers the crew put behind /svc/ — see services.ts. */
 const services = new ServiceRegistry();
 /**
@@ -450,6 +457,49 @@ function activeRuns(): MissionRun[] {
 }
 
 /** Broadcasts an enveloped frame to live clients and persists the bare event. */
+/**
+ * What happened in the fleet lately, in one line each, for the front desk.
+ *
+ * In memory only: it exists so the fleet planner can open with the news
+ * instead of asking, and the news is by definition recent. A restart
+ * empties it and says so. Two hundred lines outlast any plausible gap
+ * between two phone messages.
+ */
+const SERVER_STARTED_AT = Date.now();
+const fleetLog: Array<{ ts: number; projectId: string; text: string }> = [];
+function noteFleetEvent(projectId: string, event: string, d: Record<string, unknown>): void {
+  const short = (v: unknown, n = 90): string => { const t = String(v ?? '').split('\n')[0].trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+  let text: string | null = null;
+  switch (event) {
+    case 'run_started': text = `mission started: "${short(d.mission)}"`; break;
+    case 'run_resumed': text = 'mission resumed'; break;
+    case 'run_finished': text = `mission ended: ${d.status}${typeof d.costUsd === 'number' ? ` ($${(d.costUsd as number).toFixed(2)})` : ''}`; break;
+    case 'run_error': text = `run error: ${short(d.error, 120)}`; break;
+    case 'mission_incomplete': text = `ended with boxes unticked: ${short(d.text, 120)}`; break;
+    case 'permission_request': text = `${d.agent ?? 'the crew'} asked to use ${d.toolName ?? d.tool ?? 'a tool'} — waiting on the human`; break;
+    case 'question': text = `${d.agent ?? 'the director'} asked the human: "${short(d.question)}"`; break;
+    case 'worker_stalled': text = `a worker stalled: ${short(d.text, 100)}`; break;
+    case 'service_exposed': text = `service up: ${short(d.label)} at ${d.url ?? ''}`; break;
+    case 'mission_proposed': text = `a mission was proposed (cap $${d.budgetUsd}): "${short(d.mission)}"`; break;
+    case 'mission_started': text = 'the proposal was started as a mission'; break;
+    case 'chat_proposal_dismissed': text = 'the proposal was discarded'; break;
+  }
+  if (!text) return;
+  fleetLog.push({ ts: Date.now(), projectId, text });
+  if (fleetLog.length > 200) fleetLog.splice(0, fleetLog.length - 200);
+}
+
+/** The news since `since`, as lines for the front desk's prompt. */
+function fleetNews(since: number, max = 12): string[] {
+  const hhmm = (t: number) => new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const lines = fleetLog.filter((e) => e.ts > since && e.projectId !== FLEET_CHAT_ID)
+    .map((e) => `${hhmm(e.ts)} ${projectsCache.get(e.projectId)?.name ?? e.projectId} — ${e.text}`);
+  const out = lines.slice(-max);
+  if (lines.length > max) out.unshift(`(${lines.length - max} earlier lines not shown)`);
+  if (SERVER_STARTED_AT > since) out.unshift(`Foreman restarted at ${hhmm(SERVER_STARTED_AT)}; anything before that is not listed here (the tools still know).`);
+  return out;
+}
+
 function makeEmitter(runId: string, projectId: string) {
   return (event: string, data: unknown): void => {
     const evt: ForemanEvent = { ts: Date.now(), event, data };
@@ -457,6 +507,7 @@ function makeEmitter(runId: string, projectId: string) {
       `event: ${event}\ndata: ${JSON.stringify({ runId, projectId, data })}\n\n`;
     for (const res of sseClients) res.write(frame);
     void store.append(runId, evt);
+    noteFleetEvent(projectId, event, (data ?? {}) as Record<string, unknown>);
     // The one place notifications hang off the mission stream. Labels are
     // cached here from the events themselves so a message can name the run
     // without a disk read on the emitter's path.
@@ -520,6 +571,7 @@ function ledgerKeyFor(meta: RunMeta): string {
 function broadcastChat(projectId: string, event: string, data: unknown): void {
   const frame = `event: ${event}\ndata: ${JSON.stringify({ runId: null, projectId, chat: true, data })}\n\n`;
   for (const res of sseClients) res.write(frame);
+  noteFleetEvent(projectId, event, (data ?? {}) as Record<string, unknown>);
 }
 
 function makeChatEmitter(projectId: string) {
@@ -529,6 +581,7 @@ function makeChatEmitter(projectId: string) {
       `event: ${event}\ndata: ${JSON.stringify({ runId: null, projectId, chat: true, data })}\n\n`;
     for (const res of sseClients) res.write(frame);
     void store.appendChat(projectId, evt);
+    noteFleetEvent(projectId, event, (data ?? {}) as Record<string, unknown>);
     if (!projectsCache.has(projectId)) {
       void store.getProject(projectId).then((p) => { if (p) projectsCache.set(projectId, { name: p.name }); });
     }
@@ -682,10 +735,280 @@ async function findProject(ref: string): Promise<Project | null> {
     ?? null;
 }
 
+// ---------------------------------------------------------------------------
+// The fleet planner — the front desk
+// ---------------------------------------------------------------------------
+
+/** When the phone last spoke to a project planner; decides where plain text goes. */
+let lastPhonePlanningAt = 0;
+/** The fleet turn in flight, if any. One at a time: it is one session. */
+let fleetAbort: AbortController | null = null;
+
+const firstLine = (s: string): string => s.split('\n').find((l) => l.trim())?.trim().slice(0, 100) ?? '';
+const runTitle = (m: RunMeta): string => m.title || firstLine(m.mission) || m.id;
+const spendLine = (m: RunMeta): string =>
+  m.costBasis === 'priced' || m.costBasis === undefined ? `$${m.costUsd.toFixed(2)} of $${m.budgetUsd}` : `${m.costBasis} · cap $${m.budgetUsd}`;
+const clipText = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0, n).trimEnd()} […]`);
+
+/** The director's last words in a run's log: its latest text block, and its result if it ended. */
+async function directorWords(runId: string): Promise<{ last?: string; result?: string; error?: string }> {
+  const events = await store.readEvents(runId).catch(() => []);
+  let last: string | undefined;
+  let result: string | undefined;
+  let error: string | undefined;
+  for (const e of events) {
+    if (e.event === 'run_error' || e.event === 'mission_incomplete') {
+      const d = e.data as { error?: unknown; text?: unknown } | undefined;
+      const t = d?.error ?? d?.text;
+      if (typeof t === 'string' && t.trim()) error = t.trim();
+      continue;
+    }
+    if (e.event !== 'message') continue;
+    const d = e.data as { agent?: string; msg?: { type?: string; result?: unknown; message?: { content?: Array<{ type?: string; text?: string }> } } } | undefined;
+    if (d?.agent !== 'director' || !d.msg) continue;
+    if (d.msg.type === 'assistant') {
+      for (const b of d.msg.message?.content ?? []) if (b.type === 'text' && b.text?.trim()) last = b.text.trim();
+    } else if (d.msg.type === 'result' && typeof d.msg.result === 'string') {
+      result = d.msg.result;
+    }
+  }
+  return { last, result, error };
+}
+
+/** DONE WHEN progress as the mission doc records it. */
+async function boxCount(folder: string): Promise<string> {
+  const doc = await readFile(path.join(folder, '.foreman', 'MISSION.md'), 'utf8').catch(() => '');
+  const ticked = (doc.match(/^\s*[-*] \[[xX]\]/gm) ?? []).length;
+  const open = (doc.match(/^\s*[-*] \[ \]/gm) ?? []).length;
+  return ticked + open ? `${ticked} of ${ticked + open} boxes ticked` : 'no checklist yet';
+}
+
+async function lastRunOf(project: Project): Promise<RunMeta | null> {
+  const runs = await store.listRuns().catch(() => [] as RunMeta[]);
+  return runs.filter((r) => r.folder === project.folder && r.status !== 'running')
+    .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+}
+
+async function noSuchProject(ref: string): Promise<string> {
+  const names = (await store.listProjects()).map((p) => p.name);
+  return `No project called "${ref}". Linked projects: ${names.length ? names.join(', ') : 'none yet'}.`;
+}
+
+/**
+ * The fleet's verbs, as the front desk may use them. Every method answers in
+ * words; nothing here starts, stops or resumes a run.
+ */
+const fleetHost: FleetHost = {
+  async listProjects() {
+    const all = await store.listProjects();
+    const runs = await store.listRuns().catch(() => [] as RunMeta[]);
+    const out: FleetProjectView[] = [];
+    for (const p of all) {
+      const live = activeByProject.get(p.id);
+      const last = runs.filter((r) => r.folder === p.folder && r.status !== 'running').sort((a, b) => b.createdAt - a.createdAt)[0];
+      const meta = await store.readChatMeta(p.id).catch(() => null);
+      out.push({
+        id: p.id, name: p.name, folder: p.folder,
+        running: live ? {
+          title: runTitle(live.meta), spend: spendLine(live.meta), startedAt: live.meta.createdAt,
+          waiting: live.pendingAsks().map((a) => `${a.kind === 'permission' ? 'approval' : 'question'}: ${clipText(a.text, 120)}`),
+        } : undefined,
+        lastRun: last ? { title: runTitle(last), status: last.status, endedAt: last.endedAt } : undefined,
+        proposalWaiting: Boolean(meta?.proposal),
+        plannerReplying: chatTurns.has(p.id),
+      });
+    }
+    return out;
+  },
+
+  async projectDetail(ref) {
+    const project = await findProject(ref);
+    if (!project) return noSuchProject(ref);
+    const live = activeByProject.get(project.id);
+    const lines = [`${project.name} — ${project.folder}`];
+    if (live) {
+      const m = live.meta;
+      lines.push(`RUNNING "${runTitle(m)}" · ${spendLine(m)} · ${Math.round((Date.now() - m.createdAt) / 60_000)} min so far`);
+      lines.push(await boxCount(m.folder));
+      if (m.workers.length) {
+        lines.push(`crew: ${m.workers.map((w) => `${w.id} ${w.status} (${clipText(firstLine(w.task), 60)})`).join('; ')}`);
+      }
+      const asks = live.pendingAsks();
+      if (asks.length) {
+        lines.push(`WAITING ON THE HUMAN (answered only through the card's buttons, never by you):`);
+        for (const a of asks) lines.push(`  - ${a.kind}${a.toolName ? ` ${a.toolName}` : ''}: ${clipText(a.text, 200)}${a.options?.length ? ` [options: ${a.options.join(' / ')}]` : ''}`);
+      }
+      const words = await directorWords(m.id);
+      if (words.last) lines.push(`director's latest words: ${clipText(words.last, 600)}`);
+    } else {
+      const last = await lastRunOf(project);
+      lines.push(last
+        ? `idle · last run "${runTitle(last)}" ${last.status}${last.endedAt ? ` at ${new Date(last.endedAt).toLocaleString()}` : ''} · ${spendLine(last)}`
+        : 'idle · no runs yet');
+      if (last && last.status !== 'done') {
+        const words = await directorWords(last.id);
+        if (words.error) lines.push(`it stopped with: ${clipText(words.error, 300)}`);
+      }
+    }
+    const meta = await store.readChatMeta(project.id).catch(() => null);
+    if (meta?.proposal) lines.push(`a proposal is waiting for Start or Discard: "${clipText(firstLine(meta.proposal.mission), 100)}" cap $${meta.proposal.budgetUsd}`);
+    if (chatTurns.has(project.id)) lines.push('its planner is replying right now');
+    return lines.join('\n');
+  },
+
+  async runReport(ref) {
+    const project = await findProject(ref);
+    if (!project) return noSuchProject(ref);
+    const last = await lastRunOf(project);
+    if (!last) return `${project.name} has no finished run yet.`;
+    const words = await directorWords(last.id);
+    const lines = [
+      `${project.name} · "${runTitle(last)}" · ${last.status}${last.endedAt ? ` at ${new Date(last.endedAt).toLocaleString()}` : ''} · ${spendLine(last)}`,
+      await boxCount(last.folder),
+    ];
+    if (words.error) lines.push(`it stopped with: ${clipText(words.error, 400)}`);
+    if (last.workers.length) lines.push(`crew: ${last.workers.map((w) => `${w.id} ${w.status}`).join(', ')}`);
+    if (words.result) lines.push(`director's closing report:\n${clipText(words.result, 2500)}`);
+    else if (words.last) lines.push(`director's last words:\n${clipText(words.last, 2500)}`);
+    return lines.join('\n');
+  },
+
+  async createProject(name) {
+    const settings = await store.readSettings().catch(() => ({ global: {}, projects: {} }));
+    const root = projectsRoot((settings.global as Record<string, unknown>).projectsRoot);
+    const dir = slug(name);
+    if (!dir) return 'That name leaves nothing to call a folder. Try letters and digits.';
+    const existing = await findProject(dir);
+    if (existing) return `${existing.name} is already linked at ${existing.folder}.`;
+    const folder = path.join(root, dir);
+    await mkdir(folder, { recursive: true });
+    const project = await store.addProject(folder, name.trim());
+    projectsCache.set(project.id, { name: project.name });
+    return `Created ${project.name} at ${folder} and linked it. It is empty.`;
+  },
+
+  async linkProject(folderIn) {
+    const folder = expandHome(folderIn.trim());
+    if (!path.isAbsolute(folder)) return `A folder to link must be an absolute path (or ~/…), not "${folderIn}".`;
+    const st = await stat(folder).catch(() => null);
+    if (!st?.isDirectory()) return `${folder} is not a folder that exists. create_project makes a new one under the projects root.`;
+    const all = await store.listProjects();
+    const dup = all.find((p) => p.folder === folder);
+    if (dup) return `${dup.name} is already linked at ${folder}.`;
+    const project = await store.addProject(folder);
+    projectsCache.set(project.id, { name: project.name });
+    return `Linked ${project.name} at ${folder}.`;
+  },
+
+  async openPlanning(ref, message) {
+    const project = await findProject(ref);
+    if (!project) return noSuchProject(ref);
+    if (activeByProject.has(project.id)) return `${project.name} has a mission running — planning waits for it to end. steer can pass the director a note now.`;
+    if (chatTurns.has(project.id)) return `${project.name}'s planner is still replying to an earlier message.`;
+    chatTurns.add(project.id);
+    void driveChatTurn(project, message, message, 'telegram');
+    return `Handed to ${project.name}'s planner; its reply follows. Plain messages now go to it. Tell the human that in one line and stop.`;
+  },
+
+  async proposeMission(ref, p) {
+    const project = await findProject(ref);
+    if (!project) return noSuchProject(ref);
+    if (activeByProject.has(project.id)) return `${project.name} has a mission running; one active mission per project.`;
+    const meta = await chatMetaOf(project.id);
+    const proposal: MissionProposal = { ...p, id: `mp-${Date.now().toString(36)}`, createdAt: Date.now() };
+    await store.writeChatMeta({ ...meta, proposal, updatedAt: Date.now() });
+    const emit = makeChatEmitter(project.id);
+    emit('chat_message', { text: `(from the fleet planner) Proposed: ${firstLine(p.mission)}`, via: 'telegram' });
+    emit('mission_proposed', { ...proposal, via: 'telegram' });
+    return `Proposal card shown for ${project.name} (cap $${p.budgetUsd}${p.browser ? ', browser on' : ''}), on the phone and on the desk, with Start and Discard. Say in one line what you proposed; do not repeat the brief.`;
+  },
+
+  async steer(ref, note) {
+    const project = await findProject(ref);
+    if (!project) return noSuchProject(ref);
+    const run = activeByProject.get(project.id);
+    if (!run) return `${project.name} has no mission running, so there is no director to steer.`;
+    return run.steer(note) ? `Note passed to ${project.name}'s director; it reads it at its next turn.` : `${project.name}'s director is no longer accepting notes (the run is ending).`;
+  },
+};
+
+/**
+ * One turn at the front desk. `via` says who asked: the phone hears the
+ * answer, an HTTP caller gets it back. Same session either way.
+ */
+async function driveFleetTurn(text: string, via: 'telegram' | 'http'): Promise<{ text: string; costUsd: number; handedOff?: string; error?: string; busy?: boolean }> {
+  if (fleetAbort) return { text: '', costUsd: 0, busy: true };
+  const emit = makeChatEmitter(FLEET_CHAT_ID);
+  const meta = await chatMetaOf(FLEET_CHAT_ID);
+  const g = (await store.readSettings().catch(() => ({ global: {}, projects: {} }))).global as Record<string, unknown>;
+  const model = modelChoice(g.fleetPlannerModel ?? g.plannerModel) || DEFAULT_FLEET_MODEL;
+  const abort = new AbortController();
+  fleetAbort = abort;
+  emit('chat_message', { text, via });
+  const stopBusy = via === 'telegram' ? notifyHub.busy() : () => {};
+  try {
+    const resolved = await resolveProvider(providerOf({}), store.root);
+    emit('chat_turn', { state: 'thinking', model, provider: resolved.label, costBasis: resolved.costBasis });
+    const problem = providerProblem(resolved);
+    if (problem) {
+      emit('chat_error', { error: `provider unavailable — ${problem}` });
+      return { text: '', costUsd: 0, error: `provider unavailable — ${problem}` };
+    }
+    const cwd = projectsRoot(g.projectsRoot);
+    await mkdir(cwd, { recursive: true }).catch(() => {});
+    const { models } = await availableModels(null).catch(() => ({ models: [] }));
+    // The first turn ever looks back two hours; every later one looks back
+    // to the end of the previous turn.
+    const since = meta.sessionId ? meta.updatedAt : Date.now() - 2 * 3_600_000;
+    const result = await runFleetTurn({
+      sessionId: meta.sessionId, text, model, cwd, host: fleetHost, via,
+      news: fleetNews(since), sinceMs: Date.now() - since,
+      models: models.map((m) => ({ id: m.id, label: m.label, providerId: m.providerId, providerLabel: m.providerLabel, costBasis: m.costBasis, note: m.note })),
+      agentEnv: await agentEnvFor(resolved, `chat:${FLEET_CHAT_ID}`),
+      emit, abort,
+    });
+    const next: ChatMeta = { ...meta, sessionId: result.sessionId ?? meta.sessionId, costUsd: meta.costUsd + result.costUsd, updatedAt: Date.now() };
+    await store.writeChatMeta(next);
+    emit('chat_cost', { costUsd: next.costUsd, turnUsd: result.costUsd });
+    if (result.stopped) emit('chat_error', { error: 'Stopped — the rest of this reply was discarded.' });
+    else if (result.error) emit('chat_error', { error: result.error });
+    if (via === 'telegram') {
+      if (result.error) void notifyHub.say(`The fleet planner hit an error: ${escTg(result.error)}`);
+      else if (result.said) void notifyHub.say(escTg(result.said.slice(0, 3500)));
+    }
+    return { text: result.said, costUsd: result.costUsd, handedOff: result.handedOff, error: result.error };
+  } catch (err) {
+    console.error('fleet planning turn failed:', err);
+    emit('chat_error', { error: String(err) });
+    return { text: '', costUsd: 0, error: String(err) };
+  } finally {
+    stopBusy();
+    if (fleetAbort === abort) fleetAbort = null;
+    emit('chat_turn', { state: 'idle' });
+  }
+}
+
+/** Plain text from the phone: the project planner you were just in, else the front desk. */
+async function routePhoneTalk(text: string): Promise<void> {
+  const say = (t: string) => void notifyHub.say(t);
+  const last = lastPhonePlanning ? { projectId: lastPhonePlanning, at: lastPhonePlanningAt } : null;
+  if (phoneRoute(last, Date.now(), PHONE_CONTEXT_MS) === 'project' && last) {
+    const project = await store.getProject(last.projectId);
+    if (project && !activeByProject.has(project.id)) {
+      if (chatTurns.has(project.id)) return say('The planner is still replying — wait, or /stop.');
+      chatTurns.add(project.id);
+      void driveChatTurn(project, text, text, 'telegram');
+      return;
+    }
+  }
+  const r = await driveFleetTurn(text, 'telegram');
+  if (r.busy) say('The fleet planner is still replying — wait, or /stop.');
+}
+
 /**
  * Text from the linked chat. In order: a command; an answer to an open ask
  * (the hub's job); a continuation of the last planning conversation the
- * phone started; else the help text — never silence.
+ * phone started; else the fleet planner — never silence.
  */
 async function handlePhoneText(text: string, replyTo?: string): Promise<void> {
   const say = (t: string) => void notifyHub.say(t);
@@ -694,6 +1017,17 @@ async function handlePhoneText(text: string, replyTo?: string): Promise<void> {
     try {
       switch (cmd.cmd) {
         case 'help': return say(HELP_TEXT);
+        case 'fleet': {
+          // Back to the front desk, with or without something to say. The
+          // project context is dropped either way: that is what the command
+          // is for.
+          lastPhonePlanning = null;
+          lastPhonePlanningAt = 0;
+          if (!cmd.text) return say('Front desk. Ask me anything about the fleet, or say what you want started where.');
+          const r = await driveFleetTurn(cmd.text, 'telegram');
+          if (r.busy) say('The fleet planner is still replying — wait, or /stop.');
+          return;
+        }
         case 'projects': {
           const all = await store.listProjects();
           if (!all.length) return say('No projects linked yet. /new &lt;name&gt; creates one.');
@@ -717,10 +1051,10 @@ async function handlePhoneText(text: string, replyTo?: string): Promise<void> {
           for (const id of await store.listChatIds()) {
             if (chatTurns.has(id)) continue;
             const m = await store.readChatMeta(id).catch(() => null);
-            if (m?.proposal) {
-              const name = projectsCache.get(id)?.name ?? (await store.getProject(id))?.name ?? id;
-              planning.push(`• <b>${escTg(name)}</b> — a proposal is waiting for Start or Discard`);
-            }
+            if (!m?.proposal) continue;
+            // A conversation left behind by an unlinked project is not planning.
+            const name = projectsCache.get(id)?.name ?? (await store.getProject(id))?.name;
+            if (name) planning.push(`• <b>${escTg(name)}</b> — a proposal is waiting for Start or Discard`);
           }
           if (!live.length && !planning.length) return say('All quiet — nothing running, nothing waiting on you.');
           if (!live.length) return say(`<b>Planning</b>\n${planning.join('\n')}`);
@@ -766,10 +1100,13 @@ async function handlePhoneText(text: string, replyTo?: string): Promise<void> {
         case 'stop': {
           const project = cmd.project ? await findProject(cmd.project) : (lastPhonePlanning ? await store.getProject(lastPhonePlanning) : null);
           const abort = project && chatAborts.get(project.id);
-          if (!project || !abort) return say('No planner reply is in flight.');
-          dropPendingAsk(project.id);
-          abort.abort();
-          return say(`Stopped the planner on <b>${escTg(project.name)}</b>.`);
+          if (project && abort) {
+            dropPendingAsk(project.id);
+            abort.abort();
+            return say(`Stopped the planner on <b>${escTg(project.name)}</b>.`);
+          }
+          if (fleetAbort) { fleetAbort.abort(); return say('Stopped the fleet planner.'); }
+          return say('No planner reply is in flight.');
         }
       }
     } catch (err) {
@@ -777,16 +1114,7 @@ async function handlePhoneText(text: string, replyTo?: string): Promise<void> {
     }
   }
   if (notifyHub.handleText(text, replyTo)) return;
-  if (lastPhonePlanning) {
-    const project = await store.getProject(lastPhonePlanning);
-    if (project && !activeByProject.has(project.id)) {
-      if (chatTurns.has(project.id)) return say('The planner is still replying — wait, or /stop.');
-      chatTurns.add(project.id);
-      void driveChatTurn(project, text, text, 'telegram');
-      return;
-    }
-  }
-  say(`Nothing is waiting on an answer. ${HELP_TEXT}`);
+  await routePhoneTalk(text);
 }
 
 /** One linking attempt at a time; a new code cancels the previous wait. */
@@ -835,9 +1163,10 @@ async function driveChatTurn(project: Project, text: string, shown: string = tex
     if (event === 'mission_proposed') { asked = true; data = { ...(data as object), via }; }
     raw(event, data);
   };
-  if (via === 'telegram') lastPhonePlanning = project.id;
+  if (via === 'telegram') { lastPhonePlanning = project.id; lastPhonePlanningAt = Date.now(); }
   const meta = await chatMetaOf(project.id);
   emit('chat_message', { text: shown, ...(via ? { via } : {}) });
+  const stopBusy = via === 'telegram' ? notifyHub.busy() : () => {};
   try {
     const settings = await effectiveSettings(project.id);
     const resolved = await resolveProvider(providerOf(project), store.root);
@@ -903,9 +1232,13 @@ async function driveChatTurn(project: Project, text: string, shown: string = tex
     console.error(`planning turn failed for project ${project.id}:`, err);
     emit('chat_error', { error: String(err) });
   } finally {
+    stopBusy();
     chatTurns.delete(project.id);
     chatAborts.delete(project.id);
     emit('chat_turn', { state: 'idle' });
+    // The reply is the latest word in the conversation, so the phone's
+    // context window counts from it, not from the message that started it.
+    if (via === 'telegram' && lastPhonePlanning === project.id) lastPhonePlanningAt = Date.now();
   }
 }
 
@@ -1494,6 +1827,9 @@ const server = http.createServer(async (req, res) => {
         return json(res, 409, { error: 'project has an active mission' });
       }
       const removed = await store.removeProject(projectMatch[1]);
+      // Its planning conversation goes with it; a proposal for a project
+      // that no longer exists once showed up in /status as a bare id.
+      if (removed) await store.clearChat(projectMatch[1]).catch(() => {});
       json(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'unknown project' });
 
     } else if (req.method === 'POST' && url.pathname === '/run') {
@@ -1655,6 +1991,20 @@ const server = http.createServer(async (req, res) => {
         // Who answers here, for the bar's footer before any turn has run.
         // Best-effort: a project whose provider cannot resolve still gets its
         // transcript, and the first turn will say what went wrong.
+        // The fleet planner's conversation answers on the same route: same
+        // log shape, same hook in the UI, its own idea of who answers and
+        // whether a reply is in flight.
+        if (projectId === FLEET_CHAT_ID) {
+          const g = (await store.readSettings().catch(() => ({ global: {}, projects: {} }))).global as Record<string, unknown>;
+          const resolvedFleet = await resolveProvider(providerOf({}), store.root).catch(() => null);
+          return json(res, 200, {
+            events, costUsd: meta.costUsd, proposal: null, thinking: Boolean(fleetAbort), question: null,
+            who: resolvedFleet ? {
+              model: modelChoice(g.fleetPlannerModel ?? g.plannerModel) || DEFAULT_FLEET_MODEL,
+              provider: resolvedFleet.label, costBasis: resolvedFleet.costBasis,
+            } : null,
+          });
+        }
         const project = await store.getProject(projectId);
         const settings = await effectiveSettings(projectId).catch(() => null);
         const resolved = project
@@ -1678,7 +2028,7 @@ const server = http.createServer(async (req, res) => {
 
       } else if (req.method === 'DELETE') {
         if (!projectId) return json(res, 400, { error: 'projectId is required' });
-        if (chatTurns.has(projectId)) {
+        if (chatTurns.has(projectId) || (projectId === FLEET_CHAT_ID && fleetAbort)) {
           return json(res, 409, { error: 'the planner is mid-reply — wait for it to finish' });
         }
         await store.clearChat(projectId).catch(() => {});
@@ -1690,6 +2040,13 @@ const server = http.createServer(async (req, res) => {
         const message = typeof text === 'string' ? text.trim() : '';
         if (typeof id !== 'string' || !message) {
           return json(res, 400, { error: 'projectId and text are required' });
+        }
+        if (id === FLEET_CHAT_ID) {
+          // The front desk from the fleet page. The reply streams on the
+          // chat frames like a project planner's; the POST returns at once.
+          if (fleetAbort) return json(res, 409, { error: 'the fleet planner is still replying' });
+          void driveFleetTurn(message, 'http');
+          return json(res, 200, { ok: true });
         }
         const project = await store.getProject(id);
         if (!project) return json(res, 404, { error: 'unknown project' });
@@ -1730,6 +2087,11 @@ const server = http.createServer(async (req, res) => {
       // with a line saying it was stopped. The conversation stays usable.
       const { projectId: id } = await readBody(req);
       if (typeof id !== 'string') return json(res, 400, { error: 'projectId is required' });
+      if (id === FLEET_CHAT_ID) {
+        const was = Boolean(fleetAbort);
+        fleetAbort?.abort();
+        return json(res, 200, { ok: true, stopped: was });
+      }
       const abort = chatAborts.get(id);
       if (!abort) return json(res, 200, { ok: true, stopped: false });
       dropPendingAsk(id);
@@ -1829,6 +2191,27 @@ const server = http.createServer(async (req, res) => {
       if (typeof id !== 'string') return json(res, 400, { error: 'invalid request' });
       const ok = activeRuns().some((r) => r.answerQuestion(id, String(text ?? '')));
       if (!ok) return json(res, 404, { error: 'no pending question with that id' });
+      json(res, 200, { ok: true });
+
+    } else if (req.method === 'POST' && url.pathname === '/fleet/chat') {
+      // One turn at the front desk, answered in the response. The same
+      // session the phone uses, so a conversation can move between them.
+      const { text } = await readBody(req);
+      const trimmed = typeof text === 'string' ? text.trim() : '';
+      if (!trimmed) return json(res, 400, { error: 'text is required' });
+      const r = await driveFleetTurn(trimmed, 'http');
+      if (r.busy) return json(res, 409, { error: 'the fleet planner is still replying' });
+      json(res, 200, r);
+
+    } else if (req.method === 'POST' && url.pathname === '/fleet/stop') {
+      if (!fleetAbort) return json(res, 404, { error: 'no fleet planner reply in flight' });
+      fleetAbort.abort();
+      json(res, 200, { ok: true });
+
+    } else if (req.method === 'DELETE' && url.pathname === '/fleet/chat') {
+      if (fleetAbort) return json(res, 409, { error: 'the fleet planner is mid-reply — stop it first' });
+      await store.clearChat(FLEET_CHAT_ID).catch(() => {});
+      broadcastChat(FLEET_CHAT_ID, 'chat_cleared', {});
       json(res, 200, { ok: true });
 
     } else if (req.method === 'POST' && url.pathname === '/steer') {

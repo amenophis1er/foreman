@@ -22,6 +22,12 @@ export interface ChatBarProps {
   disabled?: boolean;
   disabledReason?: string;
   placeholder?: string;
+  /** Footer line when idle; the planner's default otherwise. */
+  hint?: string;
+  /** Footer line while a reply is in flight. */
+  busyHint?: string;
+  /** Offer file attachments (default true). The front desk has nowhere to put them. */
+  attach?: boolean;
   /**
    * Who is answering: the planner's model and the provider serving it, with
    * its cost basis. Rendered in the footer on every state of the bar, because

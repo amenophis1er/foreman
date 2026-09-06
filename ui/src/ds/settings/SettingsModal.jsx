@@ -125,6 +125,7 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
       {row('directorModel', 'Director', 'Plans, delegates, verifies. Opus by default; Fable for long-horizon work.', <ModelSelect align="right" allowDefault={false} models={models} loading={modelsLoading} note={modelsNote} value={get('directorModel')} onChange={(v, m) => { set('directorModel', v); set('directorProviderId', m?.providerId); }} />)}
       {row('workerModel', 'Workers', 'Implement scoped tasks. Cheaper models cut cost sharply.', <ModelSelect align="right" allowDefault={false} models={models} loading={modelsLoading} note={modelsNote} value={get('workerModel')} onChange={(v, m) => { set('workerModel', v); set('workerProviderId', m?.providerId); }} />)}
       {row('plannerModel', 'Planner', 'Talks the next mission through with you and reads the project. Conversation, not deep reasoning; Sonnet by default.', <ModelSelect align="right" allowDefault={false} models={models} loading={modelsLoading} note={modelsNote} value={get('plannerModel')} onChange={(v) => set('plannerModel', v)} />)}
+      {!isProject && row('fleetPlannerModel', 'Fleet planner', 'The front desk on your phone: knows every project, opens planning, proposes, steers. Fast tool calls matter more than depth; follows the planner when unset.', <ModelSelect align="right" allowDefault={false} models={models} loading={modelsLoading} note={modelsNote} value={get('fleetPlannerModel') || get('plannerModel')} onChange={(v) => set('fleetPlannerModel', v)} />)}
     </>,
     budget: <>
       {row('budgetCap', 'Default cap per run', 'The composer starts here; you can change it per mission.', <TextInput type="number" prefix="$" min={0} step={1} width={110} value={get('budgetCap')} onChange={(v) => set('budgetCap', v)} />)}
@@ -223,7 +224,7 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
 }
 
 const SECTION_KEYS = {
-  models: ['directorModel', 'workerModel', 'plannerModel', 'directorProviderId', 'workerProviderId'], budget: ['budgetCap', 'budgetWarnAt', 'budgetHardStop'],
+  models: ['directorModel', 'workerModel', 'plannerModel', 'fleetPlannerModel', 'directorProviderId', 'workerProviderId'], budget: ['budgetCap', 'budgetWarnAt', 'budgetHardStop'],
   approvals: ['autoAllowReadOnly', 'alwaysSurvivesResume', 'toolPolicy'], appearance: ['theme', 'density', 'showTimestamps'],
   notifications: ['notifyNeedsYou', 'notifyDone', 'notifyBudget', 'sound'], projects: ['missionDir'],
 };

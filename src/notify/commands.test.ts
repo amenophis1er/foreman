@@ -26,3 +26,9 @@ test('slug and roots', () => {
   assert.equal(projectsRoot('/srv/work', '/home/a'), '/srv/work');
   assert.equal(projectsRoot('rel', '/home/a'), '/home/a/rel');
 });
+
+test('/fleet talks to the front desk, with or without words', () => {
+  assert.deepEqual(parseCommand('/fleet how is everything going?'), { cmd: 'fleet', text: 'how is everything going?' });
+  assert.deepEqual(parseCommand('/f'), { cmd: 'fleet', text: '' });
+  assert.deepEqual(parseCommand('/fleet@ForemanBot'), { cmd: 'fleet', text: '' });
+});

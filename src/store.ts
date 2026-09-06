@@ -293,10 +293,14 @@ export class RunStore {
     return next;
   }
 
-  /** Every project id that has a planning conversation on disk. */
+  /**
+   * Every project id that has a planning conversation on disk. Names that
+   * start with an underscore are Foreman's own conversations (the fleet
+   * planner's), stored in the same shape but belonging to no project.
+   */
   async listChatIds(): Promise<string[]> {
     const names = await readdir(this.chatsDir).catch(() => [] as string[]);
-    return names.filter((n) => !n.startsWith('.'));
+    return names.filter((n) => !n.startsWith('.') && !n.startsWith('_'));
   }
 
   /** Reads a chat's full event log; skips lines that fail to parse. */

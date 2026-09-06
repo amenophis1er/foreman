@@ -13,7 +13,7 @@ const LINE_PX = 22;
 const MIN_ROWS_PX = LINE_PX * 3;
 const MAX_ROWS_PX = LINE_PX * 10;
 
-export function ChatBar({ value, onChange, onSend, onStop, busy, disabled, disabledReason, placeholder, who, onChangeModel, autoFocus, style }) {
+export function ChatBar({ value, onChange, onSend, onStop, busy, disabled, disabledReason, placeholder, who, onChangeModel, autoFocus, style, hint, busyHint, attach = true }) {
   const [localText, setLocalText] = useState('');
   const [focus, setFocus] = useState(false);
   const [files, setFiles] = useState([]);
@@ -21,6 +21,7 @@ export function ChatBar({ value, onChange, onSend, onStop, busy, disabled, disab
   const ta = useRef(null);
   const picker = useRef(null);
   const addFiles = (list) => {
+    if (!attach) return;
     const incoming = Array.from(list || []);
     if (!incoming.length) return;
     setFiles((cur) => { const seen = new Set(cur.map(fileKey)); return [...cur, ...incoming.filter((f) => !seen.has(fileKey(f)))]; });
@@ -102,12 +103,15 @@ export function ChatBar({ value, onChange, onSend, onStop, busy, disabled, disab
               {' — '}
             </span>
           )}
-          {busy ? 'The foreman is looking…' : 'Reads the project, never changes it.'}
+          {busy ? (busyHint ?? 'The foreman is looking…') : (hint ?? 'Reads the project, never changes it.')}
         </span>
-        <input ref={picker} type="file" multiple style={{ display: 'none' }} onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
-        <Button size="sm" variant="ghost" icon="attach" disabled={disabled}
-          title="Attach files — or drop them here, or paste an image"
-          onClick={() => picker.current?.click()} style={{ marginLeft: 'auto' }}>Attach</Button>
+        <span style={{ marginLeft: 'auto' }} />
+        {attach && <input ref={picker} type="file" multiple style={{ display: 'none' }} onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />}
+        {attach && (
+          <Button size="sm" variant="ghost" icon="attach" disabled={disabled}
+            title="Attach files — or drop them here, or paste an image"
+            onClick={() => picker.current?.click()}>Attach</Button>
+        )}
         {busy && onStop
           ? <Button size="sm" variant="danger" icon="close" onClick={onStop} title="Stop the planner and discard the rest of this reply">Stop</Button>
           : <Button size="sm" icon="send" onClick={send} disabled={!canSend} title="⌘↵">Send</Button>}

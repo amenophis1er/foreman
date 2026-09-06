@@ -19,7 +19,7 @@ import { access, mkdir, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { defaultInstance, describeInstance, effectiveConfigDir } from './instance.js';
 import { discoverOllama, ollamaHost } from './ollama.js';
-import { tailnetUrl, type Tailnet } from './tailscale.js';
+import { serveHint, tailnetUrl, type Tailnet } from './tailscale.js';
 import { codexHome, codexModels, readCodexAuth } from './codex.js';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -286,7 +286,9 @@ async function checkBrowser(): Promise<Check> {
 /** Where the phone can reach this. Says so plainly either way — the answer decides which links work. */
 function checkTailnet(t: Tailnet | null, port: number): Check {
   return t
-    ? { name: 'Tailscale', status: 'ok', detail: `${tailnetUrl(t, port)} — listening there too; phone links use it` }
+    ? (t.httpsPort
+        ? { name: 'Tailscale', status: 'ok', detail: `${tailnetUrl(t, port)} — HTTPS via tailscale serve; phone links use it` }
+        : { name: 'Tailscale', status: 'ok', detail: `${tailnetUrl(t, port)} — listening there too; phone links use it. For HTTPS: ${serveHint(port, t.httpsInUse)}` })
     : { name: 'Tailscale', status: 'ok', detail: 'not running — localhost only; phone links need a public URL in Settings → Notifications' };
 }
 
