@@ -672,14 +672,30 @@ async function handlePhoneText(text: string, replyTo?: string): Promise<void> {
         }
         case 'status': {
           const live = activeRuns();
-          if (!live.length) return say('All quiet — nothing running.');
+          // Planners count as activity too: "all quiet" while one is drafting
+          // a proposal for you read as a lie the first time it happened.
+          const planning: string[] = [];
+          for (const id of chatTurns) {
+            const name = projectsCache.get(id)?.name ?? (await store.getProject(id))?.name ?? id;
+            planning.push(`• <b>${escTg(name)}</b> — the planner is replying`);
+          }
+          for (const id of await store.listChatIds()) {
+            if (chatTurns.has(id)) continue;
+            const m = await store.readChatMeta(id).catch(() => null);
+            if (m?.proposal) {
+              const name = projectsCache.get(id)?.name ?? (await store.getProject(id))?.name ?? id;
+              planning.push(`• <b>${escTg(name)}</b> — a proposal is waiting for Start or Discard`);
+            }
+          }
+          if (!live.length && !planning.length) return say('All quiet — nothing running, nothing waiting on you.');
+          if (!live.length) return say(`<b>Planning</b>\n${planning.join('\n')}`);
           const lines = live.map((r) => {
             const name = projectsCache.get(r.meta.projectId ?? '')?.name ?? r.meta.folder;
             const spend = r.meta.costBasis === 'priced' ? `$${r.meta.costUsd.toFixed(2)} of $${r.meta.budgetUsd}` : 'unpriced';
             const asks = r.pendingAsks().length;
             return `• <b>${escTg(name)}</b> — ${escTg(r.meta.title || r.meta.mission.split('\n')[0].slice(0, 80))}\n  ${spend}${asks ? ` · <b>${asks} waiting on you</b>` : ''}`;
           });
-          return say(`<b>Running · ${live.length}</b>\n${lines.join('\n')}`);
+          return say(`<b>Running · ${live.length}</b>\n${lines.join('\n')}${planning.length ? `\n\n<b>Planning</b>\n${planning.join('\n')}` : ''}`);
         }
         case 'new': {
           const settings = await store.readSettings().catch(() => ({ global: {}, projects: {} }));
