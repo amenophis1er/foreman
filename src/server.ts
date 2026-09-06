@@ -1183,7 +1183,6 @@ async function resumeRun(projectId: string, meta: RunMeta, pick: {
   meta.autoAllowReadOnly = settings.autoAllowReadOnly;
   meta.status = 'running';
   meta.endedAt = undefined;
-  meta.error = undefined;
   meta.resumes = (meta.resumes ?? 0) + 1;
   await store.writeMeta(meta).catch((err) => {
     console.error(`failed to persist resume of ${meta.id}:`, err);

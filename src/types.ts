@@ -298,8 +298,6 @@ export interface RunMeta {
   claudeInstance?: ClaudeInstanceRef;
   /** Number of times this run was resumed after an interruption. */
   resumes?: number;
-  /** Why the run stopped, in one sentence (see errors.ts). Set when status is `error`; cleared on resume. */
-  error?: string;
   /** Tools the human granted "always allow" for this run (survives resume). */
   allowedTools?: string[];
   /**

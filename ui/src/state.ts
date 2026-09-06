@@ -120,8 +120,6 @@ export type RunSummary = {
   budgetUsd: number; status: Status; costUsd: number;
   createdAt: number; endedAt?: number;
   directorModel?: string; workerModel?: string; resumes?: number;
-  /** Why the run stopped, in one sentence, when its status is `error`. */
-  error?: string;
   browserTools?: boolean;
   directorSessionId?: string;
   /** What this run's spend is — see src/types.ts. Absent on older runs. */

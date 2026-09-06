@@ -906,16 +906,9 @@ export function ProjectView({
           onDeny={(id) => void api.permission(id, 'deny')}
           onAnswer={(id, answer) => void api.answer(id, answer)} />
       )}
-      {/* A stopped run needs you the way an ask does: the strip says what
-          stopped it and what the way out is, in the warning register. The
-          whole header in red would say "fire" while you read a transcript. */}
       {selectedRunId && !viewingLive && (
-        <Banner tone={selectedRun?.status === 'error' ? 'error' : selectedRun?.status === 'interrupted' ? 'caution' : 'readonly'}>
-          {selectedRun?.status === 'error'
-            ? <>Stopped by an error: {selectedRun.error ?? 'the director\'s last turn failed'} Resume continues it — on other models, if the provider is the problem.</>
-            : selectedRun?.status === 'interrupted'
-              ? <>Interrupted — Resume continues it from where it stopped.</>
-              : <>Viewing a past run (read-only).</>}
+        <Banner tone="readonly">
+          Viewing a past run (read-only).
           {/* The way back, where the reader is when they want it. The header's
               "New mission" says what it starts, not where it goes. */}
           <Button variant="ghost" size="sm" icon="back" style={{ marginLeft: 'var(--sp-2)' }}
