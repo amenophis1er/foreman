@@ -54,6 +54,8 @@ import {
 } from './planner.js';
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { saveAttachments } from './attachments.js';
+import { detectTailscale, tailnetUrl } from './tailscale.js';
+import { ServiceRegistry, SVC_PREFIX, parseServicePath, portOpen, proxyToService, servicePath } from './services.js';
 import { HELP_TEXT, parseCommand, projectsRoot, slug } from './notify/commands.js';
 import { escapeHtml as escTg } from './notify.js';
 import { RunStore, newRunId } from './store.js';
@@ -409,6 +411,16 @@ async function locateFolders(name: string): Promise<string[]> {
 }
 
 const PORT = Number(process.env.PORT ?? 4177);
+/**
+ * Where to listen. Default: loopback, plus the tailnet address when this
+ * machine is on one — never every interface, since there is no login.
+ * `FOREMAN_BIND=all` opens it wide on purpose (a trusted LAN, a container);
+ * `FOREMAN_BIND=local` keeps it to this machine even with Tailscale up.
+ */
+const BIND = (process.env.FOREMAN_BIND ?? 'auto') as 'auto' | 'all' | 'local';
+const tailnet = BIND === 'local' ? null : await detectTailscale();
+/** Dev servers the crew put behind /svc/ — see services.ts. */
+const services = new ServiceRegistry();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, '..', 'ui', 'dist');
 const ROOT_ASSETS = new Set(['/favicon.svg']);
@@ -538,7 +550,15 @@ async function notifySettings(): Promise<{
   const str = (k: string) => (typeof g[k] === 'string' && (g[k] as string).trim() ? (g[k] as string).trim() : undefined);
   return {
     prefs: { needsYou: on('notifyNeedsYou', true), done: on('notifyDone', true), budget: on('notifyBudget', true) },
-    publicUrl: (str('publicUrl') ?? `http://localhost:${PORT}`).replace(/\/+$/, ''),
+    // Unset: the tailnet name when there is one — the phone can open that —
+    // else localhost, which only this machine can.
+    publicUrl: (() => {
+      const saved = str('publicUrl');
+      // A saved localhost is the old default, not a preference: no phone can
+      // open it, so a tailnet name wins over it. Any other saved URL stands.
+      const isLocal = !saved || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/i.test(saved);
+      return ((isLocal && tailnet) ? tailnetUrl(tailnet, PORT) : (saved ?? `http://localhost:${PORT}`)).replace(/\/+$/, '');
+    })(),
     telegramChatId: str('telegramChatId'),
     telegramChatLabel: str('telegramChatLabel'),
     telegramBot: str('telegramBot'),
@@ -554,7 +574,7 @@ async function notifySettings(): Promise<{
  */
 let notifyCtxCache: { at: number; value: Awaited<ReturnType<typeof notifySettings>> } | null = null;
 const notifyHub = new NotifyHub(() => {
-  const s = notifyCtxCache?.value ?? { prefs: { needsYou: true, done: true, budget: true }, publicUrl: `http://localhost:${PORT}` };
+  const s = notifyCtxCache?.value ?? { prefs: { needsYou: true, done: true, budget: true }, publicUrl: tailnet ? tailnetUrl(tailnet, PORT) : `http://localhost:${PORT}` };
   if (!notifyCtxCache || Date.now() - notifyCtxCache.at > 5_000) {
     void notifySettings().then((v) => { notifyCtxCache = { at: Date.now(), value: v }; });
   }
@@ -1000,7 +1020,17 @@ async function driveRun(
   meta.metered = roleBasis === 'priced';
   const run = new MissionRun(meta, emit, (m) => void store.writeMeta(m), agentEnv, prices, {
     key: ledgerKeyFor(meta), roles: gatewayRoles, read: gatewayUsage,
-  }, roleBases);
+  }, roleBases, {
+    // A dev server behind Foreman's address. Declared ports only, and only
+    // ones something is listening on — an agent cannot reserve a path for a
+    // server it has not started.
+    exposeService: async (runId, port, label) => {
+      if (!(await portOpen(port))) return { ok: false, reason: `nothing is listening on 127.0.0.1:${port} — start the server first` };
+      const svc = services.register(runId, port, label);
+      const base = (await notifySettings().catch(() => null))?.publicUrl ?? (tailnet ? tailnetUrl(tailnet, PORT) : `http://localhost:${PORT}`);
+      return { ok: true, url: `${base.replace(/\/+$/, '')}${svc.path}`, path: svc.path };
+    },
+  });
   activeByProject.set(projectId, run);
   try {
     if (changes?.directorChanged || changes?.workerChanged) {
@@ -1184,6 +1214,30 @@ function json(res: http.ServerResponse, code: number, body: unknown): void {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
+  // Services the crew exposed: /svc/<run>/<port>/… goes to 127.0.0.1:<port>,
+  // but only for a pair a run declared. A page served this way asks for its
+  // absolute-path assets (`/app.js`) against Foreman's root; those arrive as
+  // sub-resource requests carrying the service page as Referer, and are
+  // routed to the same service. Documents never are — a typed URL is Foreman's.
+  {
+    const svc = parseServicePath(url.pathname);
+    if (svc) {
+      if (!services.has(svc.runId, svc.port)) { json(res, 404, { error: 'no such service' }); return; }
+      proxyToService(req, res, svc.port, svc.rest, url.search, servicePath(svc.runId, svc.port));
+      return;
+    }
+    const ref = req.headers.referer;
+    const dest = String(req.headers['sec-fetch-dest'] ?? '');
+    if (ref && dest && dest !== 'document' && dest !== 'empty' && !url.pathname.startsWith(SVC_PREFIX)) {
+      try {
+        const via = parseServicePath(new URL(ref).pathname);
+        if (via && services.has(via.runId, via.port)) {
+          proxyToService(req, res, via.port, url.pathname, url.search, servicePath(via.runId, via.port));
+          return;
+        }
+      } catch { /* not a URL we can read — fall through to Foreman's own routes */ }
+    }
+  }
   const runEventsMatch = url.pathname.match(/^\/runs\/([^/]+)\/events$/);
   // The deck: what a run changed and what it produced. Read-only by design —
   // DESIGN.md §11 — and handled before the chain because it owns two paths
@@ -1867,7 +1921,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 // Fail loudly on a misconfigured install before anything else happens.
-if (!reportPreflight(await preflight({ port: PORT, foremanHome: store.root, distDir: DIST_DIR }))) {
+if (!reportPreflight(await preflight({ port: PORT, foremanHome: store.root, distDir: DIST_DIR, tailnet }))) {
   process.exit(1);
 }
 
@@ -1905,9 +1959,28 @@ void closeOrphanedChatTurns().then((ids) => {
   if (ids.length) console.log(`Closed ${ids.length} planning turn(s) cut off by the last shutdown:`, ids.join(', '));
 });
 
-server.listen(PORT, () => {
-  console.log(`Foreman listening on http://localhost:${PORT}`);
-});
+// Services declared by earlier runs are still worth proxying if their
+// processes outlived the run; the registry is rebuilt from what was saved.
+void store.listRuns().then((runs) => {
+  for (const r of runs) for (const s of (r as { services?: Array<{ port: number; label: string }> }).services ?? []) services.register(r.id, s.port, s.label);
+}).catch(() => {});
+
+if (BIND === 'all') {
+  server.listen(PORT, () => console.log(`Foreman listening on http://0.0.0.0:${PORT} (FOREMAN_BIND=all)`));
+} else {
+  server.listen(PORT, '127.0.0.1', () => {
+    console.log(`Foreman listening on http://localhost:${PORT}${tailnet ? ` · ${tailnetUrl(tailnet, PORT)}` : ''}`);
+  });
+  if (tailnet) {
+    // A second listener on the tailnet address, feeding the same handler.
+    // Not 0.0.0.0: the café Wi-Fi is not the tailnet.
+    const onRequest = server.listeners('request')[0] as http.RequestListener;
+    const viaTailnet = http.createServer(onRequest);
+    viaTailnet.on('error', (err) => console.warn(`[tailscale] could not listen on ${tailnet.ip}:${PORT} — ${err.message}`));
+    viaTailnet.listen(PORT, tailnet.ip);
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => viaTailnet.close());
+  }
+}
 
 // Gateways are children of this process; a hard exit would orphan them holding
 // loopback ports. Both signals a terminal or a supervisor sends are handled.

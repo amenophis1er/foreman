@@ -239,6 +239,13 @@ export function shape(env: Envelope, ctx: NotifyContext): Shaped | null {
     case 'mission_incomplete':
       return { key: `incomplete:${env.runId}`, gate: 'done',
         text: `${head('Not done')}${runLine}\n${esc(clip(d.text))}${foot}` };
+    case 'service_exposed': {
+      // Informational, and worth a tap: the crew put something on the air.
+      const url = String(d.url ?? '');
+      if (!url) return null;
+      return { key: `svc:${env.runId}:${d.port}`, gate: 'done',
+        text: `${head(`Service up — ${clip(String(d.label ?? 'service'), 40)}`)}${runLine}\n<a href="${esc(url)}">${esc(url)}</a>` };
+    }
     case 'run_finished': {
       const status = String(d.status ?? 'done');
       const title = status === 'done' ? 'Mission done' : status === 'error' ? 'Mission failed' : 'Mission interrupted';

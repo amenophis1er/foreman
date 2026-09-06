@@ -308,6 +308,8 @@ export interface RunMeta {
    * human already answered.
    */
   allowedRoots?: string[];
+  /** Dev servers the crew exposed through Foreman's proxy (see services.ts). */
+  services?: Array<{ port: number; label: string; path: string; since: number }>;
   /**
    * How long an approval card or director question may wait for the human
    * before it is resolved with its unattended default (deny / "decide

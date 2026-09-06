@@ -178,6 +178,8 @@ export type RunView = {
   budgetUsd: number;
   directorSessionId?: string;
   agents: AgentInfo[];
+  /** Dev servers the crew exposed through Foreman (see services.ts on the server). */
+  services: Array<{ port: number; label: string; path: string; url?: string; since: number }>;
   entries: Entry[];
   approvals: Approval[];
   questions: Question[];
@@ -186,7 +188,7 @@ export type RunView = {
 
 const emptyRun: RunView = {
   runStatus: 'idle', mission: '', title: '', costBasis: 'priced', usage: null, costUsd: 0, budgetUsd: 5,
-  agents: [], entries: [], approvals: [], questions: [], missionDoc: null,
+  agents: [], entries: [], approvals: [], questions: [], missionDoc: null, services: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -385,6 +387,8 @@ function applyWire(s: RunView, e: WireEvent): RunView {
           title: 'budget', body: d.text,
         }],
       };
+    case 'service_exposed':
+      return { ...s, services: [...s.services.filter((x) => x.port !== d.port), { port: d.port, label: d.label, path: d.path, url: d.url, since: ts }] };
     case 'worker_started': {
       const rest = s.agents.filter((x) => x.id !== d.id);
       const prev = s.agents.find((x) => x.id === d.id);

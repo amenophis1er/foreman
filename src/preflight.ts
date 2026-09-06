@@ -19,6 +19,7 @@ import { access, mkdir, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { defaultInstance, describeInstance, effectiveConfigDir } from './instance.js';
 import { discoverOllama, ollamaHost } from './ollama.js';
+import { tailnetUrl, type Tailnet } from './tailscale.js';
 import { codexHome, codexModels, readCodexAuth } from './codex.js';
 
 export type CheckStatus = 'ok' | 'warn' | 'error';
@@ -236,6 +237,13 @@ async function checkHome(root: string): Promise<Check> {
   }
 }
 
+/** Where the phone can reach this. Says so plainly either way — the answer decides which links work. */
+function checkTailnet(t: Tailnet | null, port: number): Check {
+  return t
+    ? { name: 'Tailscale', status: 'ok', detail: `${tailnetUrl(t, port)} — listening there too; phone links use it` }
+    : { name: 'Tailscale', status: 'ok', detail: 'not running — localhost only; phone links need a public URL in Settings → Notifications' };
+}
+
 async function checkUi(distDir: string): Promise<Check> {
   const name = 'Dashboard';
   return (await exists(path.join(distDir, 'index.html')))
@@ -255,8 +263,11 @@ export async function preflight(opts: {
   port: number;
   foremanHome: string;
   distDir: string;
+  /** Detected by the server before preflight; null when not on a tailnet. */
+  tailnet?: Tailnet | null;
 }): Promise<Check[]> {
   const checks = await Promise.all([
+    Promise.resolve(checkTailnet(opts.tailnet ?? null, opts.port)),
     checkAuth(),
     checkInstance(),
     checkOllama(),

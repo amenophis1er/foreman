@@ -34,6 +34,8 @@ export interface FilesPanelProps {
   error?: string | null;
   /** The server has no baseline for this run (404). */
   missing?: boolean;
+  /** Dev servers the crew exposed; each opens in a new tab through Foreman's proxy. */
+  services?: Array<{ port: number; label: string; path: string; since: number }>;
   style?: CSSProperties;
 }
 

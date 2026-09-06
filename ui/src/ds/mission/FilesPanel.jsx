@@ -68,7 +68,7 @@ function Row({ onClick, title, children }) {
  * anything opens it in the viewer, where a diff or a screenshot has the room
  * it needs. The rail lists; the viewer shows.
  */
-export function FilesPanel({ runId, deck, loading, error, missing, style }) {
+export function FilesPanel({ runId, deck, loading, error, missing, services = [], style }) {
   const now = Date.now();
   const [viewingIdx, setViewingIdx] = useState(null);
   const wrap = { display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)', ...style };
@@ -109,6 +109,25 @@ export function FilesPanel({ runId, deck, loading, error, missing, style }) {
         {' '}<span>{baseline}</span>
         {deck.note && <div style={{ color: 'var(--status-serious)' }}>{deck.note}</div>}
       </div>
+
+      {services.length > 0 && (
+        <section>
+          <SectionTitle>Services</SectionTitle>
+          {/* Live servers, so a new tab, not the viewer: an app wants a whole
+              window and its own origin behaviour, not a sandboxed frame. */}
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {services.map((s) => (
+              <a key={s.port} href={s.path} target="_blank" rel="noopener noreferrer"
+                title={`${s.label} — 127.0.0.1:${s.port} through Foreman`}
+                style={{ ...rowStyle, textDecoration: 'none' }}>
+                <Icon name="provider" size={12} color="var(--status-good)" />
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--ink-0)' }}>{s.label}</span>
+                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)', flex: '0 0 auto' }}>:{s.port}</span>
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section>
         <SectionTitle>Changed files</SectionTitle>

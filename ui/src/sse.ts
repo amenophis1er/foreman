@@ -29,7 +29,7 @@ export const SSE_EVENTS = [
   'budget_alert', 'budget_stop', 'usage_limit', 'mission_incomplete', 'settings_changed',
   // transcript + crew
   'message', 'steer', 'worker_started', 'worker_progress', 'worker_finished',
-  'worker_stalled', 'worker_looping', 'director_looping',
+  'worker_stalled', 'worker_looping', 'director_looping', 'service_exposed',
   // governance: permissions and questions
   'auto_allowed', 'auto_denied', 'root_allowed',
   'permission_request', 'permission_resolved', 'permission_timeout',

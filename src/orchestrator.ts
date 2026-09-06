@@ -653,6 +653,10 @@ directing worker agents. Non-negotiable rules, in priority order:
    say so in MISSION.md and ask via mcp__foreman__ask_human, not discover it
    mid-run. If you are prompted for a path outside the folder, the answer is
    almost always to redo it under ${WORK_DIR}/, not to wait for approval.
+   SHOW, DON'T DESCRIBE: when you have a server running that shows the work
+   (a dev server, a static preview), call mcp__foreman__expose_service with
+   its port and put the URL it returns in your report — the human can open
+   it from their phone. Keep that server up until the mission ends.
 4. REPORT WHAT YOU SEE. Judge the work as a competent professional would, not
    only against the letter of the acceptance criteria. If you observe a defect
    the criteria did not name — tap targets too small to use, unreadable
@@ -822,6 +826,15 @@ export class MissionRun {
      * run's basis alone.
      */
     private readonly roleBasis?: { director: CostBasis; worker: CostBasis },
+    /**
+     * What the host lends the run beyond the model: today, putting a dev
+     * server the crew started behind Foreman's own address so the human can
+     * open it from the phone. Optional — a run without a host hook simply
+     * has no `expose_service` to offer.
+     */
+    private readonly host: {
+      exposeService?: (runId: string, port: number, label: string) => Promise<{ ok: true; url: string; path: string } | { ok: false; reason: string }>;
+    } = {},
   ) {
     this.meta = meta;
     // Cost kept as parts, so a resume adds to the right pile and an upstream
@@ -2277,9 +2290,34 @@ export class MissionRun {
       },
     );
 
+    const exposeService = tool(
+      'expose_service',
+      'Make a local server the crew started (a dev server, a preview) reachable for the ' +
+      'human through Foreman, including from their phone. Give the port it listens on at ' +
+      '127.0.0.1; you get back the URL to put in your report. Only ports something is ' +
+      'actually listening on; only for this run.',
+      {
+        port: z.number().int().min(1).max(65535).describe('The local port the service listens on'),
+        label: z.string().max(60).optional().describe('What it is, in a few words — "preview", "storybook", "API docs"'),
+      },
+      async ({ port, label }) => {
+        const fn = this.host.exposeService;
+        if (!fn) return { content: [{ type: 'text' as const, text: 'Exposing services is not available in this run.' }] };
+        const r = await fn(this.meta.id, port, (label ?? '').trim() || `port ${port}`);
+        if (!r.ok) return { content: [{ type: 'text' as const, text: `Not exposed: ${r.reason}` }] };
+        const entry = { port, label: (label ?? '').trim() || `port ${port}`, path: r.path, since: Date.now() };
+        this.meta.services = [...(this.meta.services ?? []).filter((s) => s.port !== port), entry];
+        this.saveMeta(this.meta);
+        this.emit('service_exposed', { ...entry, url: r.url });
+        return { content: [{ type: 'text' as const, text:
+          `Exposed. The human can open it at ${r.url} (Foreman proxies it to 127.0.0.1:${port}; ` +
+          'absolute links inside the page resolve while the page is open from that URL). Keep the server ' +
+          'running while they may want to look, and put the URL in your report.' }] };
+      },
+    );
     return createSdkMcpServer({
       name: 'foreman',
-      tools: [spawnWorker, checkWorkers, waitForWorker, messageWorker, askHuman],
+      tools: [spawnWorker, checkWorkers, waitForWorker, messageWorker, askHuman, exposeService],
     });
   }
 }

@@ -774,7 +774,7 @@ export function ProjectView({
   );
   const filesPane = selectedRunId ? (
     <FilesPanel runId={selectedRunId} deck={deck.deck} loading={deck.loading}
-      error={deck.error} missing={deck.missing} />
+      error={deck.error} missing={deck.missing} services={run.services} />
   ) : null;
   const fileCount = deck.deck ? deck.deck.totals.files + deck.deck.artifacts.length : 0;
   // The rail: one place with tabs. Mission = checklist, doc, crew, run facts;
