@@ -14,3 +14,5 @@ The unit of the live transcript. Stack in a scroll container pinned to the botto
 
 
 A `result` body longer than about twelve lines is folded: the first lines show, then "Show all · N lines". Payloads are evidence, not narrative.
+
+An end-of-turn marker whose text duplicated the card above renders as one quiet line, "turn ended · success", not an empty card. A worker's report echoed back to the director as a tool result renders as a one-line receipt ("worker-6 finished — first sentence"); the full report is on the worker's own card.

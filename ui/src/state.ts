@@ -230,6 +230,39 @@ function entriesFromSdkMessage(agent: string, msg: any, ts: number): Entry[] {
   return out;
 }
 
+const norm = (t: unknown) => String(t ?? '').replace(/\s+/g, ' ').trim();
+
+/**
+ * The same words arrived twice in two shapes, and the transcript showed both:
+ *
+ *  - An agent's end-of-turn `result` carries the text of its last message,
+ *    which is already on the page as a rendered card. The result keeps its
+ *    place as a turn marker but drops the duplicated body.
+ *  - The director learns a worker finished through a tool result that quotes
+ *    the worker's whole report, which the worker's own card already shows.
+ *    That receipt becomes one line: who finished, and the first sentence.
+ *
+ * Nothing is lost: the full text is on the card it belongs to, once.
+ */
+function dedupeEntry(e: Entry, prior: Entry[]): Entry {
+  if (e.kind === 'system' && e.title.startsWith('result ·') && e.body) {
+    for (let i = prior.length - 1; i >= 0 && i >= prior.length - 40; i--) {
+      const p = prior[i];
+      if (p.agent !== e.agent) continue;
+      if (p.kind === 'text') return norm(p.body) === norm(e.body) ? { ...e, body: '' } : e;
+    }
+    return e;
+  }
+  if (e.kind === 'result') {
+    const m = /^\[(worker-\d+) (finished|failed|done|started|resumed|stalled|interrupted)\]\s*/.exec(e.body);
+    if (m) {
+      const first = e.body.slice(m[0].length).split('\n').find((l) => l.trim()) ?? '';
+      return { ...e, title: `${m[1]} ${m[2]}`, body: first.length > 160 ? `${first.slice(0, 159).trimEnd()}…` : first };
+    }
+  }
+  return e;
+}
+
 function applyWire(s: RunView, e: WireEvent): RunView {
   const ts = e.ts ?? Date.now();
   const d = e.data;
@@ -351,7 +384,7 @@ function applyWire(s: RunView, e: WireEvent): RunView {
     case 'message': {
       const extra: Partial<RunView> =
         d.agent === 'director' && d.msg?.session_id ? { directorSessionId: d.msg.session_id } : {};
-      const es = entriesFromSdkMessage(d.agent, d.msg, ts);
+      const es = entriesFromSdkMessage(d.agent, d.msg, ts).map((e) => dedupeEntry(e, s.entries));
       return es.length || extra.directorSessionId
         ? { ...s, ...extra, entries: [...s.entries.slice(-1499), ...es] } : s;
     }

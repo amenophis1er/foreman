@@ -11,6 +11,11 @@ const MCP = new Set(['spawn_worker', 'message_worker', 'ask_human']);
 export function TranscriptEntry({ agent, title, kind = 'text', body, ts, to, timing, dense = false, style }) {
   const isTool = kind === 'tool';
   if (isTool && dense) return <DenseToolLine agent={agent} title={title} body={body} ts={ts} style={style} />;
+  // A turn marker with nothing to say beyond "this turn ended" is one quiet
+  // line, not an empty card: the words it used to repeat are on the card above.
+  if (kind === 'system' && !body && typeof title === 'string' && title.startsWith('result ·')) {
+    return <TurnMarkLine agent={agent} title={title} ts={ts} style={style} />;
+  }
   const steer = kind === 'steer';
   const mono = kind === 'result';
   const accent = kind === 'error' ? 'var(--status-critical)' : steer ? 'var(--ink-0)' : kind === 'text' ? agentColor(agent) : undefined;
@@ -68,6 +73,21 @@ function FoldedBody({ body }) {
       }}>
         {open ? 'Show less' : `Show all · ${lines.length} lines`}
       </button>
+    </div>
+  );
+}
+
+/** End of an agent's turn, as a line: dot, "result · success", time. */
+function TurnMarkLine({ agent, title, ts, style }) {
+  const time = ts ? new Date(ts).toLocaleTimeString(undefined, { hour12: false }) : null;
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 6, padding: '1px var(--sp-2)',
+      fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', whiteSpace: 'nowrap', overflow: 'hidden', ...style,
+    }}>
+      <AgentDot agent={agent} size="sm" />
+      <span>{agent}</span><span>·</span><span>{title.replace(/^result · /, 'turn ended · ')}</span>
+      {time && <span style={{ marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>{time}</span>}
     </div>
   );
 }
