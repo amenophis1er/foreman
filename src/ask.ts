@@ -48,8 +48,11 @@ export type AskAnswers = Record<string, string>;
 export function armAskTimeout(ms: number, onTimeout: () => void): { cancel(): void } {
   if (!Number.isFinite(ms) || ms <= 0) return { cancel() { /* never armed */ } };
   let fired = false;
+  // Ref'd on purpose: a pending ask with a deadline is work the process owes,
+  // and it must hold the event loop until it settles. Unref'd, Node 22's
+  // test runner saw an empty loop under an awaited ask and failed the test;
+  // a server that must exit does so through its signal handlers regardless.
   const t = setTimeout(() => { fired = true; onTimeout(); }, ms);
-  t.unref?.();
   return { cancel() { if (!fired) clearTimeout(t); } };
 }
 
