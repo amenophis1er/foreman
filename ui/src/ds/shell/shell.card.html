@@ -8,7 +8,7 @@
 <style>body{padding:0;display:flex;flex-direction:column}</style>
 </head><body><div id="root" style="display:contents"></div>
 <script type="text/babel">
-const { AppHeader, Rail, SectionTitle, StatusBadge, BudgetMeter, Button, Banner, AgentRow, Empty } = window.ForemanDesignSystem_5f77fb;
+const { AppHeader, SectionTitle, StatusBadge, BudgetMeter, Button, Banner, AgentRow, Empty } = window.ForemanDesignSystem_5f77fb;
 function Demo(){return (<>
 <AppHeader mode="fleet" theme="dark" onToggleTheme={()=>{}}><Banner tone="disconnected" inline>disconnected</Banner></AppHeader>
 <AppHeader mode="project" title="Alpha" folder="/Users/you/Projects/personal-foreman/scratchpad/fleet-alpha" theme="dark" onToggleTheme={()=>{}}>
@@ -16,7 +16,7 @@ function Demo(){return (<>
 </AppHeader>
 <Banner tone="readonly">Viewing a past run (read-only).</Banner>
 <div style={{display:'grid',gridTemplateColumns:'250px 1fr',height:80}}>
-  <Rail side="left" style={{gap:'var(--sp-2)'}}><section><SectionTitle>This run</SectionTitle><AgentRow agent="director" status="done"/></section></Rail>
+  <aside style={{borderRight:'1px solid var(--line)',background:'var(--bg-panel)',padding:'var(--sp-3)'}}><section><SectionTitle>This run</SectionTitle><AgentRow agent="director" status="done"/></section></aside>
   <div style={{padding:'var(--sp-3)'}}><Empty>Transcript will appear here.</Empty></div>
 </div>
 </>);}

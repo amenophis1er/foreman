@@ -29,8 +29,7 @@ command. Set `FOREMAN_URL` to point at a different host or port.
 
 3. **Ensure the server is up** (start detached if not):
    ```bash
-   curl -sf -m 2 "${FOREMAN_URL:-http://localhost:4177}/projects" >/dev/null || \
-     (nohup foreman start > /tmp/foreman-server.log 2>&1 & disown; sleep 3)
+   curl -sf -m 2 "${FOREMAN_URL:-http://localhost:4177}/projects" >/dev/null || foreman up
    ```
 
 4. **Link the cwd as a project** (idempotent — relinking returns the existing

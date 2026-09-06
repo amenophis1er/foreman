@@ -1,4 +1,4 @@
-<!-- @dsCard group="Components" viewport="700x560" name="Mission — rail, timeline, tool calls, cards" subtitle="RunRail hierarchy, RunTimeline, ToolCall chips with diff, approval, question, plan" -->
+<!-- @dsCard group="Components" viewport="700x560" name="Mission — timeline, tool calls, cards" subtitle="RunTimeline, ToolCall chips with diff, approval, question, plan" -->
 <!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../../styles.css">
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
@@ -8,7 +8,7 @@
 <style>body{padding:16px}.grid{display:grid;grid-template-columns:230px 1fr 300px;gap:16px;align-items:start}.rail{background:var(--bg-panel);border:1px solid var(--line);border-radius:var(--r-sm);padding:12px;display:flex;flex-direction:column;gap:16px}</style>
 </head><body><div id="root"></div>
 <script type="text/babel">
-const { RunRail, RunTimeline, ToolCall, TranscriptEntry, CrewStrip, ApprovalCard, QuestionCard, PlanBoard, SectionTitle, SteerBar } = window.ForemanDesignSystem_5f77fb;
+const { RunTimeline, ToolCall, TranscriptEntry, CrewStrip, ApprovalCard, QuestionCard, PlanBoard, SectionTitle, SteerBar } = window.ForemanDesignSystem_5f77fb;
 const DOC = `# Mission\n\n- [x] Ask the human for the filename (ask_human) and wait for the answer.\n- [x] Spawn a worker to create the file with content "test".\n- [ ] Verify the file exists and contains "test".`;
 const t0 = Date.parse('2026-09-03T07:53:12');
 const agents=[{id:'director',status:'running'},{id:'worker-1',status:'done',task:'Create hello.txt'},{id:'worker-2',status:'running'}];
@@ -25,9 +25,6 @@ const entries=[
 const history=[{id:'r2',mission:'Have a worker create alpha.txt containing the word test',createdAt:t0-86400000,costUsd:0.68,status:'done'},{id:'r3',mission:'Refactor the store reducer into pure functions',createdAt:t0-2*86400000,costUsd:2.9,status:'interrupted'}];
 function Demo(){const [f,setF]=React.useState(null);const tog=(id)=>setF(x=>x===id?null:id);return (
 <div className="grid">
-  <div className="rail">
-    <RunRail current={{id:'live',mission:'Ask me which filename to create, then have a worker create it',costUsd:1.24,status:'running',live:true,createdAt:t0}} agents={agents} history={history} selectedRunId="live" filter={f} onFilter={tog} sessionId="c16e338e-4b2a"/>
-  </div>
   <div style={{display:'flex',flexDirection:'column',gap:10}}>
     <div className="rail" style={{gap:8}}><SectionTitle style={{margin:0}}>Timeline</SectionTitle><RunTimeline agents={agents} entries={entries} live selected={f} onSelect={tog}/></div>
     <CrewStrip agents={agents} filter={f} onFilter={tog}/>

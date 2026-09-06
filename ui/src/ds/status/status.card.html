@@ -8,7 +8,7 @@
 <style>body{padding:16px;display:flex;flex-direction:column;gap:14px}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}</style>
 </head><body><div id="root" style="display:contents"></div>
 <script type="text/babel">
-const { StatusBadge, BudgetMeter, AgentDot, NeedsYouStrip, Banner, AttentionBar } = window.ForemanDesignSystem_5f77fb;
+const { StatusBadge, BudgetMeter, AgentDot, Banner } = window.ForemanDesignSystem_5f77fb;
 function Demo(){return (<>
 <div className="row">{['idle','running','done','error','interrupted'].map(s=><StatusBadge key={s} status={s}/>)}</div>
 <div className="row"><BudgetMeter spent={1.24} budget={5}/><BudgetMeter spent={3.7} budget={5}/><BudgetMeter spent={4.8} budget={5}/></div>
@@ -17,13 +17,11 @@ function Demo(){return (<>
 {[1,2,3,4,5,6].map(n=><span key={n} className="row" style={{gap:6}}><AgentDot agent={'worker-'+n}/><span style={{fontSize:'var(--fs-sm)',color:'var(--ink-1)'}}>worker-{n}</span></span>)}
 </div>
 <div className="row" style={{gap:20}}>
-<NeedsYouStrip approvals={2} questions={1}/>
 <Banner tone="disconnected" inline>disconnected</Banner>
 <Banner tone="error" inline>a mission is already running in this project</Banner>
 <Banner tone="caution" inline>writes outside the project folder</Banner>
 </div>
 <Banner tone="readonly">Viewing a past run (read-only).</Banner>
-<AttentionBar approvals={1} questions={1}/>
 </>);}
 ReactDOM.createRoot(document.getElementById('root')).render(<Demo/>);
 </script></body></html>
