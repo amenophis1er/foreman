@@ -838,8 +838,13 @@ export function ProjectView({
       <AppHeader mode="project" title={p.name} folder={p.folder} onBack={onBack}
         theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
         {headerErr && <Banner tone="error" inline>{headerErr}</Banner>}
-        <BillingBadge mode={p.billingMode ?? auth.mode} compact account={auth.account}
-          source={billingSource(p, auth.source)} />
+        {/* Only when it warns, as on the fleet: a healthy subscription says
+            nothing here. Which provider actually serves a run is said where
+            the run is — the models pill, the rail's Run block, the planning
+            bar's footer — not by a badge naming one payer for the project. */}
+        {(() => { const mode = p.billingMode ?? auth.mode; return (mode === 'api-key' || mode === 'none') && (
+          <BillingBadge mode={mode} compact account={auth.account} source={billingSource(p, auth.source)} />
+        ); })()}
         {selectedRunId && (
           // A run blocked on an approval or question is not "running" in any
           // sense the human cares about. The badge must say so — the ask
