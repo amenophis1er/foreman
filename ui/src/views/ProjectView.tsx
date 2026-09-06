@@ -539,7 +539,7 @@ type RailTab = import('../state').RailTab;
 
 export function ProjectView({
   p, models, modelsLoading, modelsNote, modelsInheritNote, routeRunId, onSelectRun, routeTab, onSelectTab, onBack,
-  refreshFleet, auth, theme, onToggleTheme, onSettings, settings,
+  refreshFleet, auth, theme, onToggleTheme, onSettings, settings, version,
 }: {
   p: ProjectSummary; models: ModelInfo[] | null;
   modelsLoading?: boolean; modelsNote?: string; modelsInheritNote?: string;
@@ -549,6 +549,7 @@ export function ProjectView({
   routeTab: RailTab; onSelectTab: (tab: RailTab) => void;
   onBack: () => void; refreshFleet: () => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
+  version?: string;
   /** Saved settings, for the rail's glance: global and this project's overlay. */
   settings: { global: Settings; project?: Settings };
 }) {
@@ -849,7 +850,7 @@ export function ProjectView({
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <AppHeader mode="project" title={p.name} folder={p.folder} onBack={onBack}
-        theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
+        theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings} version={version}>
         {headerErr && <Banner tone="error" inline>{headerErr}</Banner>}
         {/* Only when it warns, as on the fleet: a healthy subscription says
             nothing here. Which provider actually serves a run is said where

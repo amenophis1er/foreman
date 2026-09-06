@@ -17,3 +17,5 @@ Top of every view. Foreman has no sidebar navigation and no user menu — this b
 - Set the theme by putting `data-theme="light"` on `<html>`; persist it in localStorage as `foreman:theme`.
 
 Project mode keeps the F mark at the left as the way back to the fleet, in place of the arrow icon; the "Fleet" crumb beside it does the same. The brand is on every screen.
+
+The far right carries the running version in quiet mono (`v0.1.4`), linked to the GitHub releases — the answer to "what am I running" when something looks off, never louder than that.

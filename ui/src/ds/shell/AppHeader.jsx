@@ -27,7 +27,7 @@ function FolderPill({ folder }) {
 import { Logo, LogoMark } from '../brand/Logo';
 
 /** The app's one header bar. Fleet mode wears the full logo; project mode wears the mark (a way home) and the job site. */
-export function AppHeader({ mode = 'fleet', title, subtitle = 'mission control', folder, onBack, theme, onToggleTheme, onSettings, children, style }) {
+export function AppHeader({ mode = 'fleet', title, subtitle = 'mission control', folder, onBack, theme, onToggleTheme, onSettings, version, children, style }) {
   const fleet = mode === 'fleet';
   return (
     <header style={{
@@ -59,6 +59,15 @@ export function AppHeader({ mode = 'fleet', title, subtitle = 'mission control',
           <IconButton icon={theme === 'light' ? 'moon' : 'sun'} label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'} onClick={onToggleTheme} />
         )}
         {onSettings && <IconButton icon="settings" label="Settings" onClick={onSettings} />}
+        {/* Which Foreman this is. Quiet, mono, last: the answer to "what am
+            I running" when something looks off, and never louder than that. */}
+        {version && (
+          <a href="https://github.com/amenophis1er/foreman/releases" target="_blank" rel="noopener noreferrer"
+            title={`Foreman ${version} — release notes`}
+            style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textDecoration: 'none', whiteSpace: 'nowrap' }}>
+            v{version}
+          </a>
+        )}
       </div>
     </header>
   );

@@ -122,7 +122,7 @@ const sectionStyle = { display: 'flex', flexDirection: 'column', gap: 'var(--sp-
  * happened to be in, is gone.
  */
 export function FleetView({
-  projects, connected, activity, update, auth, onOpen, onOpenRun, refresh, theme, onToggleTheme, onSettings,
+  projects, connected, activity, update, auth, onOpen, onOpenRun, refresh, theme, onToggleTheme, onSettings, version,
 }: {
   projects: ProjectSummary[]; connected: boolean;
   activity: Record<string, string>;
@@ -133,6 +133,7 @@ export function FleetView({
   /** Open a specific run — where an unfinished one's next act (Resume) lives. */
   onOpenRun?: (projectId: string, runId: string) => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
+  version?: string;
 }) {
   const [query, setQuery] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -217,7 +218,7 @@ export function FleetView({
       onDrop={(e) => void onDrop(e)}>
       {dragging && <DropOverlay />}
 
-      <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings}>
+      <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings} version={version}>
         {!connected && <Banner tone="disconnected" inline>disconnected</Banner>}
         {/* The page's one status line: what is happening across the fleet —
             including "nothing", said quietly, so the board never reads as

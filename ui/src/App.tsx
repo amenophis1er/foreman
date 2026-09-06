@@ -142,7 +142,7 @@ function useProviderChoices(open: boolean) {
 }
 
 export default function App() {
-  const { projects, connected, auth, refresh, activity, update } = useFleet();
+  const { projects, connected, auth, refresh, activity, update, version } = useFleet();
   const { projectId, runId, tab, go, goRun } = useRoute();
   const [theme, toggleTheme, applyTheme] = useTheme();
   const applyTextSize = useTextSize();
@@ -223,6 +223,8 @@ export default function App() {
     onSettings: () => setSettingsOpen(true),
     // Which account pays. Cross-cutting, so it rides with the other shell props.
     auth,
+    // The server's version, for the header: what am I running.
+    version,
   };
 
   const notify = useNotify();

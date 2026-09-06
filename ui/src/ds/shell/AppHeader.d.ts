@@ -16,6 +16,8 @@ export interface AppHeaderProps {
   onToggleTheme?: () => void;
   /** Renders the gear IconButton at the far right; opens `SettingsModal`. */
   onSettings?: () => void;
+  /** The running server's version, shown quietly at the far right and linked to the releases. */
+  version?: string;
   /** Right-aligned slot: status badge, budget meter, contextual actions, inline errors. */
   children?: ReactNode;
   style?: CSSProperties;
