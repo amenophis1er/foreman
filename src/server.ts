@@ -1155,30 +1155,26 @@ async function resumeRun(projectId: string, meta: RunMeta, pick: {
   directorModel?: string; directorProviderId?: string; workerModel?: string; workerProviderId?: string;
 } = {}): Promise<void> {
   const sessionId = meta.directorSessionId;
-  // Resume re-reads Settings, so changing models or tool policy after a
-  // failure takes effect on the retry. A director session cannot switch
-  // model mid-session, so a changed director model restarts the session
-  // fresh (the mission doc carries the state forward).
-  const base = await effectiveSettings(projectId);
-  const settings = {
-    ...base,
-    ...(pick.directorModel ? { directorModel: modelChoice(pick.directorModel), directorProviderId: pick.directorProviderId } : {}),
-    ...(pick.workerModel ? { workerModel: modelChoice(pick.workerModel), workerProviderId: pick.workerProviderId } : {}),
-  };
-  // A model is picked together with the provider that serves it, so a
-  // change of either moves the role. Without the provider following the
-  // model, "resume on Sonnet" after a Codex usage limit went back through
-  // the Codex gateway — which remapped the unknown id to its own default and
-  // hit the same 429. The provider id is left undefined when Settings does
-  // not pin one, which means the project's own provider, as at start.
-  const directorChanged =
-    (settings.directorModel !== undefined && settings.directorModel !== meta.directorModel)
-    || (settings.directorModel !== undefined && settings.directorProviderId !== meta.directorProviderId);
-  const workerChanged =
-    (settings.workerModel !== undefined && settings.workerModel !== meta.workerModel)
-    || (settings.workerModel !== undefined && settings.workerProviderId !== meta.workerProviderId);
-  if (directorChanged) { meta.directorModel = settings.directorModel; meta.directorProviderId = settings.directorProviderId; }
-  if (workerChanged) { meta.workerModel = settings.workerModel; meta.workerProviderId = settings.workerProviderId; }
+  // Resume re-reads Settings for tool policy and auto-allow, so a policy
+  // change after a failure takes effect on the retry. Models are the run's
+  // own unless "Resume on…" says otherwise; a changed director model then
+  // restarts the session fresh (the mission doc carries the state forward).
+  const settings = await effectiveSettings(projectId);
+  // A plain Resume keeps the run's own models. It used to re-read the
+  // project's Settings and treat any difference as "the human changed the
+  // model" — but a run whose models were chosen at start (a local model
+  // picked on the card) differs from Settings by construction, and one
+  // Resume silently handed a 9B local-model test to Fable and Opus, at $4.82,
+  // and called the result the 9B's. Changing models on resume is now only
+  // ever explicit: "Resume on…" passes `pick`. A model is picked together
+  // with the provider that serves it; a pick without a provider id means the
+  // project's own provider, as at start.
+  const directorChanged = Boolean(pick.directorModel) && (
+    modelChoice(pick.directorModel) !== meta.directorModel || pick.directorProviderId !== meta.directorProviderId);
+  const workerChanged = Boolean(pick.workerModel) && (
+    modelChoice(pick.workerModel) !== meta.workerModel || pick.workerProviderId !== meta.workerProviderId);
+  if (directorChanged) { meta.directorModel = modelChoice(pick.directorModel); meta.directorProviderId = pick.directorProviderId; }
+  if (workerChanged) { meta.workerModel = modelChoice(pick.workerModel); meta.workerProviderId = pick.workerProviderId; }
   meta.toolPolicy = settings.toolPolicy;
   meta.autoAllowReadOnly = settings.autoAllowReadOnly;
   meta.status = 'running';
