@@ -1,7 +1,7 @@
 {
   "name": "@amenophis1er/foreman",
   "version": "0.1.0",
-  "description": "Autonomous mission runner on the Claude Agent SDK: a director plans, delegates to workers, verifies, and reports — from one dashboard, your phone, or the CLI.",
+  "description": "Autonomous mission runner on the Claude Agent SDK: a director plans, delegates to workers, verifies, and reports \u2014 from one dashboard, your phone, or the CLI.",
   "keywords": [
     "claude",
     "agent",
@@ -40,7 +40,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --import tsx --test 'src/**/*.test.ts'",
+    "test": "node --import tsx --test src/*.test.ts src/notify/*.test.ts",
     "start": "tsx src/server.ts",
     "dev": "node scripts/dev.mjs",
     "ui:dev": "npm --prefix ui run dev",
