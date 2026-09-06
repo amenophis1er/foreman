@@ -122,7 +122,7 @@ const sectionStyle = { display: 'flex', flexDirection: 'column', gap: 'var(--sp-
  * happened to be in, is gone.
  */
 export function FleetView({
-  projects, connected, activity, update, auth, onOpen, refresh, theme, onToggleTheme, onSettings,
+  projects, connected, activity, update, auth, onOpen, onOpenRun, refresh, theme, onToggleTheme, onSettings,
 }: {
   projects: ProjectSummary[]; connected: boolean;
   activity: Record<string, string>;
@@ -130,6 +130,8 @@ export function FleetView({
   update?: { latest: string; current: string } | null;
   auth: { mode: BillingMode; source: string; account?: { email?: string; org?: string } };
   onOpen: (projectId: string) => void; refresh: () => void;
+  /** Open a specific run — where an unfinished one's next act (Resume) lives. */
+  onOpenRun?: (projectId: string, runId: string) => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
 }) {
   const [query, setQuery] = useState('');
@@ -351,7 +353,13 @@ export function FleetView({
                   <OutcomeTile key={p.id} name={p.name} folder={p.folder}
                     lastRun={p.lastRun && p.lastRun.status !== 'idle' && p.lastRun.status !== 'running'
                       ? p.lastRun : null}
-                    onOpen={() => onOpen(p.id)}
+                    // A run that ended badly is unfinished business: open it,
+                    // where Resume is. A done run's next act is planning.
+                    onOpen={() => {
+                      const r = p.lastRun;
+                      if (r?.id && onOpenRun && (r.status === 'error' || r.status === 'interrupted')) onOpenRun(p.id, r.id);
+                      else onOpen(p.id);
+                    }}
                     onUnlink={() => setUnlinking(p)} />
                 ))}
               </div>

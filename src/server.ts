@@ -1353,6 +1353,7 @@ const server = http.createServer(async (req, res) => {
           providerHasKey: await providerHasKeyOf(p),
           activeRun: run ? { ...run.meta } : null,
           lastRun: lastRun && {
+            id: lastRun.id,
             mission: lastRun.mission, title: lastRun.title, status: lastRun.status,
             createdAt: lastRun.createdAt, costUsd: lastRun.costUsd,
             // The card may print a dollar only where the dollar was real.

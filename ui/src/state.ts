@@ -138,6 +138,7 @@ export type ProjectSummary = {
   defaultBudgetUsd: number;
   activeRun: RunSummary | null;
   lastRun: {
+    id?: string;
     mission: string; title?: string; status: Status; createdAt?: number; costUsd?: number;
     /** The card prints a dollar only when this is `priced`; otherwise tokens, or nothing. */
     costBasis?: CostBasis; usage?: TokenUsage;

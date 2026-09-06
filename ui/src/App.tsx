@@ -237,7 +237,7 @@ export default function App() {
           settings={{ global: settings.global, project: settings.projects[project.id] }} {...shared} />
       ) : (
         <FleetView projects={projects} connected={connected} activity={activity} update={update}
-          onOpen={(id) => go(id)} refresh={refresh} {...shared} />
+          onOpen={(id) => go(id)} onOpenRun={(pid, rid) => goRun(pid, rid)} refresh={refresh} {...shared} />
       )}
       {settingsOpen && (
         <SettingsModal
