@@ -3,10 +3,23 @@ import { SectionTitle } from '../core/SectionTitle';
 import { Empty } from '../core/Empty';
 import { Icon } from '../core/Icon';
 
-/** Parse `- [ ]` / `- [x]` items out of MISSION.md. */
+/**
+ * Parse `- [ ]` / `- [x]` items out of MISSION.md — every section except
+ * DONE WHEN. The criteria are the contract and have their own pinned list;
+ * counting them here too showed the same six lines twice and a plan that read
+ * "2/12" when the director had two milestones of six behind it.
+ */
 export function parsePlan(doc) {
-  return [...String(doc || '').matchAll(/^\s*-\s*\[([ xX])\]\s*(.+)$/gm)]
-    .map((m) => ({ done: m[1] !== ' ', text: m[2].trim() }));
+  const items = [];
+  let inDoneWhen = false;
+  for (const line of String(doc || '').split('\n')) {
+    const heading = /^#{1,6}\s+(.*)$/.exec(line.trim());
+    if (heading) { inDoneWhen = /^DONE\s*WHEN/i.test(heading[1]); continue; }
+    if (inDoneWhen) continue;
+    const m = /^\s*[-*]\s*\[([ xX])\]\s*(.+)$/.exec(line);
+    if (m) items.push({ done: m[1] !== ' ', text: m[2].trim() });
+  }
+  return items;
 }
 /** Bundle-reachable alias of `parsePlan`. */
 export const ParsePlan = parsePlan;
