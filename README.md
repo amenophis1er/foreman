@@ -60,6 +60,19 @@ which account pays, the Claude Code install, Ollama and Codex if present, the
 browser missions will use, the port, Tailscale, the data directory — and
 exits. Nothing blocks unless it says so.
 
+**Environment.** Everything the CLI reads; `foreman --help` prints the same list.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `PORT` | listen port | `4177` |
+| `FOREMAN_HOME` | state directory: runs, settings, logs | `~/.foreman` |
+| `FOREMAN_BIND` | `auto` (loopback + Tailscale when present), `local`, or `all` | `auto` |
+| `FOREMAN_BROWSER` | browser for missions: `chrome`, `chromium`, `msedge`, `firefox` | `chrome` |
+| `FOREMAN_CLAUDE_CONFIG_DIR` | the Claude Code install missions run under | inherited |
+| `FOREMAN_CLAUDE_EXECUTABLE` | the Claude Code executable | bundled |
+| `FOREMAN_AUTH_MODE` | assert `api-key` or `subscription`; fail at start on mismatch | unset |
+| `FOREMAN_NO_TELEGRAM` | `1` to start without the Telegram bot: for a second server beside the main one, since Telegram allows one poller per bot | unset |
+
 ## A mission, start to finish
 
 1. **Fleet.** The board: what needs you (answerable right there), what is
@@ -212,6 +225,16 @@ npm run typecheck            # server and dashboard
 npm run dev                  # API + Vite together
 scripts/dev-restart.sh       # restarts the server only when nothing would be lost
 ```
+
+To run a checkout beside an installed Foreman on the same machine, give it its
+own port and leave the bot to the installed one:
+
+```sh
+PORT=4178 FOREMAN_BIND=local FOREMAN_NO_TELEGRAM=1 npm start
+```
+
+Both read `~/.foreman`; look from the second, drive from the first — two
+servers running missions against one store is the one case nothing guards.
 
 Releases: `npm version <patch|minor|major> && git push --follow-tags` — CI
 tests, publishes to npm with provenance, and creates the GitHub release.
