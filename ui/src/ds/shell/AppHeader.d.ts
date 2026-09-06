@@ -18,6 +18,8 @@ export interface AppHeaderProps {
   onSettings?: () => void;
   /** The running server's version, shown quietly at the far right and linked to the releases. */
   version?: string;
+  /** The finder (`SearchBox`), centred between the name and the controls. */
+  search?: ReactNode;
   /** Right-aligned slot: status badge, budget meter, contextual actions, inline errors. */
   children?: ReactNode;
   style?: CSSProperties;

@@ -27,7 +27,7 @@ function FolderPill({ folder }) {
 import { Logo, LogoMark } from '../brand/Logo';
 
 /** The app's one header bar. Fleet mode wears the full logo; project mode wears the mark (a way home) and the job site. */
-export function AppHeader({ mode = 'fleet', title, subtitle = 'mission control', folder, onBack, theme, onToggleTheme, onSettings, version, children, style }) {
+export function AppHeader({ mode = 'fleet', title, subtitle = 'mission control', folder, onBack, theme, onToggleTheme, onSettings, version, search, children, style }) {
   const fleet = mode === 'fleet';
   return (
     <header style={{
@@ -53,7 +53,10 @@ export function AppHeader({ mode = 'fleet', title, subtitle = 'mission control',
           {folder && <FolderPill folder={folder} />}
         </nav>
       )}
-      <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+      {/* The finder, centred between the name and the controls: the same
+          box on every screen, so "where is…" has one answer everywhere. */}
+      {search && <div style={{ flex: '1 1 auto', display: 'flex', justifyContent: 'center', minWidth: 0, padding: '0 var(--sp-3)' }}>{search}</div>}
+      <div style={{ marginLeft: search ? 0 : 'auto', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
         {children}
         {onToggleTheme && (
           <IconButton icon={theme === 'light' ? 'moon' : 'sun'} label={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'} onClick={onToggleTheme} />

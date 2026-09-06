@@ -539,8 +539,10 @@ type RailTab = import('../state').RailTab;
 
 export function ProjectView({
   p, models, modelsLoading, modelsNote, modelsInheritNote, routeRunId, onSelectRun, routeTab, onSelectTab, onBack,
-  refreshFleet, auth, theme, onToggleTheme, onSettings, settings, version,
+  refreshFleet, auth, theme, onToggleTheme, onSettings, settings, version, search,
 }: {
+  /** The header finder, rendered by the app. */
+  search?: React.ReactNode;
   p: ProjectSummary; models: ModelInfo[] | null;
   modelsLoading?: boolean; modelsNote?: string; modelsInheritNote?: string;
   auth: { mode: BillingMode; source: string; account?: { email?: string; org?: string } };
@@ -850,7 +852,7 @@ export function ProjectView({
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <AppHeader mode="project" title={p.name} folder={p.folder} onBack={onBack}
-        theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings} version={version}>
+        theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings} version={version} search={search}>
         {headerErr && <Banner tone="error" inline>{headerErr}</Banner>}
         {/* Only when it warns, as on the fleet: a healthy subscription says
             nothing here. Which provider actually serves a run is said where

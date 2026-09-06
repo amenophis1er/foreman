@@ -934,6 +934,35 @@ function chatReducer(s: ChatView, a: ChatAction): ChatView {
  * the live stream — the same shape as {@link useRunView}, because a
  * conversation and a mission are the same kind of thing on the wire.
  */
+export type RunHit = {
+  id: string; projectId: string | null; projectName: string; folder: string; title?: string; mission: string;
+  status: 'idle' | 'running' | 'done' | 'error' | 'interrupted'; createdAt: number; endedAt?: number;
+  costUsd: number; costBasis: 'priced' | 'free' | 'unpriced';
+};
+
+/**
+ * Runs across the fleet that answer to the query — the project cards only
+ * know their latest run, and "where did we build the seat picker" is a
+ * question about all of them. Debounced; an empty or one-letter query asks
+ * nothing.
+ */
+export function useRunSearch(q: string): { hits: RunHit[]; busy: boolean } {
+  const [hits, setHits] = useState<RunHit[]>([]);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (q.length < 2) { setHits([]); setBusy(false); return; }
+    let cancelled = false;
+    setBusy(true);
+    const t = setTimeout(() => {
+      fetch(`/search?q=${encodeURIComponent(q)}`).then((r) => (r.ok ? r.json() : { runs: [] }))
+        .then((d: { runs: RunHit[] }) => { if (!cancelled) { setHits(d.runs ?? []); setBusy(false); } })
+        .catch(() => { if (!cancelled) { setHits([]); setBusy(false); } });
+    }, 200);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q]);
+  return { hits, busy };
+}
+
 /** The fleet planner's conversation id on the server — the same chat routes, no project. */
 export const FLEET_CHAT_ID = '_fleet';
 

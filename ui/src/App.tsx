@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, useFleet, useRoute, useNotify } from './state';
+import { api, useFleet, useRoute, useNotify, useRunSearch } from './state';
+import { SearchBox } from './ds/shell/SearchBox';
 import { FleetView } from './views/FleetView';
 import { ProjectView } from './views/ProjectView';
 import { SettingsModal, type Settings } from './ds/settings/SettingsModal';
@@ -218,8 +219,35 @@ export default function App() {
     }
   };
 
+  // The finder. One query, owned here so the box is the same on both screens
+  // and the fleet board can narrow by it.
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
+  const runSearch = useRunSearch(q);
+  const when = (t: number) => new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const projectHits = q ? projects.filter((p) => [p.name, p.folder].some((f) => f.toLowerCase().includes(q))).slice(0, 8) : [];
+  const actions = [
+    { id: 'act-fleet', title: 'Fleet', detail: 'The board: what needs you, what is running, what finished', icon: 'back', keys: 'fleet home board', onPick: () => go(null) },
+    { id: 'act-settings', title: 'Settings', detail: project ? `Global, and ${project.name}'s overrides` : 'Models, budget, approvals, notifications', icon: 'settings', keys: 'settings preferences models budget telegram', onPick: () => setSettingsOpen(true) },
+    ...(project ? [{ id: 'act-plan', title: `Plan in ${project.name}`, detail: 'Back to the planning conversation', icon: 'steer', keys: 'plan planner mission new', onPick: () => go(project.id) }] : []),
+  ].filter((a) => q && (a.title.toLowerCase().includes(q) || a.keys.includes(q)));
+  const searchGroups = [
+    { label: 'Projects', items: projectHits.map((p) => ({ id: `p-${p.id}`, title: p.name, detail: p.folder, icon: 'folder', onPick: () => go(p.id) })) },
+    {
+      label: 'Runs', count: runSearch.hits.length >= 30 ? 30 : undefined,
+      items: runSearch.hits.map((h) => ({
+        id: `r-${h.id}`, title: h.title || h.mission, detail: `${h.projectName}${h.title ? ` · ${h.mission}` : ''}`, icon: 'idle',
+        status: h.status, meta: `${when(h.endedAt ?? h.createdAt)}${h.costBasis === 'priced' ? ` · $${h.costUsd.toFixed(2)}` : ''}`,
+        onPick: () => { if (h.projectId) goRun(h.projectId, h.id); },
+      })),
+    },
+    { label: 'Actions', items: actions },
+  ];
+  const search = <SearchBox value={query} onChange={setQuery} groups={searchGroups} busy={runSearch.busy} />;
+
   const shared = {
     theme, onToggleTheme: toggleTheme,
+    search,
     onSettings: () => setSettingsOpen(true),
     // Which account pays. Cross-cutting, so it rides with the other shell props.
     auth,
@@ -239,7 +267,8 @@ export default function App() {
           settings={{ global: settings.global, project: settings.projects[project.id] }} {...shared} />
       ) : (
         <FleetView projects={projects} connected={connected} activity={activity} update={update}
-          onOpen={(id) => go(id)} onOpenRun={(pid, rid) => goRun(pid, rid)} refresh={refresh} {...shared} />
+          onOpen={(id) => go(id)} onOpenRun={(pid, rid) => goRun(pid, rid)} refresh={refresh}
+          query={query} onQuery={setQuery} {...shared} />
       )}
       {settingsOpen && (
         <SettingsModal

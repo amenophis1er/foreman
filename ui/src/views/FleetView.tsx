@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { FLEET_CHAT_ID, api, basisOf, useChat, type ProjectSummary } from '../state';
-import { StatusBadge } from '../ds/status/StatusBadge';
 import { ChatBar } from '../ds/mission/ChatBar';
 import { TranscriptEntry } from '../ds/mission/TranscriptEntry';
 import { AppHeader } from '../ds/shell/AppHeader';
@@ -13,7 +12,6 @@ import { NeedsBoard, summaryText, type NeedItem } from '../ds/fleet/NeedsBoard';
 import { FleetRunRow } from '../ds/fleet/FleetRunRow';
 import { OutcomeTile } from '../ds/fleet/OutcomeTile';
 import { LinkProjectCard } from '../ds/fleet/LinkProjectCard';
-import { FleetSearch } from '../ds/fleet/FleetSearch';
 import { FolderPicker } from '../ds/overlay/FolderPicker';
 import { DropConfirmModal, DropOverlay } from '../ds/overlay/DropConfirmModal';
 import { ConfirmDialog } from '../ds/overlay/ConfirmDialog';
@@ -111,57 +109,6 @@ function FleetDesk({ onSettings }: { onSettings: () => void }) {
   );
 }
 
-type RunHit = {
-  id: string; projectId: string | null; projectName: string; folder: string; title?: string; mission: string;
-  status: 'idle' | 'running' | 'done' | 'error' | 'interrupted'; createdAt: number; endedAt?: number;
-  costUsd: number; costBasis: 'priced' | 'free' | 'unpriced';
-};
-
-/**
- * Runs across the fleet that answer to the query — the project cards only
- * know their latest run, and "where did we build the seat picker" is a
- * question about all of them. Debounced; an empty or one-letter query asks
- * nothing.
- */
-function useRunSearch(q: string): RunHit[] {
-  const [hits, setHits] = useState<RunHit[]>([]);
-  useEffect(() => {
-    if (q.length < 2) { setHits([]); return; }
-    let cancelled = false;
-    const t = setTimeout(() => {
-      fetch(`/search?q=${encodeURIComponent(q)}`).then((r) => (r.ok ? r.json() : { runs: [] }))
-        .then((d: { runs: RunHit[] }) => { if (!cancelled) setHits(d.runs ?? []); })
-        .catch(() => { if (!cancelled) setHits([]); });
-    }, 200);
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [q]);
-  return hits;
-}
-
-function RunHitRow({ hit, onOpen, style }: { hit: RunHit; onOpen: () => void; style?: React.CSSProperties }) {
-  const when = new Date(hit.endedAt ?? hit.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  return (
-    <button type="button" onClick={onOpen} style={{
-      display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: 'var(--sp-3)',
-      width: '100%', textAlign: 'left', padding: 'var(--sp-2) var(--sp-3)', border: 'none', background: 'transparent',
-      cursor: 'pointer', font: 'inherit', color: 'var(--ink-0)', ...style,
-    }}>
-      <span style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hit.title || hit.mission}</span>
-        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          <b style={{ color: 'var(--ink-1)', fontWeight: 'var(--fw-semibold)' as never }}>{hit.projectName}</b>
-          {hit.title ? ` · ${hit.mission}` : ''}
-        </span>
-      </span>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--sp-2)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
-        <StatusBadge status={hit.status} />
-        <span>{when}</span>
-        {hit.costBasis === 'priced' && <span>${hit.costUsd.toFixed(2)}</span>}
-      </span>
-    </button>
-  );
-}
-
 function matches(p: ProjectSummary, q: string): boolean {
   const run = p.activeRun ?? p.lastRun;
   return [p.name, p.folder, run?.title, run?.mission]
@@ -243,7 +190,12 @@ const sectionStyle = { display: 'flex', flexDirection: 'column', gap: 'var(--sp-
  */
 export function FleetView({
   projects, connected, activity, update, auth, onOpen, onOpenRun, refresh, theme, onToggleTheme, onSettings, version,
+  query = '', onQuery, search,
 }: {
+  /** The header finder's text, owned by the app; the board narrows its cards by it. */
+  query?: string; onQuery?: (q: string) => void;
+  /** The finder itself, rendered in the header. */
+  search?: React.ReactNode;
   projects: ProjectSummary[]; connected: boolean;
   activity: Record<string, string>;
   /** A newer Foreman on npm, when the server could ask. */
@@ -255,7 +207,6 @@ export function FleetView({
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
   version?: string;
 }) {
-  const [query, setQuery] = useState('');
   const [dragging, setDragging] = useState(false);
   const [drop, setDrop] = useState<{ name: string; matches: string[] | null } | null>(null);
   const [unlinking, setUnlinking] = useState<ProjectSummary | null>(null);
@@ -273,7 +224,6 @@ export function FleetView({
   // survives, so a project blocked on you stays first among whatever is left.
   const q = query.trim().toLowerCase();
   const shown = (q ? projects.filter((p) => matches(p, q)) : projects) as FleetProject[];
-  const runHits = useRunSearch(q);
 
   const needs = needsOf(shown);
   const running = shown
@@ -339,7 +289,7 @@ export function FleetView({
       onDrop={(e) => void onDrop(e)}>
       {dragging && <DropOverlay />}
 
-      <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings} version={version}>
+      <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings} version={version} search={search}>
         {!connected && <Banner tone="disconnected" inline>disconnected</Banner>}
         {/* The page's one status line: what is happening across the fleet —
             including "nothing", said quietly, so the board never reads as
@@ -388,11 +338,16 @@ export function FleetView({
 
       <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
       <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-      {/* One project needs no filter; several do, and the row is the same height
-          whether or not anything is typed in it. */}
-      {projects.length > 1 && (
-        <FleetSearch value={query} onChange={setQuery}
-          count={shown.length} total={projects.length} />
+      {/* The header's finder also narrows this board. Say so while it does,
+          with the way out, since the box that caused it may have lost focus. */}
+      {q && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', maxWidth: 'var(--fleet-max)', margin: '0 auto', width: '100%',
+          padding: 'var(--sp-4) var(--sp-5) 0', boxSizing: 'border-box', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
+        }}>
+          <span>Showing projects matching “{query.trim()}” · <span style={{ fontVariantNumeric: 'tabular-nums' }}>{shown.length} of {projects.length}</span></span>
+          <Button variant="ghost" size="sm" onClick={() => onQuery?.('')}>Show all</Button>
+        </div>
       )}
 
       {projects.length === 0 ? (
@@ -413,26 +368,11 @@ export function FleetView({
           display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)',
           padding: 'var(--sp-5)', maxWidth: 'var(--fleet-max)', margin: '0 auto', width: '100%', boxSizing: 'border-box',
         }}>
-          {shown.length === 0 && runHits.length === 0 && (
+          {shown.length === 0 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
-              <Empty>Nothing matches “{query.trim()}”.</Empty>
-              <Button variant="ghost" size="sm" onClick={() => setQuery('')}>Clear filter</Button>
+              <Empty>No project matches “{query.trim()}”. Runs that do are in the search box above.</Empty>
+              <Button variant="ghost" size="sm" onClick={() => onQuery?.('')}>Show all</Button>
             </div>
-          )}
-
-          {/* Runs that answer to the query, from every project's history —
-              not just the latest one each card shows. Opens the run itself. */}
-          {runHits.length > 0 && (
-            <section style={sectionStyle}>
-              <SectionTitle>Runs matching “{query.trim()}” · {runHits.length}</SectionTitle>
-              <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-md)', background: 'var(--bg-card)', overflow: 'hidden' }}>
-                {runHits.map((h, i) => (
-                  <RunHitRow key={h.id} hit={h}
-                    onOpen={() => { if (h.projectId) (onOpenRun ? onOpenRun(h.projectId, h.id) : onOpen(h.projectId)); }}
-                    style={i > 0 ? { borderTop: '1px solid var(--line)' } : undefined} />
-                ))}
-              </div>
-            </section>
           )}
 
           {/* 0 · Quiet. The two sections above Recent are omitted when empty;
