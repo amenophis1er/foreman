@@ -88,7 +88,12 @@ export function FilesPanel({ runId, deck, loading, error, missing, style }) {
     ...images,
     ...others,
   ];
-  const open = (path) => setViewingIdx(items.findIndex((x) => x.path === path));
+  // Open by position, not by path: a screenshot is in the list twice — as a
+  // binary changed file and as an artifact — and a path lookup found the
+  // diff entry first, so clicking a thumbnail showed "no diff".
+  const fileAt = (i) => setViewingIdx(i);
+  const imageAt = (i) => setViewingIdx(files.length + i);
+  const otherAt = (i) => setViewingIdx(files.length + images.length + i);
   const viewing = viewingIdx === null ? null : items[viewingIdx] ?? null;
   const baseline = deck.baseline.kind === 'git' && deck.baseline.head
     ? `against ${String(deck.baseline.head).slice(0, 8)}`
@@ -109,8 +114,8 @@ export function FilesPanel({ runId, deck, loading, error, missing, style }) {
         <SectionTitle>Changed files</SectionTitle>
         {files.length === 0 && <Empty>Nothing changed in the folder yet.</Empty>}
         <div style={{ display: 'flex', flexDirection: 'column' }}>
-          {files.map((f) => (
-            <Row key={`${f.status}:${f.path}`} onClick={() => open(f.path)}
+          {files.map((f, i) => (
+            <Row key={`${f.status}:${f.path}`} onClick={() => fileAt(i)}
               title={f.binary ? `${f.path} — binary, no diff` : f.preexisting ? `${f.path} — also dirty before the run` : `${f.path} — open the diff`}>
               <Icon name="file" size={12} color="var(--ink-2)" />
               <PathLabel path={f.path} muted={f.status === 'deleted'} strike={f.status === 'deleted'} />
@@ -133,8 +138,8 @@ export function FilesPanel({ runId, deck, loading, error, missing, style }) {
         {artifacts.length === 0 && <Empty>No screenshots or work files yet.</Empty>}
         {images.length > 0 && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))', gap: 6, marginBottom: others.length ? 'var(--sp-2)' : 0 }}>
-            {images.map((a) => (
-              <button key={a.path} type="button" onClick={() => open(a.path)}
+            {images.map((a, i) => (
+              <button key={a.path} type="button" onClick={() => imageAt(i)}
                 title={`${a.path} · ${fmtSize(a.size)} · ${fmtAgo(a.mtimeMs, now)}`}
                 style={{ display: 'block', padding: 0, width: '100%', cursor: 'pointer', font: 'inherit', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', overflow: 'hidden', background: 'var(--bg-inset)', color: 'inherit', textAlign: 'left' }}>
                 <img src={artifactUrl(runId, a.path)} alt={a.path} loading="lazy"
@@ -147,8 +152,8 @@ export function FilesPanel({ runId, deck, loading, error, missing, style }) {
           </div>
         )}
         <div style={{ display: 'flex', flexDirection: 'column' }}>
-          {others.map((a) => (
-            <Row key={a.path} onClick={() => open(a.path)} title={`${a.path} · ${fmtSize(a.size)} · ${fmtAgo(a.mtimeMs, now)}`}>
+          {others.map((a, i) => (
+            <Row key={a.path} onClick={() => otherAt(i)} title={`${a.path} · ${fmtSize(a.size)} · ${fmtAgo(a.mtimeMs, now)}`}>
               <Icon name={a.kind === 'text' ? 'transcript' : 'file'} size={12} color="var(--ink-2)" />
               <PathLabel path={a.path} />
               <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }}>{fmtSize(a.size)}</span>
@@ -159,7 +164,7 @@ export function FilesPanel({ runId, deck, loading, error, missing, style }) {
 
       {viewing && (
         <ArtifactViewer artifact={viewing}
-          url={viewing.kind === 'diff' ? undefined : artifactUrl(runId, viewing.path)}
+          url={viewing.kind === 'diff' && !viewing.binary ? undefined : artifactUrl(runId, viewing.path)}
           previewUrl={viewing.kind === 'diff' ? undefined : previewUrl(runId, viewing.path)}
           onClose={() => setViewingIdx(null)}
           index={viewingIdx} count={items.length} onStep={setViewingIdx} />

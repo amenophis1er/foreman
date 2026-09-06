@@ -58,7 +58,11 @@ export function ArtifactViewer({ artifact, url, previewUrl, onClose, index, coun
     : artifact.size >= 1024 ? `${(artifact.size / 1024).toFixed(1)} KB` : `${artifact.size} B`;
 
   let body;
-  if (isDiff) {
+  const binaryImage = isDiff && artifact.binary && url && /\.(png|jpe?g|webp|gif|svg)$/i.test(name);
+  if (binaryImage) {
+    // An added or changed screenshot has no diff worth reading; the file is the change.
+    body = <img src={url} alt={artifact.path} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block', margin: 'auto', background: 'var(--bg-inset)' }} />;
+  } else if (isDiff) {
     body = artifact.binary
       ? <div style={{ margin: 'auto', color: 'var(--ink-2)' }}>Binary file — no diff to show.</div>
       : artifact.diff
