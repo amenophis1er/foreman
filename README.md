@@ -21,6 +21,21 @@ one director, scoped workers, independent verification — but the agents are
 embedded sessions driven by this app, not terminal sessions watched by a
 plugin.
 
+## See it
+
+<p align="center">
+  <img src="assets/readme/fleet-needs-you.jpg" alt="The fleet: one approval waiting, answerable in place; one mission running with its crew and meter; recent outcomes" width="900">
+</p>
+
+The planner asks with options and ends in a proposal you can edit; a run is
+one screen with the checklist ticking live and the crew beside it; anything
+that blocks a run sits above the transcript, answerable right there.
+
+| Plan | Run | Review |
+|---|---|---|
+| [![The planner asking three questions with clickable options](assets/readme/planner-asks.jpg)](assets/readme/planner-asks.jpg) | [![A running mission: transcript, timeline, DONE WHEN and crew](assets/readme/run.jpg)](assets/readme/run.jpg) | [![The files viewer stepping through a run's fixtures](assets/readme/files-viewer.jpg)](assets/readme/files-viewer.jpg) |
+| [![The proposal card: brief, DONE WHEN, budget, models, browser](assets/readme/proposal.jpg)](assets/readme/proposal.jpg) | [![An approval pinned above the transcript, waiting](assets/readme/needs-you.jpg)](assets/readme/needs-you.jpg) | [![The fleet at rest: all quiet](assets/readme/fleet-quiet.jpg)](assets/readme/fleet-quiet.jpg) |
+
 ## Install
 
 Node 20 or newer, and a Claude Code login (or an API key) on the machine that
