@@ -3,8 +3,9 @@
 #   npm version 0.2.0        # bumps package.json, commits, tags v0.2.0
 #   git push --follow-tags   # this workflow builds the dashboard (prepack) and publishes
 #
-# Needs an NPM_TOKEN secret (an automation token for the @amenophis1er scope)
-# in the repository settings. The tag must match package.json's version.
+# No token: npm trusts this workflow through OIDC (package Settings → Trusted
+# Publisher: GitHub Actions, amenophis1er/foreman, release.yml, "Allow npm
+# publish" checked). The tag must match package.json's version.
 name: release
 on:
   push:
@@ -31,9 +32,9 @@ jobs:
         run: |
           v="$(node -p "require('./package.json').version")"
           [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != package.json v$v"; exit 1; }
+      # Trusted publishing needs a recent npm; Node 22 ships an older one.
+      - run: npm install -g npm@latest
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: GitHub release with the tarball
         run: |
           npm pack
