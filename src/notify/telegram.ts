@@ -80,6 +80,22 @@ export function telegramTransport(token: string, chatId: string, apiBase = TELEG
  * no typing a code on a phone. Only the bot's username is public here; the
  * code is single-use and expires, which is why it is safe on a screen.
  */
+/** The "/" menu on the phone. Registered on every start, so the list is never behind the code. */
+export const BOT_COMMANDS: Array<{ command: string; description: string }> = [
+  { command: 'projects', description: 'The fleet, with what is running' },
+  { command: 'status', description: 'Runs in flight, spend, what needs you' },
+  { command: 'new', description: 'Create a project: /new <name>' },
+  { command: 'plan', description: 'Talk to a planner: /plan <project> <what you want>' },
+  { command: 'run', description: 'Skip the talk: /run <project> <brief>' },
+  { command: 'stop', description: 'Stop the planner reply in flight' },
+  { command: 'help', description: 'What you can say here' },
+];
+
+export async function setBotCommands(token: string, apiBase = TELEGRAM_API): Promise<boolean> {
+  try { await call(apiBase, token, 'setMyCommands', { commands: BOT_COMMANDS }, 10_000); return true; }
+  catch { return false; }
+}
+
 export function telegramStartLink(bot: string, code: string): string {
   return `https://t.me/${bot.replace(/^@/, '')}?start=${encodeURIComponent(code)}`;
 }

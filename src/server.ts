@@ -68,7 +68,7 @@ import { discoverOllama, ollamaHost, ollamaProvider } from './ollama.js';
 import { deleteSecret, getSecret, hasSecret, putSecret } from './secrets.js';
 import { NotifyHub } from './notify.js';
 import { handleDeckRoute } from './deck.js';
-import { TelegramBot, getMe, linkCode, telegramStartLink, telegramTransport } from './notify/telegram.js';
+import { TelegramBot, getMe, linkCode, telegramStartLink, telegramTransport, setBotCommands } from './notify/telegram.js';
 import QRCode from 'qrcode';
 import { ANTHROPIC_MODELS } from './anthropic-models.js';
 import { codexHome, codexModels, readCodexAuth } from './codex.js';
@@ -589,6 +589,8 @@ async function reattachTelegram(): Promise<boolean> {
       onText: (text, replyTo) => void handlePhoneText(text, replyTo),
     });
     telegramBot.start();
+    // The phone's "/" menu. Best effort: a failure here costs the menu, not the bot.
+    void setBotCommands(token).then((ok) => { if (!ok) console.warn('[telegram] could not register the command menu'); });
   }
   telegramBot.linkedChatId = s.telegramChatId ?? null;
   if (!s.telegramChatId) return false;
