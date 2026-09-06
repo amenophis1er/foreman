@@ -16,3 +16,5 @@ The planning conversation's input, docked at the bottom of the transcript column
 The bar takes files: an Attach button, drop onto the bar, or paste an image. Picked files show as `AttachmentChip`s above the footer until sent; `onSend` receives them with the text. With `onChangeModel`, the model name in the footer is a dotted-underline link to Settings → Models — the one place the planner's model is named is also the way to change it.
 
 While a reply is in flight and `onStop` is given, Send becomes a red **Stop**: the planner is aborted and the rest of the reply discarded; the conversation stays.
+
+The input shows three lines at rest and grows to ten as you type: a one-line slot read as a command prompt, and a brief wants room to be a paragraph.

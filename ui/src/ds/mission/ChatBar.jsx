@@ -9,6 +9,9 @@ import { Icon } from '../core/Icon';
  * controls — there is one listener here, and nothing to interrupt.
  */
 const fileKey = (f) => `${f.name}:${f.size}`;
+const LINE_PX = 22;
+const MIN_ROWS_PX = LINE_PX * 3;
+const MAX_ROWS_PX = LINE_PX * 10;
 
 export function ChatBar({ value, onChange, onSend, onStop, busy, disabled, disabledReason, placeholder, who, onChangeModel, autoFocus, style }) {
   const [localText, setLocalText] = useState('');
@@ -29,8 +32,10 @@ export function ChatBar({ value, onChange, onSend, onStop, busy, disabled, disab
 
   useEffect(() => {
     const el = ta.current; if (!el) return;
+    // Three lines at rest, growing to ten: a one-line slot said "type a
+    // command"; a mission brief wants room to be a paragraph.
     el.style.height = 'auto';
-    el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+    el.style.height = Math.max(MIN_ROWS_PX, Math.min(el.scrollHeight, MAX_ROWS_PX)) + 'px';
   }, [text]);
 
   const send = () => {
@@ -58,7 +63,7 @@ export function ChatBar({ value, onChange, onSend, onStop, busy, disabled, disab
         <span className={busy ? 'pulse' : undefined} style={{ marginTop: 3, flex: '0 0 auto', display: 'inline-flex' }}>
           <Icon name={busy ? 'loading' : 'steer'} size={15} color="var(--brand)" />
         </span>
-        <textarea ref={ta} rows={1} value={text} disabled={disabled} autoFocus={autoFocus}
+        <textarea ref={ta} rows={3} value={text} disabled={disabled} autoFocus={autoFocus}
           placeholder={disabled
             ? (disabledReason || 'Not available right now.')
             : (placeholder || 'Ask, think out loud, or describe what you want built…')}
@@ -68,7 +73,7 @@ export function ChatBar({ value, onChange, onSend, onStop, busy, disabled, disab
           onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); send(); } }}
           style={{
             flex: 1, minWidth: 0, resize: 'none', border: 'none', outline: 'none', background: 'transparent',
-            color: 'var(--ink-0)', font: 'inherit', lineHeight: 'var(--lh)', padding: '2px 0', maxHeight: 160,
+            color: 'var(--ink-0)', font: 'inherit', lineHeight: `${LINE_PX}px`, padding: '2px 0', minHeight: MIN_ROWS_PX, maxHeight: MAX_ROWS_PX,
           }} />
       </div>
       {files.length > 0 && (
