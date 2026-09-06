@@ -13,7 +13,7 @@
  *           be up when the laptop lid is closed; this is that.
  */
 import { execFile, spawn } from 'node:child_process';
-import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { openSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -170,8 +170,12 @@ async function serviceUninstall(): Promise<number> {
 /** Is the service registered, and is it running? Null pid when registered but idle. */
 async function serviceState(): Promise<{ installed: boolean; running: boolean; pid?: number }> {
   if (process.platform === 'darwin') {
+    // Installed means the plist is on disk; a stopped service (booted out
+    // by `service stop`) is still installed, and `service start` brings it
+    // back. launchctl only knows about loaded jobs, so it answers "running".
+    const installed = await access(path.join(os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`)).then(() => true, () => false);
     const r = await sh('launchctl', ['print', `gui/${os.userInfo().uid}/${LABEL}`]);
-    if (r.code !== 0) return { installed: false, running: false };
+    if (r.code !== 0) return { installed, running: false };
     const pid = Number(/pid = (\d+)/.exec(r.out)?.[1]);
     return { installed: true, running: Number.isFinite(pid) && pid > 0, ...(pid ? { pid } : {}) };
   }
@@ -230,7 +234,11 @@ async function serviceRestart(): Promise<number> {
 async function serviceStatus(): Promise<number> {
   if (process.platform === 'darwin') {
     const r = await sh('launchctl', ['print', `gui/${os.userInfo().uid}/${LABEL}`]);
-    if (r.code !== 0) { console.log('Not installed. `foreman service install` keeps Foreman running.'); return 1; }
+    if (r.code !== 0) {
+      const st = await serviceState();
+      console.log(st.installed ? 'Installed · stopped — `foreman service start` starts it (it also comes back at next login).' : 'Not installed. `foreman service install` keeps Foreman running.');
+      return 1;
+    }
     const state = /state = (\w+)/.exec(r.out)?.[1] ?? 'unknown';
     const pid = /pid = (\d+)/.exec(r.out)?.[1];
     console.log(`Installed · ${state}${pid ? ` · pid ${pid}` : ''} · http://localhost:${PORT}`);
