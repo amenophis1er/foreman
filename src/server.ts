@@ -899,6 +899,7 @@ async function driveFleetTurn(text: string, via: 'telegram' | 'http'): Promise<{
   const abort = new AbortController();
   fleetAbort = abort;
   emit('chat_message', { text, via });
+  const stopBusy = via === 'telegram' ? notifyHub.busy() : () => {};
   try {
     const resolved = await resolveProvider(providerOf({}), store.root);
     emit('chat_turn', { state: 'thinking', model, provider: resolved.label, costBasis: resolved.costBasis });
@@ -931,6 +932,7 @@ async function driveFleetTurn(text: string, via: 'telegram' | 'http'): Promise<{
     emit('chat_error', { error: String(err) });
     return { text: '', costUsd: 0, error: String(err) };
   } finally {
+    stopBusy();
     if (fleetAbort === abort) fleetAbort = null;
     emit('chat_turn', { state: 'idle' });
   }
@@ -1114,6 +1116,7 @@ async function driveChatTurn(project: Project, text: string, shown: string = tex
   if (via === 'telegram') { lastPhonePlanning = project.id; lastPhonePlanningAt = Date.now(); }
   const meta = await chatMetaOf(project.id);
   emit('chat_message', { text: shown, ...(via ? { via } : {}) });
+  const stopBusy = via === 'telegram' ? notifyHub.busy() : () => {};
   try {
     const settings = await effectiveSettings(project.id);
     const resolved = await resolveProvider(providerOf(project), store.root);
@@ -1179,6 +1182,7 @@ async function driveChatTurn(project: Project, text: string, shown: string = tex
     console.error(`planning turn failed for project ${project.id}:`, err);
     emit('chat_error', { error: String(err) });
   } finally {
+    stopBusy();
     chatTurns.delete(project.id);
     chatAborts.delete(project.id);
     emit('chat_turn', { state: 'idle' });

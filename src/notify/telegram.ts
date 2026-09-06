@@ -69,6 +69,16 @@ export function telegramTransport(token: string, chatId: string, apiBase = TELEG
         ...(opts?.buttons ? keyboard(opts.buttons) : { reply_markup: { inline_keyboard: [] } }),
       });
     },
+    busy() {
+      // Telegram's typing bubble lasts about five seconds per call and there
+      // is no "stop" — it simply lapses. So: send now, repeat every four
+      // seconds, and stopping means letting it lapse.
+      const ping = () => void call(apiBase, token, 'sendChatAction', { chat_id: chatId, action: 'typing' }, 5_000);
+      ping();
+      const timer = setInterval(ping, 4_000);
+      timer.unref?.();
+      return () => clearInterval(timer);
+    },
   };
 }
 
