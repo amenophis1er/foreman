@@ -15,3 +15,5 @@ Top of every view. Foreman has no sidebar navigation and no user menu — this b
 - Fleet mode shows the `Logo` lockup with the lowercase tagline `mission control`.
 - Right-slot order in project mode: inline error · status · budget · actions (Interrupt / Resume / New mission) · theme toggle.
 - Set the theme by putting `data-theme="light"` on `<html>`; persist it in localStorage as `foreman:theme`.
+
+Project mode keeps the F mark at the left as the way back to the fleet, in place of the arrow icon; the "Fleet" crumb beside it does the same. The brand is on every screen.

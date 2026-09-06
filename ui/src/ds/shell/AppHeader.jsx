@@ -24,9 +24,9 @@ function FolderPill({ folder }) {
     </button>
   );
 }
-import { Logo } from '../brand/Logo';
+import { Logo, LogoMark } from '../brand/Logo';
 
-/** The app's one header bar. Fleet mode wears the logo; project mode wears a back button and the job site. */
+/** The app's one header bar. Fleet mode wears the full logo; project mode wears the mark (a way home) and the job site. */
 export function AppHeader({ mode = 'fleet', title, subtitle = 'mission control', folder, onBack, theme, onToggleTheme, onSettings, children, style }) {
   const fleet = mode === 'fleet';
   return (
@@ -40,7 +40,13 @@ export function AppHeader({ mode = 'fleet', title, subtitle = 'mission control',
         <Logo size={22} tagline={subtitle} />
       ) : (
         <nav aria-label="Breadcrumb" style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', minWidth: 0 }}>
-          <IconButton icon="back" label="Back to fleet" onClick={onBack} />
+          {/* The mark stays on every screen — it is the app's name, and the
+              way home. The back arrow that used to sit here said the same
+              thing twice next to the "Fleet" crumb. */}
+          <button type="button" onClick={onBack} title="Back to the fleet" aria-label="Back to the fleet"
+            style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center' }}>
+            <LogoMark size={22} />
+          </button>
           <button type="button" onClick={onBack} style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'var(--ink-2)', cursor: 'pointer' }}>Fleet</button>
           <Icon name="chevronRight" size={14} color="var(--ink-3, var(--ink-2))" />
           <span style={{ fontWeight: 'var(--fw-semibold)', whiteSpace: 'nowrap' }}>{title}</span>
