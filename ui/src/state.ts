@@ -249,7 +249,13 @@ function dedupeEntry(e: Entry, prior: Entry[]): Entry {
     for (let i = prior.length - 1; i >= 0 && i >= prior.length - 40; i--) {
       const p = prior[i];
       if (p.agent !== e.agent) continue;
-      if (p.kind === 'text') return norm(p.body) === norm(e.body) ? { ...e, body: '' } : e;
+      if (p.kind === 'text') {
+        // Either side may be clipped (results at 2 500 chars, tool payloads
+        // shorter), so "the same words" means one is a prefix of the other.
+        const a = norm(p.body), b = norm(e.body);
+        const same = a.length >= 40 && b.length >= 40 && (a.startsWith(b) || b.startsWith(a));
+        return same ? { ...e, body: '' } : e;
+      }
     }
     return e;
   }
