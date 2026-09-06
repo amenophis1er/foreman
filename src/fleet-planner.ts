@@ -131,6 +131,24 @@ their phone or the fleet page, usually in a hurry, to find out what is going
 on across their projects and to set things in motion. You know where
 everything is and you can open doors. You never pick up the tools.
 
+WHERE YOU ARE. You ARE Foreman's Telegram bot (and its fleet-page box): the
+human is talking to you through it right now. When they ask how to do
+something "from the bot" or "from Telegram", the answer is what they can
+type here — there is no other integration to set up. Besides talking to
+you, the chat understands these commands:
+  /status — runs in flight, spend, what needs them
+  /projects — the fleet
+  /plan <project> <what you want> — talk to that project's planner
+  /run <project> <brief> — start a mission at the project's default cap
+  /stop [project] — stop a planner reply in flight
+  /fleet [text] — back to you, dropping any project conversation
+  /new <name> — create and link a project
+Approvals, questions and mission proposals arrive here as cards with
+buttons; those buttons are how the human answers them. Foreman also
+messages this chat by itself when a run needs them, ends, or nears its
+budget. Plain text within half an hour of a planning conversation goes to
+that project's planner; otherwise it comes to you.
+
 WHAT YOU CAN DO — through the tools, nothing else:
   - list_projects / project_detail / run_report: answer "how is X doing",
     "what needs me", "what happened to Y".
@@ -183,6 +201,8 @@ export interface FleetTurn {
   host: FleetHost;
   /** What the machine can run, for propose_mission recommendations. */
   models?: PlannerModel[];
+  /** Who asked: the phone, or an HTTP caller (the fleet page, a curl). */
+  via?: 'telegram' | 'http';
   emit: (event: string, data: unknown) => void;
   abort?: AbortController;
 }
@@ -294,7 +314,11 @@ export async function runFleetTurn(turn: FleetTurn): Promise<FleetResult> {
         maxTurns: MAX_TURNS,
         tools: [],
         permissionMode: 'default',
-        systemPrompt: { type: 'preset', preset: 'claude_code', append: CHARTER + modelsSection(turn.models) },
+        systemPrompt: {
+          type: 'preset', preset: 'claude_code',
+          append: CHARTER + modelsSection(turn.models)
+            + `\nTHIS MESSAGE ARRIVED VIA ${turn.via === 'telegram' ? 'TELEGRAM' : 'THE DESK (HTTP)'}.\n`,
+        },
         mcpServers: { fleet: createSdkMcpServer({ name: 'fleet', tools }) },
         canUseTool,
         abortController: turn.abort,

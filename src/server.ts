@@ -912,7 +912,7 @@ async function driveFleetTurn(text: string, via: 'telegram' | 'http'): Promise<{
     await mkdir(cwd, { recursive: true }).catch(() => {});
     const { models } = await availableModels(null).catch(() => ({ models: [] }));
     const result = await runFleetTurn({
-      sessionId: meta.sessionId, text, model, cwd, host: fleetHost,
+      sessionId: meta.sessionId, text, model, cwd, host: fleetHost, via,
       models: models.map((m) => ({ id: m.id, label: m.label, providerId: m.providerId, providerLabel: m.providerLabel, costBasis: m.costBasis, note: m.note })),
       agentEnv: await agentEnvFor(resolved, `chat:${FLEET_CHAT_ID}`),
       emit, abort,
@@ -1001,10 +1001,10 @@ async function handlePhoneText(text: string, replyTo?: string): Promise<void> {
           for (const id of await store.listChatIds()) {
             if (chatTurns.has(id)) continue;
             const m = await store.readChatMeta(id).catch(() => null);
-            if (m?.proposal) {
-              const name = projectsCache.get(id)?.name ?? (await store.getProject(id))?.name ?? id;
-              planning.push(`• <b>${escTg(name)}</b> — a proposal is waiting for Start or Discard`);
-            }
+            if (!m?.proposal) continue;
+            // A conversation left behind by an unlinked project is not planning.
+            const name = projectsCache.get(id)?.name ?? (await store.getProject(id))?.name;
+            if (name) planning.push(`• <b>${escTg(name)}</b> — a proposal is waiting for Start or Discard`);
           }
           if (!live.length && !planning.length) return say('All quiet — nothing running, nothing waiting on you.');
           if (!live.length) return say(`<b>Planning</b>\n${planning.join('\n')}`);
@@ -1777,6 +1777,9 @@ const server = http.createServer(async (req, res) => {
         return json(res, 409, { error: 'project has an active mission' });
       }
       const removed = await store.removeProject(projectMatch[1]);
+      // Its planning conversation goes with it; a proposal for a project
+      // that no longer exists once showed up in /status as a bare id.
+      if (removed) await store.clearChat(projectMatch[1]).catch(() => {});
       json(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'unknown project' });
 
     } else if (req.method === 'POST' && url.pathname === '/run') {
