@@ -1,5 +1,7 @@
-import { useState } from 'react';
-import { api, basisOf, type ProjectSummary } from '../state';
+import { useEffect, useRef, useState } from 'react';
+import { FLEET_CHAT_ID, api, basisOf, useChat, type ProjectSummary } from '../state';
+import { ChatBar } from '../ds/mission/ChatBar';
+import { TranscriptEntry } from '../ds/mission/TranscriptEntry';
 import { AppHeader } from '../ds/shell/AppHeader';
 import { BillingBadge, type BillingMode } from '../ds/status/BillingBadge';
 import { Button } from '../ds/core/Button';
@@ -42,6 +44,72 @@ type FleetProject = ProjectSummary & { needs?: ServerNeed[] };
  * Matching the mission means "the fitness studio one" finds it when the
  * project is called `smake`.
  */
+/**
+ * The front desk, as the fleet page's right rail.
+ *
+ * The same fleet planner the phone talks to, same session, so a question
+ * asked here continues on Telegram and back. A rail rather than a section
+ * because "Needs you" stays first on the board, always: the desk sits
+ * beside it, never above it. The conversation scrolls; the composer stays
+ * at the foot where a chat's input belongs.
+ */
+function FleetDesk({ onSettings }: { onSettings: () => void }) {
+  const chat = useChat(FLEET_CHAT_ID);
+  const [err, setErr] = useState<string | null>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+  // What was said, not the tool calls behind it: the desk's list_projects
+  // calls are furniture, where a project planner's reads are part of the advice.
+  const said = chat.entries.filter((e) => e.kind !== 'tool');
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: 'end' });
+  }, [said.length, chat.thinking]);
+
+  const send = async (text: string) => setErr(await chat.send(text));
+
+  return (
+    <aside style={{
+      width: 'clamp(22rem, 28vw, 30rem)', flex: '0 0 auto', minHeight: 0,
+      display: 'flex', flexDirection: 'column',
+      borderLeft: '1px solid var(--line)', background: 'var(--bg-panel)',
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'baseline', gap: 'var(--sp-2)', padding: 'var(--sp-3) var(--sp-3) var(--sp-2)',
+        borderBottom: '1px solid var(--line)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', flex: '0 0 auto',
+      }}>
+        <span style={{ color: 'var(--ink-0)', fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-semibold)' as never }}>Front desk</span>
+        <span>the same conversation as your phone</span>
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 'var(--sp-2)', alignItems: 'baseline' }}>
+          {chat.costUsd > 0 && <span title="What this conversation has cost. Not charged to any mission." style={{ fontVariantNumeric: 'tabular-nums' }}>${chat.costUsd.toFixed(2)}</span>}
+          {said.length > 0 && !chat.thinking && (
+            <Button variant="ghost" size="sm" onClick={() => void chat.clear()} title="Forget this conversation; the next message starts fresh">Forget</Button>
+          )}
+        </span>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 'var(--sp-3)', display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
+        {said.length === 0 && !chat.thinking && (
+          <Empty>
+            Ask how things are going, or say what you want started where. It knows every project, can open a planning
+            conversation, propose a mission, or pass a note to a running director. It never starts a run or answers an
+            approval for you.
+          </Empty>
+        )}
+        {said.map((e) => (
+          <TranscriptEntry key={e.id} agent={e.agent} title={e.title} kind={e.kind} body={e.body} ts={e.ts} />
+        ))}
+        <div ref={endRef} />
+      </div>
+      <div style={{ flex: '0 0 auto', padding: 'var(--sp-2) var(--sp-3) var(--sp-3)', borderTop: '1px solid var(--line)' }}>
+        <ChatBar busy={chat.thinking} who={chat.who} placeholder="How is everything going?" attach={false}
+          hint="Knows the fleet. Never starts a run or answers for you."
+          busyHint="The front desk is looking…"
+          onSend={(t: string) => void send(t)} onStop={() => void chat.stop()} onChangeModel={onSettings} />
+        {err && <Banner tone="error" inline style={{ marginTop: 4 }}>{err}</Banner>}
+      </div>
+    </aside>
+  );
+}
+
 function matches(p: ProjectSummary, q: string): boolean {
   const run = p.activeRun ?? p.lastRun;
   return [p.name, p.folder, run?.title, run?.mission]
@@ -208,9 +276,9 @@ export function FleetView({
 
   return (
     <div style={{
-      height: '100%', overflowY: 'auto', position: 'relative',
-      // Column layout so the empty state can claim the space under the header
-      // and centre in it; a populated board still lays out and scrolls normally.
+      height: '100%', overflow: 'hidden', position: 'relative',
+      // Column: the header, then a row of board and desk. The board scrolls
+      // on its own so the desk's composer never leaves the screen.
       display: 'flex', flexDirection: 'column',
     }}
       onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -265,6 +333,8 @@ export function FleetView({
         )}
       </AppHeader>
 
+      <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+      <div style={{ flex: 1, minWidth: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
       {/* One project needs no filter; several do, and the row is the same height
           whether or not anything is typed in it. */}
       {projects.length > 1 && (
@@ -368,6 +438,11 @@ export function FleetView({
           )}
         </div>
       )}
+
+      </div>
+      {/* The front desk, beside the board, once there is a fleet to ask about. */}
+      {projects.length > 0 && <FleetDesk onSettings={onSettings} />}
+      </div>
 
       {picker.open && picker.props && (
         <FolderPicker {...picker.props} onClose={picker.close} />

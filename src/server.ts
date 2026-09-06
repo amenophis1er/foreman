@@ -1991,6 +1991,20 @@ const server = http.createServer(async (req, res) => {
         // Who answers here, for the bar's footer before any turn has run.
         // Best-effort: a project whose provider cannot resolve still gets its
         // transcript, and the first turn will say what went wrong.
+        // The fleet planner's conversation answers on the same route: same
+        // log shape, same hook in the UI, its own idea of who answers and
+        // whether a reply is in flight.
+        if (projectId === FLEET_CHAT_ID) {
+          const g = (await store.readSettings().catch(() => ({ global: {}, projects: {} }))).global as Record<string, unknown>;
+          const resolvedFleet = await resolveProvider(providerOf({}), store.root).catch(() => null);
+          return json(res, 200, {
+            events, costUsd: meta.costUsd, proposal: null, thinking: Boolean(fleetAbort), question: null,
+            who: resolvedFleet ? {
+              model: modelChoice(g.fleetPlannerModel ?? g.plannerModel) || DEFAULT_FLEET_MODEL,
+              provider: resolvedFleet.label, costBasis: resolvedFleet.costBasis,
+            } : null,
+          });
+        }
         const project = await store.getProject(projectId);
         const settings = await effectiveSettings(projectId).catch(() => null);
         const resolved = project
@@ -2014,7 +2028,7 @@ const server = http.createServer(async (req, res) => {
 
       } else if (req.method === 'DELETE') {
         if (!projectId) return json(res, 400, { error: 'projectId is required' });
-        if (chatTurns.has(projectId)) {
+        if (chatTurns.has(projectId) || (projectId === FLEET_CHAT_ID && fleetAbort)) {
           return json(res, 409, { error: 'the planner is mid-reply — wait for it to finish' });
         }
         await store.clearChat(projectId).catch(() => {});
@@ -2026,6 +2040,13 @@ const server = http.createServer(async (req, res) => {
         const message = typeof text === 'string' ? text.trim() : '';
         if (typeof id !== 'string' || !message) {
           return json(res, 400, { error: 'projectId and text are required' });
+        }
+        if (id === FLEET_CHAT_ID) {
+          // The front desk from the fleet page. The reply streams on the
+          // chat frames like a project planner's; the POST returns at once.
+          if (fleetAbort) return json(res, 409, { error: 'the fleet planner is still replying' });
+          void driveFleetTurn(message, 'http');
+          return json(res, 200, { ok: true });
         }
         const project = await store.getProject(id);
         if (!project) return json(res, 404, { error: 'unknown project' });
@@ -2066,6 +2087,11 @@ const server = http.createServer(async (req, res) => {
       // with a line saying it was stopped. The conversation stays usable.
       const { projectId: id } = await readBody(req);
       if (typeof id !== 'string') return json(res, 400, { error: 'projectId is required' });
+      if (id === FLEET_CHAT_ID) {
+        const was = Boolean(fleetAbort);
+        fleetAbort?.abort();
+        return json(res, 200, { ok: true, stopped: was });
+      }
       const abort = chatAborts.get(id);
       if (!abort) return json(res, 200, { ok: true, stopped: false });
       dropPendingAsk(id);

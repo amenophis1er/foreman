@@ -934,6 +934,9 @@ function chatReducer(s: ChatView, a: ChatAction): ChatView {
  * the live stream — the same shape as {@link useRunView}, because a
  * conversation and a mission are the same kind of thing on the wire.
  */
+/** The fleet planner's conversation id on the server — the same chat routes, no project. */
+export const FLEET_CHAT_ID = '_fleet';
+
 export function useChat(projectId: string | null): ChatView & {
   send: (text: string) => Promise<string | null>;
   /** Answer the planner's pending question with the picker's choices. */
