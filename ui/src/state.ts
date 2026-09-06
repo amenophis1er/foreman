@@ -927,7 +927,9 @@ export function useChat(projectId: string | null): ChatView & {
         // every question ever asked, and replaying it would resurrect one that
         // was answered or timed out. Only what the server says is still open
         // gets a picker.
-        view = { ...view, question: data.question ?? null, who: data.who ?? view.who };
+        // Likewise whether a reply is in flight: the log can end mid-turn (a
+        // restart), and only the server knows if anything is still running.
+        view = { ...view, question: data.question ?? null, who: data.who ?? view.who, thinking: data.thinking };
         dispatch({ t: 'load', view });
       }
       // Live frames that arrived during the fetch are applied after it, so a

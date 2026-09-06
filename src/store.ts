@@ -293,6 +293,12 @@ export class RunStore {
     return next;
   }
 
+  /** Every project id that has a planning conversation on disk. */
+  async listChatIds(): Promise<string[]> {
+    const names = await readdir(this.chatsDir).catch(() => [] as string[]);
+    return names.filter((n) => !n.startsWith('.'));
+  }
+
   /** Reads a chat's full event log; skips lines that fail to parse. */
   async readChatEvents(projectId: string): Promise<ForemanEvent[]> {
     const raw = await readFile(path.join(this.chatDir(projectId), 'events.jsonl'), 'utf8')

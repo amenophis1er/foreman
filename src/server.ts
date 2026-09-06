@@ -1671,6 +1671,32 @@ if (swept.length) console.log(`Marked ${swept.length} orphaned run(s) as interru
 // with the server, without anyone re-linking.
 void reattachTelegram();
 
+/**
+ * A planning turn that was in flight when the process died left its log
+ * ending in "thinking" with no "idle" — and a client replaying that log
+ * showed a planner still looking, with Clear waiting for a reply that would
+ * never come. Close every such turn on the record, with a line saying why.
+ */
+async function closeOrphanedChatTurns(): Promise<string[]> {
+  const closed: string[] = [];
+  for (const id of await store.listChatIds()) {
+    const events = await store.readChatEvents(id).catch(() => []);
+    let open = false;
+    for (const e of events) {
+      if (e.event === 'chat_turn') open = (e.data as { state?: string })?.state === 'thinking';
+    }
+    if (!open) continue;
+    const emit = makeChatEmitter(id);
+    emit('chat_error', { error: 'Foreman restarted while the planner was replying — send your message again.' });
+    emit('chat_turn', { state: 'idle' });
+    closed.push(id);
+  }
+  return closed;
+}
+void closeOrphanedChatTurns().then((ids) => {
+  if (ids.length) console.log(`Closed ${ids.length} planning turn(s) cut off by the last shutdown:`, ids.join(', '));
+});
+
 server.listen(PORT, () => {
   console.log(`Foreman listening on http://localhost:${PORT}`);
 });

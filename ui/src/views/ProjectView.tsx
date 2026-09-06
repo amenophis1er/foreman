@@ -120,6 +120,9 @@ export type TranscriptOrder = 'newest' | 'oldest';
 
 const ORDER_KEY = 'foreman.transcriptOrder';
 const TIMELINE_KEY = 'foreman.timeline';
+
+/** `Sep 3` — the calendar day of a timestamp, for dividers. */
+const dayOf = (ts: number) => new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const RAIL_KEY = 'foreman.railWidth';
 const RAIL_MIN = 280;
 const RAIL_DEFAULT = 340;
@@ -290,10 +293,25 @@ function PlanPane({
           </div>
         )}
         <div style={SPINE_COL}>
-        {chat.entries.map((e) => (
-          <TranscriptEntry key={e.id} agent={e.agent} title={e.title}
-            kind={e.kind} body={e.body} ts={e.ts} />
-        ))}
+        {chat.entries.map((e, i) => {
+          // Entries carry only a clock time; a conversation picked up days
+          // later read as if it happened this minute. A quiet line marks
+          // each day the talk crossed, and today's is not marked.
+          const day = dayOf(e.ts);
+          const prev = i > 0 ? dayOf(chat.entries[i - 1].ts) : null;
+          return (
+            <React.Fragment key={e.id}>
+              {(day !== prev && (i > 0 || day !== dayOf(Date.now()))) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', margin: '4px 0' }}>
+                  <span style={{ flex: 1, borderTop: '1px solid var(--line)' }} />
+                  <span>{day === dayOf(Date.now()) ? 'today' : day}</span>
+                  <span style={{ flex: 1, borderTop: '1px solid var(--line)' }} />
+                </div>
+              )}
+              <TranscriptEntry agent={e.agent} title={e.title} kind={e.kind} body={e.body} ts={e.ts} />
+            </React.Fragment>
+          );
+        })}
         {chat.proposal && (
           <ProposalCard
             mission={chat.proposal.mission}
