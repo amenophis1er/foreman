@@ -72,7 +72,9 @@ export function ChatBar({ value, onChange, onSend, onStop, busy, disabled, disab
           onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
           onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); send(); } }}
           style={{
-            flex: 1, minWidth: 0, resize: 'none', border: 'none', outline: 'none', background: 'transparent',
+            // The bar's own border turns gold on focus; the global focus ring on
+            // the textarea drew a second, square frame inside the rounded one.
+            flex: 1, minWidth: 0, resize: 'none', border: 'none', outline: 'none', boxShadow: 'none', background: 'transparent', borderRadius: 'var(--r-sm)',
             color: 'var(--ink-0)', font: 'inherit', lineHeight: `${LINE_PX}px`, padding: '2px 0', minHeight: MIN_ROWS_PX, maxHeight: MAX_ROWS_PX,
           }} />
       </div>
