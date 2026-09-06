@@ -426,7 +426,7 @@ const PORT = Number(process.env.PORT ?? 4177);
  * `FOREMAN_BIND=local` keeps it to this machine even with Tailscale up.
  */
 const BIND = (process.env.FOREMAN_BIND ?? 'auto') as 'auto' | 'all' | 'local';
-const tailnet = BIND === 'local' ? null : await detectTailscale();
+const tailnet = BIND === 'local' ? null : await detectTailscale(PORT);
 /** Dev servers the crew put behind /svc/ — see services.ts. */
 const services = new ServiceRegistry();
 /**

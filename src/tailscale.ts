@@ -21,6 +21,14 @@ export interface Tailnet {
   ip: string;
   /** MagicDNS name without the trailing dot, e.g. `laptop.tail1234.ts.net`. */
   dnsName?: string;
+  /**
+   * An HTTPS port `tailscale serve` maps onto Foreman's own port, when one
+   * is configured. Tailscale terminates TLS with a certificate for the node
+   * name; Foreman never holds a key. Links prefer this origin when present.
+   */
+  httpsPort?: number;
+  /** HTTPS ports `serve` already uses for something else — so a hint can pick a free one. */
+  httpsInUse?: number[];
 }
 
 /** True for addresses in 100.64.0.0/10, the CGNAT range Tailscale hands out. */
@@ -51,6 +59,32 @@ export function tailnetFromInterfaces(ifaces: NodeJS.Dict<os.NetworkInterfaceInf
   return null;
 }
 
+/**
+ * The parts of `tailscale serve status --json` Foreman reads: which HTTPS
+ * port, if any, proxies "/" to this port on loopback. `--bg` config only;
+ * a foreground `serve` is the same on the wire and shows up the same way.
+ */
+export function parseServeStatus(json: unknown, port: number): { httpsPort?: number; httpsInUse: number[] } {
+  const d = json as { Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }> } | null;
+  const inUse: number[] = [];
+  let httpsPort: number | undefined;
+  for (const [hostPort, site] of Object.entries(d?.Web ?? {})) {
+    const p = Number(hostPort.split(':').pop());
+    if (!Number.isFinite(p)) continue;
+    inUse.push(p);
+    const proxy = site.Handlers?.['/']?.Proxy ?? '';
+    const m = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)\/?$/.exec(proxy);
+    if (m && Number(m[1]) === port && httpsPort === undefined) httpsPort = p;
+  }
+  return { httpsPort, httpsInUse: inUse };
+}
+
+/** The one command that gives Foreman a certificate: 443 when free, else the next conventional port. */
+export function serveHint(port: number, inUse: number[] = []): string {
+  const https = [443, 8443, 10000].find((p) => !inUse.includes(p)) ?? 8443;
+  return `tailscale serve --bg${https === 443 ? '' : ` --https=${https}`} ${port}`;
+}
+
 const CLI_CANDIDATES = [
   'tailscale',
   '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
@@ -63,17 +97,37 @@ function run(cmd: string, args: string[], timeoutMs: number): Promise<string | n
   });
 }
 
-/** The tailnet this machine is on, or null. Read-only; a few seconds at most. */
-export async function detectTailscale(): Promise<Tailnet | null> {
+/**
+ * The tailnet this machine is on, or null. Read-only; a few seconds at most.
+ * With a port, also asks whether `tailscale serve` fronts it with HTTPS.
+ */
+export async function detectTailscale(port?: number): Promise<Tailnet | null> {
   for (const cmd of CLI_CANDIDATES) {
     const out = await run(cmd, ['status', '--json'], 3_000);
     if (!out) continue;
-    try { const t = parseTailscaleStatus(JSON.parse(out)); if (t) return t; } catch { /* not JSON — try the next */ }
+    let t: Tailnet | null = null;
+    try { t = parseTailscaleStatus(JSON.parse(out)); } catch { /* not JSON — try the next */ }
+    if (!t) continue;
+    if (port && t.dnsName) {
+      const serve = await run(cmd, ['serve', 'status', '--json'], 3_000);
+      if (serve) {
+        try {
+          const { httpsPort, httpsInUse } = parseServeStatus(JSON.parse(serve), port);
+          t = { ...t, ...(httpsPort ? { httpsPort } : {}), httpsInUse };
+        } catch { /* no serve config, or an older CLI */ }
+      }
+    }
+    return t;
   }
   return tailnetFromInterfaces();
 }
 
-/** `http://laptop.tail1234.ts.net:4177` — the name when there is one, the address otherwise. */
+/**
+ * Where the tailnet reaches Foreman: `https://laptop.tail1234.ts.net` when
+ * `tailscale serve` fronts it (the port only when it is not 443), else
+ * `http://name:port`, else the address.
+ */
 export function tailnetUrl(t: Tailnet, port: number): string {
+  if (t.httpsPort && t.dnsName) return `https://${t.dnsName}${t.httpsPort === 443 ? '' : `:${t.httpsPort}`}`;
   return `http://${t.dnsName ?? t.ip}:${port}`;
 }

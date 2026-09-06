@@ -319,7 +319,7 @@ async function update(bin: string, flags: string[]): Promise<number> {
 }
 
 async function doctor(): Promise<number> {
-  const tailnet = await detectTailscale();
+  const tailnet = await detectTailscale(PORT);
   const distDir = fileURLToPath(new URL('../ui/dist', import.meta.url));
   const checks = await preflight({ port: PORT, foremanHome: HOME_DIR, distDir, tailnet });
   // Port-in-use is an error for `start` and a fact for `doctor`: it usually means Foreman is already up.
