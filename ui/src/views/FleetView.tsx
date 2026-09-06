@@ -5,6 +5,8 @@ import { TranscriptEntry } from '../ds/mission/TranscriptEntry';
 import { AppHeader } from '../ds/shell/AppHeader';
 import type { BillingMode } from '../ds/status/BillingBadge';
 import { Button } from '../ds/core/Button';
+import { IconButton } from '../ds/core/IconButton';
+import { Icon } from '../ds/core/Icon';
 import { Empty } from '../ds/core/Empty';
 import { SectionTitle } from '../ds/core/SectionTitle';
 import { Banner } from '../ds/status/Banner';
@@ -52,19 +54,64 @@ type FleetProject = ProjectSummary & { needs?: ServerNeed[] };
  * beside it, never above it. The conversation scrolls; the composer stays
  * at the foot where a chat's input belongs.
  */
-function FleetDesk({ onSettings }: { onSettings: () => void }) {
+const DESK_KEY = 'foreman.fleet.desk';
+
+/** Remembered per browser: a rail you folded away stays folded. */
+function useDeskOpen(): [boolean, () => void] {
+  const [open, setOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem(DESK_KEY) !== 'closed'; } catch { return true; }
+  });
+  const toggle = () => setOpen((o) => {
+    try { localStorage.setItem(DESK_KEY, o ? 'closed' : 'open'); } catch { /* private window */ }
+    return !o;
+  });
+  return [open, toggle];
+}
+
+function FleetDesk({ onSettings, open, onToggle }: { onSettings: () => void; open: boolean; onToggle: () => void }) {
   const chat = useChat(FLEET_CHAT_ID);
   const [err, setErr] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   // What was said, not the tool calls behind it: the desk's list_projects
   // calls are furniture, where a project planner's reads are part of the advice.
   const said = chat.entries.filter((e) => e.kind !== 'tool');
+  // A reply that arrived while the rail was folded: a dot on the tab until
+  // it is opened. Folding is a choice; a reply must not undo it.
+  const [unseen, setUnseen] = useState(false);
+  const lastSeen = useRef(0);
+  useEffect(() => {
+    if (open) { lastSeen.current = said.length; setUnseen(false); }
+    else if (said.length > lastSeen.current && !chat.thinking) setUnseen(true);
+  }, [open, said.length, chat.thinking]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ block: 'end' });
-  }, [said.length, chat.thinking]);
+    if (open) endRef.current?.scrollIntoView({ block: 'end' });
+  }, [said.length, chat.thinking, open]);
 
   const send = async (text: string) => setErr(await chat.send(text));
+
+  if (!open) {
+    return (
+      <aside style={{ flex: '0 0 auto', borderLeft: '1px solid var(--line)', background: 'var(--bg-panel)', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 'var(--sp-2) 4px' }}>
+        <button type="button" onClick={onToggle}
+          title={chat.thinking ? 'The front desk is replying — open it' : unseen ? 'The front desk answered — open it' : 'Open the front desk (the same conversation as your phone)'}
+          aria-label="Open the front desk"
+          style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, background: 'none', border: 0, padding: '6px 4px',
+            cursor: 'pointer', color: 'var(--ink-2)', borderRadius: 'var(--r-sm)', position: 'relative',
+          }}>
+          <Icon name="chevronLeft" size={14} />
+          <span style={{ writingMode: 'vertical-rl', fontSize: 'var(--fs-xs)', letterSpacing: '.06em', textTransform: 'uppercase' }}>Front desk</span>
+          {(unseen || chat.thinking) && (
+            <span aria-hidden style={{
+              position: 'absolute', top: 4, right: 2, width: 7, height: 7, borderRadius: '50%',
+              background: chat.thinking ? 'var(--ink-2)' : 'var(--brand)',
+            }} />
+          )}
+        </button>
+      </aside>
+    );
+  }
 
   return (
     <aside style={{
@@ -73,16 +120,17 @@ function FleetDesk({ onSettings }: { onSettings: () => void }) {
       borderLeft: '1px solid var(--line)', background: 'var(--bg-panel)',
     }}>
       <div style={{
-        display: 'flex', alignItems: 'baseline', gap: 'var(--sp-2)', padding: 'var(--sp-3) var(--sp-3) var(--sp-2)',
+        display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', padding: 'var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3)',
         borderBottom: '1px solid var(--line)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', flex: '0 0 auto',
       }}>
         <span style={{ color: 'var(--ink-0)', fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-semibold)' as never }}>Front desk</span>
-        <span>the same conversation as your phone</span>
-        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 'var(--sp-2)', alignItems: 'baseline' }}>
-          {chat.costUsd > 0 && <span title="What this conversation has cost. Not charged to any mission." style={{ fontVariantNumeric: 'tabular-nums' }}>${chat.costUsd.toFixed(2)}</span>}
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>the same conversation as your phone</span>
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 'var(--sp-1)', alignItems: 'center', flex: '0 0 auto' }}>
+          {chat.costUsd > 0 && <span title="What this conversation has cost. Not charged to any mission." style={{ fontVariantNumeric: 'tabular-nums', marginRight: 'var(--sp-1)' }}>${chat.costUsd.toFixed(2)}</span>}
           {said.length > 0 && !chat.thinking && (
             <Button variant="ghost" size="sm" onClick={() => void chat.clear()} title="Forget this conversation; the next message starts fresh">Forget</Button>
           )}
+          <IconButton icon="chevronRight" label="Fold the front desk away" onClick={onToggle} />
         </span>
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 'var(--sp-3)', display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
@@ -205,6 +253,7 @@ export function FleetView({
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
 }) {
   const [dragging, setDragging] = useState(false);
+  const [deskOpen, toggleDesk] = useDeskOpen();
   const [drop, setDrop] = useState<{ name: string; matches: string[] | null } | null>(null);
   const [unlinking, setUnlinking] = useState<ProjectSummary | null>(null);
 
@@ -425,7 +474,7 @@ export function FleetView({
 
       </div>
       {/* The front desk, beside the board, once there is a fleet to ask about. */}
-      {projects.length > 0 && <FleetDesk onSettings={onSettings} />}
+      {projects.length > 0 && <FleetDesk onSettings={onSettings} open={deskOpen} onToggle={toggleDesk} />}
       </div>
 
       {picker.open && picker.props && (
