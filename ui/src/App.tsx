@@ -142,7 +142,7 @@ function useProviderChoices(open: boolean) {
 }
 
 export default function App() {
-  const { projects, connected, auth, refresh, activity } = useFleet();
+  const { projects, connected, auth, refresh, activity, update } = useFleet();
   const { projectId, runId, tab, go, goRun } = useRoute();
   const [theme, toggleTheme, applyTheme] = useTheme();
   const applyTextSize = useTextSize();
@@ -236,7 +236,7 @@ export default function App() {
           onBack={() => go(null)} refreshFleet={refresh}
           settings={{ global: settings.global, project: settings.projects[project.id] }} {...shared} />
       ) : (
-        <FleetView projects={projects} connected={connected} activity={activity}
+        <FleetView projects={projects} connected={connected} activity={activity} update={update}
           onOpen={(id) => go(id)} refresh={refresh} {...shared} />
       )}
       {settingsOpen && (

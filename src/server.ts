@@ -55,6 +55,7 @@ import {
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { saveAttachments } from './attachments.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
+import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
 import { ServiceRegistry, SVC_PREFIX, parseServicePath, portOpen, proxyToService, servicePath } from './services.js';
 import { HELP_TEXT, parseCommand, projectsRoot, slug } from './notify/commands.js';
 import { escapeHtml as escTg } from './notify.js';
@@ -421,6 +422,15 @@ const BIND = (process.env.FOREMAN_BIND ?? 'auto') as 'auto' | 'all' | 'local';
 const tailnet = BIND === 'local' ? null : await detectTailscale();
 /** Dev servers the crew put behind /svc/ — see services.ts. */
 const services = new ServiceRegistry();
+/**
+ * Whether a newer Foreman exists, for the header's quiet pill. Checked at
+ * start and every six hours, never acted on: updating is `foreman update`,
+ * by hand, and never under a running mission.
+ */
+let updateInfo: UpdateInfo | null = null;
+const refreshUpdateInfo = () => { void checkForUpdate(currentVersion(), 4_000).then((u) => { updateInfo = u; }); };
+refreshUpdateInfo();
+setInterval(refreshUpdateInfo, 6 * 60 * 60_000).unref();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.join(__dirname, '..', 'ui', 'dist');
 const ROOT_ASSETS = new Set(['/favicon.svg']);
@@ -1377,6 +1387,8 @@ const server = http.createServer(async (req, res) => {
         authMode: auth.mode,
         authSource: auth.source,
         authAccount: auth.account ?? null,
+        version: currentVersion(),
+        update: updateInfo?.newer ? { latest: updateInfo.latest } : null,
         projects: cards.sort(fleetOrder),
       });
 

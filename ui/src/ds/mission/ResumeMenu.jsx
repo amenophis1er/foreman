@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Button } from '../core/Button';
+import { Icon } from '../core/Icon';
 import { ModelSelect } from '../forms/ModelSelect';
 
 /**
- * "Resume on…": resume a failed or interrupted run with different models,
- * without a trip through Settings. The case it exists for is a provider
- * saying no — a usage limit, an outage — when the work is fine and only the
- * endpoint is not: pick another, resume, keep going.
+ * The Resume control: a split button. The wide half resumes as is; the caret
+ * opens "on other models" — pick a director and workers, resume with those,
+ * without a trip through Settings. The case the caret exists for is a
+ * provider saying no — a usage limit, an outage — when the work is fine and
+ * only the endpoint is not: pick another, resume, keep going.
  */
 export function ResumeMenu({ director, worker, models, loading, note, busy, onResume, style }) {
   const [open, setOpen] = useState(false);
@@ -35,7 +37,17 @@ export function ResumeMenu({ director, worker, models, loading, note, busy, onRe
 
   return (
     <div ref={box} style={{ position: 'relative', display: 'inline-flex', ...style }}>
-      <Button variant="ghost" icon="model" disabled={busy} title="Resume this run on other models" onClick={() => setOpen(!open)}>Resume on…</Button>
+      <Button variant="good" icon="resume" disabled={busy}
+        title="Restore the director's session and continue this mission"
+        onClick={() => onResume?.({})}
+        style={{ borderTopRightRadius: 0, borderBottomRightRadius: 0 }}>
+        {busy ? 'Resuming…' : 'Resume'}
+      </Button>
+      <Button variant="good" disabled={busy} aria-label="Resume on other models" title="Resume on other models…"
+        onClick={() => setOpen(!open)}
+        style={{ borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: '1px solid rgba(255,255,255,0.35)', paddingLeft: 6, paddingRight: 6 }}>
+        <Icon name="chevronDown" size={14} />
+      </Button>
       {open && (
         <div role="dialog" aria-label="Resume on other models" style={{
           position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 50, width: 340,

@@ -20,6 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { preflight, reportPreflight } from './preflight.js';
 import { detectTailscale } from './tailscale.js';
+import { PACKAGE, checkForUpdate, currentVersion } from './update.js';
 
 const PORT = Number(process.env.PORT ?? 4177);
 const HOME_DIR = process.env.FOREMAN_HOME || path.join(os.homedir(), '.foreman');
@@ -253,6 +254,62 @@ async function serviceLogs(): Promise<number> {
   return new Promise((r) => child.on('exit', (c) => r(c ?? 0)));
 }
 
+/** One quiet line when a newer version exists; nothing when current or unknown. */
+async function updateHint(): Promise<void> {
+  const u = await checkForUpdate(currentVersion(), 2_000);
+  if (u?.newer) console.log(`\nForeman ${u.latest} is available (you have ${u.current}) — \`foreman update\``);
+}
+
+/** Anything a restart would cut off: a run, an ask waiting, a planner mid-reply. */
+async function liveWork(): Promise<string | null> {
+  try {
+    const d = await fetch(`http://127.0.0.1:${PORT}/projects`, { signal: AbortSignal.timeout(2000) }).then((r) => r.json()) as { projects: Array<{ id: string; name: string; activeRun?: unknown; needs?: unknown[] }> };
+    const running = d.projects.filter((p) => p.activeRun).map((p) => p.name);
+    const needs = d.projects.reduce((n, p) => n + (p.needs?.length ?? 0), 0);
+    const thinking: string[] = [];
+    for (const p of d.projects) {
+      try {
+        const c = await fetch(`http://127.0.0.1:${PORT}/chat?projectId=${encodeURIComponent(p.id)}`, { signal: AbortSignal.timeout(2000) }).then((r) => r.json()) as { thinking?: boolean };
+        if (c.thinking) thinking.push(p.name);
+      } catch { /* a project whose chat cannot be read is not live work */ }
+    }
+    if (!running.length && !needs && !thinking.length) return null;
+    return [running.length ? `running: ${running.join(', ')}` : '', needs ? `${needs} ask(s) waiting` : '', thinking.length ? `planner replying: ${thinking.join(', ')}` : ''].filter(Boolean).join(' · ');
+  } catch { return null; } // not up — nothing to cut off
+}
+
+/**
+ * Update the installed package and restart Foreman the way it is running.
+ * Refuses while anything would be cut off; --force overrides, eyes open.
+ * Never automatic: this is the one place the code under a mission changes,
+ * and it happens by a human's hand.
+ */
+async function update(bin: string, flags: string[]): Promise<number> {
+  const u = await checkForUpdate(currentVersion(), 5_000);
+  if (!u) { console.error('Could not reach the npm registry to check for a newer version.'); return 1; }
+  if (!u.newer) { console.log(`Already on the latest version (${u.current}).`); return 0; }
+  const busy = await liveWork();
+  if (busy && !flags.includes('--force')) {
+    console.error(`Not updating: ${busy}. An update restarts the server and would cut that off. Wait, or \`foreman update --force\`.`);
+    return 2;
+  }
+  console.log(`Updating ${u.current} → ${u.latest}…`);
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const code = await new Promise<number>((r) => {
+    const c = spawn(npm, ['install', '-g', `${PACKAGE}@${u.latest}`, '--no-audit', '--no-fund'], { stdio: 'inherit' });
+    c.on('exit', (x) => r(x ?? 1)); c.on('error', () => r(1));
+  });
+  if (code !== 0) { console.error('npm install failed; nothing was restarted.'); return code; }
+  // Restart by the means it is running, so the new code actually serves.
+  const pid = await readPid();
+  if (pid && alive(pid)) { console.log('Restarting the background server…'); const c = await down(); if (c !== 0) return c; return up(bin); }
+  const svc = await serviceState();
+  if (svc.running || svc.installed) { console.log('Restarting the service…'); return serviceRestart(); }
+  if (await listening(PORT)) { console.log(`Installed ${u.latest}. The server on :${PORT} runs in a terminal — restart it there to pick it up.`); return 0; }
+  console.log(`Installed ${u.latest}. Start it with \`foreman\`, \`foreman up\` or \`foreman service install\`.`);
+  return 0;
+}
+
 async function doctor(): Promise<number> {
   const tailnet = await detectTailscale();
   const distDir = fileURLToPath(new URL('../ui/dist', import.meta.url));
@@ -262,6 +319,7 @@ async function doctor(): Promise<number> {
     if (c.name.startsWith('Port') && c.status === 'error') { c.status = 'warn'; c.detail = 'in use — Foreman is probably already running'; c.fix = `foreman open · or PORT=${PORT + 1} foreman`; }
   }
   const ok = reportPreflight(checks);
+  await updateHint();
   return ok ? 0 : 1;
 }
 
@@ -342,6 +400,7 @@ async function status(): Promise<number> {
     const svc = await serviceState();
     const how = pid && alive(pid) ? `background, pid ${pid}` : svc.running ? `the service${svc.pid ? `, pid ${svc.pid}` : ''}` : 'a terminal';
     console.log(`Up at http://localhost:${PORT} (${how})`);
+    await updateHint();
     return 0;
   }
   if (pid) await rm(PID_FILE, { force: true });
@@ -419,6 +478,7 @@ export async function runCli(command: string, rest: string[], ctx: { version: st
   switch (command) {
     case 'up': return up(bin);
     case 'down': return down();
+    case 'update': return update(bin, rest);
     case 'stop': return stop();
     case 'restart': return restart(bin);
     case 'logs': return logs();

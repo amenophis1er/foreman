@@ -25,6 +25,7 @@ const USAGE = `foreman ${pkg.version}
   foreman logs               Tail the log
   foreman open               Open the dashboard in your browser
   foreman doctor             Check credentials, providers, browser, port, Tailscale — and exit
+  foreman update             Install the latest version and restart the same way (refuses mid-mission; --force)
 
   foreman service install    Keep Foreman running: start at login, restart if it dies
   foreman service start|stop|restart|status|logs
@@ -53,7 +54,7 @@ if (command === '--help' || command === '-h' || command === 'help') {
 } else if (command === 'start') {
   register();
   await import(new URL('../src/server.ts', import.meta.url).href);
-} else if (['doctor', 'open', 'service', 'up', 'down', 'stop', 'restart', 'status', 'logs', 'uninstall'].includes(command)) {
+} else if (['doctor', 'open', 'service', 'up', 'down', 'stop', 'restart', 'status', 'logs', 'uninstall', 'update'].includes(command)) {
   register();
   const { runCli } = await import(new URL('../src/cli.ts', import.meta.url).href);
   process.exitCode = await runCli(command, rest, { version: pkg.version, bin: new URL(import.meta.url) });

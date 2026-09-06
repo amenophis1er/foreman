@@ -875,16 +875,9 @@ export function ProjectView({
           <Button variant="danger" onClick={() => void api.interrupt(selectedRunId!)}>Interrupt</Button>
         )}
         {canResume && (
-          <>
-            <ResumeMenu director={selectedRun?.directorModel} worker={selectedRun?.workerModel}
-              models={models} loading={modelsLoading} note={modelsNote} busy={resuming}
-              onResume={(on) => void doResume(on)} />
-            <Button variant="good" icon="resume" disabled={resuming}
-              title="Restore the director's session and continue this mission"
-              onClick={() => void doResume()}>
-              {resuming ? 'Resuming…' : 'Resume'}
-            </Button>
-          </>
+          <ResumeMenu director={selectedRun?.directorModel} worker={selectedRun?.workerModel}
+            models={models} loading={modelsLoading} note={modelsNote} busy={resuming}
+            onResume={(on) => void doResume(on)} />
         )}
         {/* A finished run is a starting point, not a dead end: the planner
             opens with its brief, mission doc and final report already read,

@@ -122,10 +122,12 @@ const sectionStyle = { display: 'flex', flexDirection: 'column', gap: 'var(--sp-
  * happened to be in, is gone.
  */
 export function FleetView({
-  projects, connected, activity, auth, onOpen, refresh, theme, onToggleTheme, onSettings,
+  projects, connected, activity, update, auth, onOpen, refresh, theme, onToggleTheme, onSettings,
 }: {
   projects: ProjectSummary[]; connected: boolean;
   activity: Record<string, string>;
+  /** A newer Foreman on npm, when the server could ask. */
+  update?: { latest: string; current: string } | null;
   auth: { mode: BillingMode; source: string; account?: { email?: string; org?: string } };
   onOpen: (projectId: string) => void; refresh: () => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
@@ -218,6 +220,17 @@ export function FleetView({
         {/* The page's one status line: what is happening across the fleet —
             including "nothing", said quietly, so the board never reads as
             half-loaded when its first two sections are legitimately empty. */}
+        {/* Knowing is most of updating. The pill says so once and stays out
+            of the way; the act is `foreman update`, by hand, never under a
+            running mission. */}
+        {update && (
+          <span title={`You run ${update.current}. In a terminal: foreman update — it refuses while a mission is live.`} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 10px', borderRadius: 'var(--r-pill)',
+            border: '1px solid var(--line)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', whiteSpace: 'nowrap',
+          }}>
+            {update.latest} available · <span style={{ fontFamily: 'var(--font-mono)' }}>foreman update</span>
+          </span>
+        )}
         {pill && (
           <span style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,

@@ -640,6 +640,7 @@ export function useFleet() {
     { mode: 'none', source: '' });
   /** Latest one-line activity per project, from the live event stream. */
   const [activity, setActivity] = useState<Record<string, string>>({});
+  const [update, setUpdate] = useState<{ latest: string; current: string } | null>(null);
 
   const refresh = useCallback(async () => {
     const r = await fetch('/projects').catch(() => null);
@@ -647,6 +648,7 @@ export function useFleet() {
     const data = await r.json();
     setProjects(data.projects);
     setAuth({ mode: data.authMode ?? 'none', source: data.authSource ?? '', account: data.authAccount ?? undefined });
+    setUpdate(data.update?.latest ? { latest: String(data.update.latest), current: String(data.version ?? '') } : null);
   }, []);
 
   useEffect(() => {
@@ -682,7 +684,7 @@ export function useFleet() {
     };
   }, [refresh]);
 
-  return { projects, connected, auth, refresh, activity };
+  return { projects, connected, auth, refresh, activity, update };
 }
 
 /** Persisted run history for one project, newest first. */

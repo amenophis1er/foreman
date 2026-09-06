@@ -9,10 +9,10 @@ export interface ResumeMenuProps {
   loading?: boolean;
   note?: string;
   busy?: boolean;
-  /** Only the roles that changed are passed; a model without a providerId means the project's own provider. */
+  /** `{}` from the wide half means "resume as is"; from the panel, only the roles that changed are passed. A model without a providerId means the project's own provider. */
   onResume?: (on: { directorModel?: string; directorProviderId?: string; workerModel?: string; workerProviderId?: string }) => void;
   style?: CSSProperties;
 }
 
-/** "Resume on…": a button that opens a small panel with director and worker pickers, to resume a failed or interrupted run on other models without going through Settings. */
+/** The Resume split button: the wide half resumes as is, the caret opens a panel with director and worker pickers to resume on other models without going through Settings. */
 export declare function ResumeMenu(props: ResumeMenuProps): JSX.Element;
