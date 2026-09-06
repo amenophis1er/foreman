@@ -17,3 +17,5 @@ const { models, loading } = ModelSelect.useModels('/models'); // once, in the sc
 - A row's `note` is exactly what the server wrote and is rendered verbatim — never re-derived from `cost`/`costBasis` here. That is what keeps a row Foreman cannot price (`costBasis` other than `priced`) from ever growing a dollar figure it doesn't have; the wording lives entirely on the server, one place, in `describeModel()`. Note that `free` and `unpriced` are different rows to a reader — one is your own hardware, the other is somebody's bill — so never write copy that treats "not priced" as one state.
 
 With more than six models the menu opens with a focused filter box at the top: it narrows by label, id, provider and note ("cloud", "codex", "haiku", "cheap"), group headings keep their counts for what remains, Enter picks the first match, and an empty result says so. The Default row hides while filtering.
+
+`block` makes the picker fill its container — trigger and menu edge to edge — for stacked forms and panels; the default inline size is for rows and tables.

@@ -36,6 +36,8 @@ export interface ModelSelectProps {
   allowDefault?: boolean;
   disabled?: boolean;
   align?: 'left' | 'right';
+  /** Fill the parent's width: trigger and menu span the container edge to edge. For panels and forms. */
+  block?: boolean;
   style?: CSSProperties;
 }
 

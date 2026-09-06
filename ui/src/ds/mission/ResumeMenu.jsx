@@ -59,12 +59,12 @@ export function ResumeMenu({ director, worker, models, loading, note, busy, onRe
           </div>
           <div>
             <div style={label}>Director</div>
-            <ModelSelect allowDefault={false} models={models} loading={loading} note={note} value={d.id}
+            <ModelSelect block allowDefault={false} models={models} loading={loading} note={note} value={d.id}
               onChange={(id, m) => setD({ id, providerId: m?.providerId })} />
           </div>
           <div>
             <div style={label}>Workers</div>
-            <ModelSelect allowDefault={false} models={models} loading={loading} note={note} value={wk.id}
+            <ModelSelect block allowDefault={false} models={models} loading={loading} note={note} value={wk.id}
               onChange={(id, m) => setW({ id, providerId: m?.providerId })} />
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--sp-2)' }}>

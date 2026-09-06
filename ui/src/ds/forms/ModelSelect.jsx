@@ -70,7 +70,7 @@ function groupByProvider(list) {
  * guidance.
  * `models` normally comes from `GET /models` via `ModelSelect.useModels`; falls back to `FALLBACK_MODELS`.
  */
-export function ModelSelect({ align = 'left', value = '', onChange, models, loading, note, inheritNote, allowDefault = true, disabled, style }) {
+export function ModelSelect({ align = 'left', block = false, value = '', onChange, models, loading, note, inheritNote, allowDefault = true, disabled, style }) {
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(null);
   const [q, setQ] = useState('');
@@ -130,10 +130,11 @@ export function ModelSelect({ align = 'left', value = '', onChange, models, load
   const showProviderTag = current.id && currentProvider !== 'Anthropic';
 
   return (
-    <div ref={root} style={{ position: 'relative', display: 'inline-block', ...style }}>
+    <div ref={root} style={{ position: 'relative', display: block ? 'block' : 'inline-block', ...(block ? { width: '100%' } : {}), ...style }}>
       <button type="button" disabled={disabled || loading} onClick={() => setOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={open}
         style={{
-          display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 150, padding: '6px 8px 6px 10px',
+          display: block ? 'flex' : 'inline-flex', alignItems: 'center', gap: 8, minWidth: 150, padding: '6px 8px 6px 10px',
+          ...(block ? { width: '100%', boxSizing: 'border-box' } : {}),
           background: 'var(--bg-card)', border: `1px solid ${open ? 'var(--ink-2)' : 'var(--line-strong)'}`, borderRadius: 'var(--r-sm)',
           color: loading ? 'var(--ink-2)' : 'var(--ink-0)', cursor: disabled || loading ? 'default' : 'pointer', textAlign: 'left',
           transition: 'border-color var(--dur-fast) var(--ease)',
@@ -158,7 +159,8 @@ export function ModelSelect({ align = 'left', value = '', onChange, models, load
           // right-aligned settings row, the 300px menu overhangs the modal and
           // gives the whole panel a horizontal scrollbar.
           position: 'absolute', top: 'calc(100% + 4px)', zIndex: 20, minWidth: 300,
-          ...(align === 'right' ? { right: 0 } : { left: 0 }),
+          // Block mode: the menu is exactly as wide as the trigger, edge to edge.
+          ...(block ? { left: 0, right: 0 } : align === 'right' ? { right: 0 } : { left: 0 }),
           background: 'var(--bg-panel)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)',
           boxShadow: '0 8px 24px rgba(0,0,0,0.28)', padding: 4, display: 'flex', flexDirection: 'column',
         }}>
