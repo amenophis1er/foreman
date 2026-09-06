@@ -51,7 +51,11 @@ export function tailnetFromInterfaces(ifaces: NodeJS.Dict<os.NetworkInterfaceInf
   return null;
 }
 
-const CLI_CANDIDATES = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale'];
+const CLI_CANDIDATES = [
+  'tailscale',
+  '/Applications/Tailscale.app/Contents/MacOS/Tailscale',
+  'C:\\Program Files\\Tailscale\\tailscale.exe',
+];
 
 function run(cmd: string, args: string[], timeoutMs: number): Promise<string | null> {
   return new Promise((resolve) => {

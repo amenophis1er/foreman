@@ -117,18 +117,26 @@ async function serviceInstall(bin: string): Promise<number> {
     return 0;
   }
   if (process.platform === 'linux') {
+    // A container, a minimal server, WSL without systemd: no user manager to
+    // talk to. Say that, and point at the way that still works.
+    const probe = await sh('systemctl', ['--user', 'is-system-running']);
+    const noManager = probe.code !== 0 && !/degraded|running|starting/.test(probe.out);
+    if (noManager) {
+      console.error('No systemd user session here (a container, or WSL without systemd). Use `foreman up`, or run `foreman` under your own supervisor.');
+      return 2;
+    }
     const dir = path.join(os.homedir(), '.config', 'systemd', 'user');
     const file = path.join(dir, 'foreman.service');
     await mkdir(dir, { recursive: true });
     await writeFile(file, systemdUnit({ node: process.execPath, bin, home: HOME_DIR, env }));
     for (const args of [['--user', 'daemon-reload'], ['--user', 'enable', '--now', 'foreman']]) {
       const r = await sh('systemctl', args);
-      if (r.code !== 0) { console.error(`systemctl ${args.join(' ')} failed: ${r.err.trim() || r.out.trim()}`); return 1; }
+      if (r.code !== 0) { console.error(`systemctl ${args.join(' ')} failed: ${(r.err.trim() || r.out.trim()) || 'no output — is a systemd user session running?'}`); return 1; }
     }
     console.log(`Installed ${file}\nForeman starts at login and restarts if it dies. Logs: journalctl --user -u foreman -f\nTip: \`loginctl enable-linger $USER\` keeps it up when you are logged out.\nDashboard: http://localhost:${PORT}`);
     return 0;
   }
-  console.error(`No service integration for ${process.platform} yet. Run \`foreman\` under your own supervisor.`);
+  console.error(`No service integration for ${process.platform} yet. \`foreman up\` runs it in the background; on Windows, Task Scheduler or WSL2 with systemd keeps it up.`);
   return 2;
 }
 
@@ -191,8 +199,10 @@ async function doctor(): Promise<number> {
 
 async function open(): Promise<number> {
   const url = `http://localhost:${PORT}`;
-  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-  const r = await sh(cmd, [url]);
+  // `start` is a cmd builtin, not a program; xdg-open covers the Linux desktops.
+  const r = process.platform === 'win32'
+    ? await sh('cmd', ['/c', 'start', '', url])
+    : await sh(process.platform === 'darwin' ? 'open' : 'xdg-open', [url]);
   if (r.code !== 0) console.log(url);
   return 0;
 }
