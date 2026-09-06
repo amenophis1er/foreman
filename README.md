@@ -43,6 +43,14 @@ bot in Settings → Notifications and the phone can answer asks, plan and start
 missions, and open what the crew built. `foreman service install` is what
 keeps the server up while the lid is closed.
 
+**Platforms.** macOS is where Foreman is developed and tested. Linux is
+verified on Debian with Node 22: install, `foreman doctor`, `foreman up` /
+`status` / `down` and the dashboard all work; `foreman service install` needs
+a systemd user session (a desktop, or `loginctl enable-linger`), and browser
+missions need Google Chrome or `npx playwright install chromium` with
+`FOREMAN_BROWSER=chromium`. Windows is not yet tested natively — use WSL2 for
+now; `foreman service` has no Windows implementation, `foreman up` works.
+
 **From a checkout** (contributing):
 
 ```sh
