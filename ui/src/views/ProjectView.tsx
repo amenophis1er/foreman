@@ -26,8 +26,8 @@ import { CrewStrip } from '../ds/mission/CrewStrip';
 import { RunRow } from '../ds/mission/RunRow';
 import { NowStrip, type NowActivity } from '../ds/mission/NowStrip';
 import { DoneWhenList, doneWhenLabel, parseDoneWhen } from '../ds/mission/DoneWhenList';
-import { DeckTab } from '../ds/mission/DeckTab';
-import { CrewTab } from '../ds/mission/CrewTab';
+import { FilesPanel } from '../ds/mission/FilesPanel';
+import { CrewPanel } from '../ds/mission/CrewPanel';
 import type { ModelInfo } from '../ds/forms/ModelSelect';
 
 /**
@@ -174,6 +174,9 @@ export type TranscriptOrder = 'newest' | 'oldest';
 
 const ORDER_KEY = 'foreman.transcriptOrder';
 const TIMELINE_KEY = 'foreman.timeline';
+const RAIL_KEY = 'foreman.railWidth';
+const RAIL_MIN = 280;
+const RAIL_DEFAULT = 340;
 
 /**
  * Reading order for the transcript, remembered across runs and reloads.
@@ -468,7 +471,7 @@ function RunDetails({ r, live, liveCost, liveBasis, liveUsage, liveTurns, onChan
     </div>
   );
 }
-type BodyTab = 'transcript' | 'deck' | 'crew';
+type RailTab = 'mission' | 'files';
 
 export function ProjectView({
   p, models, modelsLoading, modelsNote, modelsInheritNote, routeRunId, onSelectRun, onBack,
@@ -499,15 +502,41 @@ export function ProjectView({
   const isRunning = viewingLive && run.runStatus === 'running';
   const [filter, setFilter] = useState<string | null>(null);
   const [jump, setJump] = useState<{ id: number; n: number } | null>(null);
-  const [tab, setTab] = useState<BodyTab>('transcript');
+  const [railTab, setRailTab] = useState<RailTab>('mission');
+  // The rail's width is the reader's, dragged from its left edge and kept in
+  // this browser. Bounded so neither the transcript nor the rail can vanish.
+  const [railWidth, setRailWidthState] = useState<number>(() => {
+    try { const n = Number(localStorage.getItem(RAIL_KEY)); return n >= RAIL_MIN ? n : RAIL_DEFAULT; } catch { return RAIL_DEFAULT; }
+  });
+  const setRailWidth = (n: number) => {
+    const max = Math.max(RAIL_MIN, Math.floor(window.innerWidth * 0.5));
+    const v = Math.min(max, Math.max(RAIL_MIN, Math.round(n)));
+    setRailWidthState(v);
+    try { localStorage.setItem(RAIL_KEY, String(v)); } catch { /* private mode */ }
+  };
+  const startRailDrag = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = railWidth;
+    const onMove = (ev: PointerEvent) => setRailWidth(startW + (startX - ev.clientX));
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
   const jumpTo = (e: { id?: string | number; agent: string }) => {
     if (typeof e.id !== 'number') return;
     if (filter && filter !== e.agent) setFilter(null); // entry must be visible
-    setTab('transcript');
     setJump({ id: e.id, n: Date.now() });
   };
   // Filtering is a transcript operation wherever it is triggered from.
-  const toggleFilter = (a: string) => { setFilter(filter === a ? null : a); setTab('transcript'); };
+  const toggleFilter = (a: string) => setFilter(filter === a ? null : a);
   const [resuming, setResuming] = useState(false);
   const [order, setOrder] = useTranscriptOrder();
   // Open unless this browser closed it: the swimlanes are the run's shape at a
@@ -521,6 +550,7 @@ export function ProjectView({
   };
   const [showDoc, setShowDoc] = useState(false);
   const [showDoneWhen, setShowDoneWhen] = useState(false);
+  const [showFilesNarrow, setShowFilesNarrow] = useState(false);
   const [headerErr, setHeaderErr] = useState('');
   const [forking, setForking] = useState(false);
   const forkPlan = async (runId: string) => {
@@ -555,8 +585,8 @@ export function ProjectView({
   }, [pendingCount]);
 
   // A new run resets the reading position: a fresh mission opens on its
-  // transcript, whatever tab the last one was left on.
-  useEffect(() => { setTab('transcript'); setFilter(null); }, [selectedRunId]);
+  // checklist, whatever rail tab the last one was left on.
+  useEffect(() => { setRailTab('mission'); setFilter(null); }, [selectedRunId]);
 
   const activity = useMemo(() => (isRunning ? nowActivity(run) : null), [isRunning, run]);
   const doneWhen = useMemo(() => parseDoneWhen(run.missionDoc), [run.missionDoc]);
@@ -593,7 +623,7 @@ export function ProjectView({
     && selectedRun?.directorSessionId;
 
   // The pill yields below the wide breakpoint so the header stays one row;
-  // the Crew tab carries the same two names in full.
+  // the rail's Run block carries the same two names in full.
   const modelsPill = wide && selectedRun && (selectedRun.directorModel || selectedRun.workerModel) ? (
     <span title={`director: ${selectedRun.directorModel || 'default'} · workers: ${selectedRun.workerModel || 'default'}`}
       style={{
@@ -613,7 +643,27 @@ export function ProjectView({
       <Disclosure label="Mission doc" open={showDoc} onToggle={() => setShowDoc(!showDoc)}>
         <PlanBoard doc={run.missionDoc ?? undefined} />
       </Disclosure>
+      <CrewPanel agents={run.agents} filter={filter} onFilter={toggleFilter}
+        sessionId={run.directorSessionId}
+        details={selectedRun && (
+          <RunDetails r={selectedRun} live={viewingLive} liveCost={run.costUsd}
+            liveBasis={run.costBasis} liveUsage={run.usage} liveTurns={selectedRun.turns}
+            onChanged={refreshFleet} />
+        )} />
     </div>
+  );
+  const filesPane = selectedRunId ? (
+    <FilesPanel runId={selectedRunId} deck={deck.deck} loading={deck.loading}
+      error={deck.error} missing={deck.missing} />
+  ) : null;
+  const fileCount = deck.deck ? deck.deck.totals.files + deck.deck.artifacts.length : 0;
+  // The rail: one place with tabs. Mission = checklist, doc, crew, run facts;
+  // Files = what changed and what was produced. The transcript never hides.
+  const railTabs = (
+    <Tabs size="sm" value={railTab} onChange={(v) => setRailTab(v as RailTab)} tabs={[
+      { value: 'mission', label: 'Mission' },
+      { value: 'files', label: 'Files', count: fileCount },
+    ]} />
   );
 
   const transcriptTools = (
@@ -656,9 +706,12 @@ export function ProjectView({
         </div>
       )}
       {!wide && (
-        <div style={{ padding: '6px var(--sp-3) 0', flex: '0 0 auto' }}>
+        <div style={{ padding: '6px var(--sp-3) 0', flex: '0 0 auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
           <Disclosure label={doneWhenLabel(doneWhen)} open={showDoneWhen} onToggle={() => setShowDoneWhen(!showDoneWhen)}>
             {missionDocPane}
+          </Disclosure>
+          <Disclosure label={`Files · ${fileCount}`} open={showFilesNarrow} onToggle={() => setShowFilesNarrow(!showFilesNarrow)}>
+            {filesPane}
           </Disclosure>
         </div>
       )}
@@ -738,14 +791,7 @@ export function ProjectView({
       )}
 
       <RunSwitcher history={history} selectedRunId={selectedRunId} live={viewingLive}
-        onSelectRun={setSelectedRunId}
-        right={idle ? undefined : (
-          <Tabs size="sm" value={tab} onChange={(v) => setTab(v as BodyTab)} tabs={[
-            { value: 'transcript', label: 'Transcript', icon: 'transcript' },
-            { value: 'deck', label: 'Deck', icon: 'file', count: deck.deck?.totals.files ?? 0 },
-            { value: 'crew', label: 'Crew', icon: 'crew', count: run.agents.length },
-          ]} />
-        )} />
+        onSelectRun={setSelectedRunId} />
 
       {idle ? (
         <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
@@ -827,38 +873,26 @@ export function ProjectView({
         </div>
       ) : (
         <main style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          {tab === 'transcript' && (
-            wide ? (
-              <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 300px' }}>
-                {transcriptColumn}
-                <aside style={{
-                  borderLeft: '1px solid var(--line)', background: 'var(--bg-panel)',
-                  minHeight: 0, overflowY: 'auto', padding: 'var(--sp-3)',
-                }}>
-                  {missionDocPane}
-                </aside>
-              </div>
-            ) : (
-              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-                {transcriptColumn}
-              </div>
-            )
-          )}
-          {tab === 'deck' && selectedRunId && (
-            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-              <DeckTab runId={selectedRunId} deck={deck.deck} loading={deck.loading}
-                error={deck.error} missing={deck.missing} />
+          {wide ? (
+            <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: `minmax(0, 1fr) ${railWidth}px` }}>
+              {transcriptColumn}
+              <aside style={{
+                position: 'relative', borderLeft: '1px solid var(--line)', background: 'var(--bg-panel)',
+                minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column',
+              }}>
+                {/* The resizer: a thin grab zone on the rail's left edge. */}
+                <div role="separator" aria-orientation="vertical" aria-label="Resize the rail"
+                  title="Drag to resize" onPointerDown={startRailDrag}
+                  style={{ position: 'absolute', left: -4, top: 0, bottom: 0, width: 8, cursor: 'col-resize', zIndex: 2 }} />
+                <div style={{ padding: 'var(--sp-2) var(--sp-3) 0', flex: '0 0 auto' }}>{railTabs}</div>
+                <div style={{ minHeight: 0, overflowY: 'auto', padding: 'var(--sp-3)' }}>
+                  {railTab === 'mission' ? missionDocPane : filesPane}
+                </div>
+              </aside>
             </div>
-          )}
-          {tab === 'crew' && (
-            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-              <CrewTab agents={run.agents} filter={filter} onFilter={toggleFilter}
-                sessionId={run.directorSessionId}
-                details={selectedRun && (
-                  <RunDetails r={selectedRun} live={viewingLive} liveCost={run.costUsd}
-                    liveBasis={run.costBasis} liveUsage={run.usage} liveTurns={selectedRun.turns}
-                    onChanged={refreshFleet} />
-                )} />
+          ) : (
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+              {transcriptColumn}
             </div>
           )}
           {viewingLive && (

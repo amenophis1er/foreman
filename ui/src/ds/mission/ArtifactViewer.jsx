@@ -4,6 +4,7 @@ import { Button } from '../core/Button';
 import { IconButton } from '../core/IconButton';
 import { RichText } from '../core/RichText';
 import { Tabs } from '../core/Tabs';
+import { Diff } from './Diff';
 
 const TEXT_CAP = 512 * 1024;
 
@@ -26,6 +27,7 @@ export function ArtifactViewer({ artifact, url, previewUrl, onClose, index, coun
   const [text, setText] = useState(null);
   const [err, setErr] = useState(null);
   const kind = artifact?.kind;
+  const isDiff = kind === 'diff';
   const name = artifact?.path?.split('/').pop() ?? '';
   const isMd = /\.md$/i.test(name);
 
@@ -41,7 +43,7 @@ export function ArtifactViewer({ artifact, url, previewUrl, onClose, index, coun
 
   useEffect(() => {
     setText(null); setErr(null);
-    if (kind !== 'text') return;
+    if (kind !== 'text' || !url) return;
     let live = true;
     fetch(url).then(async (r) => {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -52,11 +54,17 @@ export function ArtifactViewer({ artifact, url, previewUrl, onClose, index, coun
   }, [url, kind]);
 
   if (!artifact) return null;
-  const size = artifact.size >= 1024 * 1024 ? `${(artifact.size / 1024 / 1024).toFixed(1)} MB`
+  const size = typeof artifact.size !== 'number' ? null : artifact.size >= 1024 * 1024 ? `${(artifact.size / 1024 / 1024).toFixed(1)} MB`
     : artifact.size >= 1024 ? `${(artifact.size / 1024).toFixed(1)} KB` : `${artifact.size} B`;
 
   let body;
-  if (isHtml && previewUrl && htmlView === 'rendered') {
+  if (isDiff) {
+    body = artifact.binary
+      ? <div style={{ margin: 'auto', color: 'var(--ink-2)' }}>Binary file — no diff to show.</div>
+      : artifact.diff
+        ? <Diff text={artifact.diff} truncated={artifact.truncated} style={{ minHeight: '100%' }} />
+        : <div style={{ margin: 'auto', color: 'var(--ink-2)' }}>No diff recorded for this file.</div>;
+  } else if (isHtml && previewUrl && htmlView === 'rendered') {
     body = <iframe title={artifact.path} src={previewUrl} sandbox="allow-scripts"
       style={{ width: '100%', height: '100%', border: 'none', background: '#fff' }} />;
   } else if (kind === 'image') {
@@ -96,8 +104,18 @@ export function ArtifactViewer({ artifact, url, previewUrl, onClose, index, coun
           borderBottom: '1px solid var(--line)', background: 'var(--bg-panel)', flex: '0 0 auto', minWidth: 0,
         }}>
           <Icon name={kind === 'image' ? 'Image' : kind === 'text' ? 'transcript' : 'file'} size={14} color="var(--ink-2)" />
+          {isDiff && artifact.status && (
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', flex: '0 0 auto' }}>{artifact.status}</span>
+          )}
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }} title={artifact.path}>{artifact.path}</span>
-          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }}>{size}</span>
+          {isDiff ? (
+            <span style={{ fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }}>
+              <span style={{ color: 'var(--status-good)' }}>+{artifact.additions ?? 0}</span>{' '}
+              <span style={{ color: 'var(--status-critical)' }}>−{artifact.deletions ?? 0}</span>
+            </span>
+          ) : size && (
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }}>{size}</span>
+          )}
           {isHtml && previewUrl && (
             <Tabs size="sm" value={htmlView} onChange={setHtmlView} tabs={[
               { value: 'rendered', label: 'Rendered' },
@@ -111,9 +129,11 @@ export function ArtifactViewer({ artifact, url, previewUrl, onClose, index, coun
               <IconButton icon="chevronRight" label="Next (→)" onClick={next ?? undefined} disabled={!next} size="sm" />
             </span>
           )}
-          <a href={url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none', flex: '0 0 auto' }}>
-            <Button variant="ghost" size="sm">Open in a new tab</Button>
-          </a>
+          {url && !isDiff && (
+            <a href={url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none', flex: '0 0 auto' }}>
+              <Button variant="ghost" size="sm">Open in a new tab</Button>
+            </a>
+          )}
           <IconButton icon="close" label="Close (Esc)" onClick={onClose} size="sm" />
         </div>
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', display: 'flex', flexDirection: 'column', background: kind === 'image' ? 'var(--bg-inset)' : 'var(--bg-card)' }}>

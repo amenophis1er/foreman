@@ -9,3 +9,5 @@ Never renders artifact HTML as a document — the server serves it as plain text
 When given `index`, `count` and `onStep`, the header carries ‹ n / N › and the left/right arrow keys step through the list without closing; the ends disable rather than wrap. The Deck passes its artifacts in display order — screenshots first, then work files.
 
 HTML artifacts get two views, switched in the header: **Rendered** frames the file from the preview route in an `<iframe sandbox="allow-scripts">` (the server also sends a CSP `sandbox`, so the page has an opaque origin and cannot reach Foreman's cookies, storage or DOM; its own CSS, scripts and JSON load by relative path); **Source** is the mono text view. Rendered is the default.
+
+A `diff` item — one of the run's changed files — shows the file's unified diff (`Diff`) with its status and +/− in the header, no "Open in a new tab". The Files rail hands the viewer one list: changed files first, then screenshots, then work files, so ← → walk the whole deck.

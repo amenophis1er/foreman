@@ -1,0 +1,3 @@
+Crew and run facts for the mission rail — the block that used to be a whole tab and never had enough in it to deserve one. Two stacked sections at rail width: **Crew** (the director row, then each worker indented with its status and its own last progress line clamped to two lines; clicking a row filters the transcript, and a line under the list says so while a filter is on) and **Run** (the `RunDetails` block — models, budget, browser, cost — and the director session's first eight characters in mono).
+
+It sits under the DONE WHEN list in the rail's Mission tab, so state is read at a glance while the transcript stays in view. Nothing here duplicates the crew chips above the transcript: those filter, this tells state.

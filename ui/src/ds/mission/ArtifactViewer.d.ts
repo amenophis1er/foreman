@@ -1,14 +1,21 @@
 export interface ArtifactViewerArtifact {
   path: string;
-  kind: 'image' | 'text' | 'pdf' | 'other';
-  size: number;
+  /** `diff` is a changed file from the deck: the body is its unified diff, the header its status and +/−. */
+  kind: 'image' | 'text' | 'pdf' | 'other' | 'diff';
+  size?: number;
+  diff?: string;
+  truncated?: boolean;
+  binary?: boolean;
+  status?: string;
+  additions?: number;
+  deletions?: number;
 }
 
 export interface ArtifactViewerProps {
   /** What to show; `null` renders nothing. */
   artifact: ArtifactViewerArtifact | null;
-  /** The artifact route for this file; also what "Open in a new tab" links to. */
-  url: string;
+  /** The artifact route for this file; also what "Open in a new tab" links to. Omit for a `diff` item. */
+  url?: string;
   /** The sandboxed preview route for this file. When given for an HTML artifact, the header gains Rendered | Source. */
   previewUrl?: string;
   onClose: () => void;
