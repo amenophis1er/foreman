@@ -1139,12 +1139,20 @@ async function resumeRun(projectId: string, meta: RunMeta): Promise<void> {
   // model mid-session, so a changed director model restarts the session
   // fresh (the mission doc carries the state forward).
   const settings = await effectiveSettings(projectId);
+  // A model is picked together with the provider that serves it, so a
+  // change of either moves the role. Without the provider following the
+  // model, "resume on Sonnet" after a Codex usage limit went back through
+  // the Codex gateway — which remapped the unknown id to its own default and
+  // hit the same 429. The provider id is left undefined when Settings does
+  // not pin one, which means the project's own provider, as at start.
   const directorChanged =
-    settings.directorModel !== undefined && settings.directorModel !== meta.directorModel;
+    (settings.directorModel !== undefined && settings.directorModel !== meta.directorModel)
+    || (settings.directorModel !== undefined && settings.directorProviderId !== meta.directorProviderId);
   const workerChanged =
-    settings.workerModel !== undefined && settings.workerModel !== meta.workerModel;
-  if (directorChanged) meta.directorModel = settings.directorModel;
-  if (workerChanged) meta.workerModel = settings.workerModel;
+    (settings.workerModel !== undefined && settings.workerModel !== meta.workerModel)
+    || (settings.workerModel !== undefined && settings.workerProviderId !== meta.workerProviderId);
+  if (directorChanged) { meta.directorModel = settings.directorModel; meta.directorProviderId = settings.directorProviderId; }
+  if (workerChanged) { meta.workerModel = settings.workerModel; meta.workerProviderId = settings.workerProviderId; }
   meta.toolPolicy = settings.toolPolicy;
   meta.autoAllowReadOnly = settings.autoAllowReadOnly;
   meta.status = 'running';
