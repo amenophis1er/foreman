@@ -202,7 +202,7 @@ export function pickKnownModel(
 }
 
 /** The section appended to the charter so the planner can recommend real models. */
-function modelsSection(models: PlannerModel[] | undefined): string {
+export function modelsSection(models: PlannerModel[] | undefined): string {
   if (!models?.length) return '';
   const lines = models.map((m) =>
     `  - ${m.id} — ${m.providerLabel} · ${m.costBasis}${m.note ? ` · ${m.note}` : ''}`);

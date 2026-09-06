@@ -3,8 +3,8 @@
  *
  * The parser is pure and small on purpose: the phone is the least forgiving
  * place to discover a command's shape, so every command has one shape, a
- * `/help` lists them, and anything that is not a command is treated as talk
- * for the planner of the project last spoken to.
+ * `/help` lists them, and anything that is not a command is talk: for the
+ * planner of the project last spoken to, else for the fleet planner.
  */
 import os from 'node:os';
 import path from 'node:path';
@@ -16,7 +16,8 @@ export type Command =
   | { cmd: 'new'; name: string }
   | { cmd: 'plan'; project: string; text: string }
   | { cmd: 'run'; project: string; text: string }
-  | { cmd: 'stop'; project?: string };
+  | { cmd: 'stop'; project?: string }
+  | { cmd: 'fleet'; text: string };
 
 /** `/plan@ForemanBot test-4 add a footer` → { cmd: 'plan', project: 'test-4', text: 'add a footer' }. */
 export function parseCommand(text: string): Command | null {
@@ -36,6 +37,7 @@ export function parseCommand(text: string): Command | null {
     case 'plan': { const [project, t] = split(); return project && t ? { cmd: 'plan', project, text: t } : null; }
     case 'run': { const [project, t] = split(); return project && t ? { cmd: 'run', project, text: t } : null; }
     case 'stop': return { cmd: 'stop', ...(rest ? { project: rest } : {}) };
+    case 'fleet': case 'f': return { cmd: 'fleet', text: rest };
     default: return null;
   }
 }
@@ -68,6 +70,7 @@ export const HELP_TEXT = [
   '/plan &lt;project&gt; &lt;what you want&gt; — talk to that project\'s planner',
   '/run &lt;project&gt; &lt;brief&gt; — skip the talk: start a mission at the project\'s default cap',
   '/stop [project] — stop the planner reply in flight',
+  '/fleet [anything] — the front desk: ask how things are going, or say what you want started where',
   '',
-  'Anything else you type answers the open question, or continues the last planning conversation.',
+  'Anything else you type answers the open question, continues the planning conversation you were just in, or goes to the front desk.',
 ].join('\n');

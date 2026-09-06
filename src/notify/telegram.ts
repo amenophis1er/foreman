@@ -88,6 +88,7 @@ export const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   { command: 'plan', description: 'Talk to a planner: /plan <project> <what you want>' },
   { command: 'run', description: 'Skip the talk: /run <project> <brief>' },
   { command: 'stop', description: 'Stop the planner reply in flight' },
+  { command: 'fleet', description: 'The front desk: /fleet how is everything going?' },
   { command: 'help', description: 'What you can say here' },
 ];
 
