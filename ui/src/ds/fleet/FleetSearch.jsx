@@ -42,7 +42,7 @@ export function FleetSearch({ value, onChange, count, total, style }) {
       }}>
         <Icon name="search" size={14} color="var(--ink-2)" />
         <input ref={input} value={value} type="text"
-          placeholder="Filter projects…"
+          placeholder="Search projects and runs…"
           aria-label="Filter projects by name, path or mission"
           onChange={(e) => onChange?.(e.target.value)}
           onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}

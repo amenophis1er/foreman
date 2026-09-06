@@ -33,6 +33,7 @@ const USAGE = `foreman ${pkg.version}
 
   foreman uninstall          Remove the service and the background server; keeps ~/.foreman
   foreman uninstall --purge --yes   …and delete ~/.foreman (every run's history) too
+  foreman completion install Tab-completion for these commands (zsh, bash, fish); or "completion zsh" to print it
   foreman --version | --help
 
 Environment:
@@ -55,7 +56,7 @@ if (command === '--help' || command === '-h' || command === 'help') {
 } else if (command === 'start') {
   register();
   await import(new URL('../src/server.ts', import.meta.url).href);
-} else if (['doctor', 'open', 'service', 'up', 'down', 'stop', 'restart', 'status', 'logs', 'uninstall', 'update'].includes(command)) {
+} else if (['doctor', 'open', 'service', 'up', 'down', 'stop', 'restart', 'status', 'logs', 'uninstall', 'update', 'completion'].includes(command)) {
   register();
   const { runCli } = await import(new URL('../src/cli.ts', import.meta.url).href);
   process.exitCode = await runCli(command, rest, { version: pkg.version, bin: new URL(import.meta.url) });

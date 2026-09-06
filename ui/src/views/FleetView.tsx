@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { FLEET_CHAT_ID, api, basisOf, useChat, type ProjectSummary } from '../state';
+import { StatusBadge } from '../ds/status/StatusBadge';
 import { ChatBar } from '../ds/mission/ChatBar';
 import { TranscriptEntry } from '../ds/mission/TranscriptEntry';
 import { AppHeader } from '../ds/shell/AppHeader';
@@ -107,6 +108,57 @@ function FleetDesk({ onSettings }: { onSettings: () => void }) {
         {err && <Banner tone="error" inline style={{ marginTop: 4 }}>{err}</Banner>}
       </div>
     </aside>
+  );
+}
+
+type RunHit = {
+  id: string; projectId: string | null; projectName: string; folder: string; title?: string; mission: string;
+  status: 'idle' | 'running' | 'done' | 'error' | 'interrupted'; createdAt: number; endedAt?: number;
+  costUsd: number; costBasis: 'priced' | 'free' | 'unpriced';
+};
+
+/**
+ * Runs across the fleet that answer to the query — the project cards only
+ * know their latest run, and "where did we build the seat picker" is a
+ * question about all of them. Debounced; an empty or one-letter query asks
+ * nothing.
+ */
+function useRunSearch(q: string): RunHit[] {
+  const [hits, setHits] = useState<RunHit[]>([]);
+  useEffect(() => {
+    if (q.length < 2) { setHits([]); return; }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      fetch(`/search?q=${encodeURIComponent(q)}`).then((r) => (r.ok ? r.json() : { runs: [] }))
+        .then((d: { runs: RunHit[] }) => { if (!cancelled) setHits(d.runs ?? []); })
+        .catch(() => { if (!cancelled) setHits([]); });
+    }, 200);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q]);
+  return hits;
+}
+
+function RunHitRow({ hit, onOpen, style }: { hit: RunHit; onOpen: () => void; style?: React.CSSProperties }) {
+  const when = new Date(hit.endedAt ?? hit.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return (
+    <button type="button" onClick={onOpen} style={{
+      display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: 'var(--sp-3)',
+      width: '100%', textAlign: 'left', padding: 'var(--sp-2) var(--sp-3)', border: 'none', background: 'transparent',
+      cursor: 'pointer', font: 'inherit', color: 'var(--ink-0)', ...style,
+    }}>
+      <span style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hit.title || hit.mission}</span>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <b style={{ color: 'var(--ink-1)', fontWeight: 'var(--fw-semibold)' as never }}>{hit.projectName}</b>
+          {hit.title ? ` · ${hit.mission}` : ''}
+        </span>
+      </span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--sp-2)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+        <StatusBadge status={hit.status} />
+        <span>{when}</span>
+        {hit.costBasis === 'priced' && <span>${hit.costUsd.toFixed(2)}</span>}
+      </span>
+    </button>
   );
 }
 
@@ -221,6 +273,7 @@ export function FleetView({
   // survives, so a project blocked on you stays first among whatever is left.
   const q = query.trim().toLowerCase();
   const shown = (q ? projects.filter((p) => matches(p, q)) : projects) as FleetProject[];
+  const runHits = useRunSearch(q);
 
   const needs = needsOf(shown);
   const running = shown
@@ -360,11 +413,26 @@ export function FleetView({
           display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)',
           padding: 'var(--sp-5)', maxWidth: 'var(--fleet-max)', margin: '0 auto', width: '100%', boxSizing: 'border-box',
         }}>
-          {shown.length === 0 && (
+          {shown.length === 0 && runHits.length === 0 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
               <Empty>Nothing matches “{query.trim()}”.</Empty>
               <Button variant="ghost" size="sm" onClick={() => setQuery('')}>Clear filter</Button>
             </div>
+          )}
+
+          {/* Runs that answer to the query, from every project's history —
+              not just the latest one each card shows. Opens the run itself. */}
+          {runHits.length > 0 && (
+            <section style={sectionStyle}>
+              <SectionTitle>Runs matching “{query.trim()}” · {runHits.length}</SectionTitle>
+              <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-md)', background: 'var(--bg-card)', overflow: 'hidden' }}>
+                {runHits.map((h, i) => (
+                  <RunHitRow key={h.id} hit={h}
+                    onOpen={() => { if (h.projectId) (onOpenRun ? onOpenRun(h.projectId, h.id) : onOpen(h.projectId)); }}
+                    style={i > 0 ? { borderTop: '1px solid var(--line)' } : undefined} />
+                ))}
+              </div>
+            </section>
           )}
 
           {/* 0 · Quiet. The two sections above Recent are omitted when empty;

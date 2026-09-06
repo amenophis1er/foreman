@@ -493,6 +493,19 @@ export async function runCli(command: string, rest: string[], ctx: { version: st
     case 'uninstall': return uninstall(rest);
     case 'status': return status();
     case 'doctor': return doctor();
+    case 'completion': {
+      const { completionScript, detectShell, installCompletion } = await import('./completion.js');
+      const arg = rest[0];
+      if (arg === 'zsh' || arg === 'bash' || arg === 'fish') { process.stdout.write(completionScript(arg)); return 0; }
+      if (arg === 'install') {
+        const shell = (rest[1] === 'zsh' || rest[1] === 'bash' || rest[1] === 'fish') ? rest[1] : detectShell();
+        if (!shell) { console.error('Could not tell your shell from $SHELL. Say which: foreman completion install zsh|bash|fish'); return 1; }
+        console.log(await installCompletion(shell));
+        return 0;
+      }
+      console.error('Usage: foreman completion zsh|bash|fish   (prints the script)\n       foreman completion install [zsh|bash|fish]   (adds it to your shell rc, once)');
+      return 1;
+    }
     case 'open': return open();
     case 'service': {
       const sub = rest[0];

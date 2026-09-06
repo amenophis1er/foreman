@@ -24,6 +24,7 @@
  *   POST   /runs/{id}/resume     Resume an interrupted/failed run
  *   POST   /permission           Resolve an approval {id, behavior, message?}
  *   POST   /answer               Answer a director question {id, text}
+ *   GET    /search?q=            Runs across the fleet matching title, brief, project or folder
  *   POST   /fleet/chat           One turn with the fleet planner {text} → {text, costUsd}
  *   POST   /fleet/stop           Stop the fleet planner reply in flight
  *   DELETE /fleet/chat           Forget the fleet conversation
@@ -2192,6 +2193,26 @@ const server = http.createServer(async (req, res) => {
       const ok = activeRuns().some((r) => r.answerQuestion(id, String(text ?? '')));
       if (!ok) return json(res, 404, { error: 'no pending question with that id' });
       json(res, 200, { ok: true });
+
+    } else if (req.method === 'GET' && url.pathname === '/search') {
+      // Every run across the fleet whose title, brief, project or folder
+      // says the words. Run records are small and already on disk; no index.
+      const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+      if (q.length < 2) return json(res, 200, { runs: [] });
+      const [runs, projects] = await Promise.all([store.listRuns(), store.listProjects()]);
+      const byFolder = new Map(projects.map((p) => [p.folder, p]));
+      const hits = runs.filter((r) => {
+        const project = byFolder.get(r.folder);
+        return [r.title, r.mission, r.folder, project?.name].some((f) => f?.toLowerCase().includes(q));
+      }).sort((a, b) => b.createdAt - a.createdAt).slice(0, 30).map((r) => {
+        const project = byFolder.get(r.folder);
+        return {
+          id: r.id, projectId: r.projectId ?? project?.id ?? null, projectName: project?.name ?? path.basename(r.folder),
+          folder: r.folder, title: r.title, mission: firstLine(r.mission), status: r.status,
+          createdAt: r.createdAt, endedAt: r.endedAt, costUsd: r.costUsd, costBasis: costBasisOf(r),
+        };
+      });
+      json(res, 200, { runs: hits });
 
     } else if (req.method === 'POST' && url.pathname === '/fleet/chat') {
       // One turn at the front desk, answered in the response. The same
