@@ -102,6 +102,14 @@ function serviceEnv(): Record<string, string> {
 async function serviceInstall(bin: string): Promise<number> {
   const logDir = path.join(HOME_DIR, 'logs');
   await mkdir(logDir, { recursive: true });
+  // A background server started with `foreman up` would keep the port and
+  // make the new service crash-loop against it; hand over first.
+  const pid = await readPid();
+  if (pid && alive(pid)) { console.log('Stopping the background server so the service can take the port…'); await down(); }
+  else if (await listening(PORT)) {
+    console.error(`Something else answers on :${PORT} (a terminal session?). Stop it first, or the service will keep failing to bind.`);
+    return 1;
+  }
   const env = serviceEnv();
   if (process.platform === 'darwin') {
     const dir = path.join(os.homedir(), 'Library', 'LaunchAgents');
@@ -156,6 +164,66 @@ async function serviceUninstall(): Promise<number> {
     return 0;
   }
   return 2;
+}
+
+/** Is the service registered, and is it running? Null pid when registered but idle. */
+async function serviceState(): Promise<{ installed: boolean; running: boolean; pid?: number }> {
+  if (process.platform === 'darwin') {
+    const r = await sh('launchctl', ['print', `gui/${os.userInfo().uid}/${LABEL}`]);
+    if (r.code !== 0) return { installed: false, running: false };
+    const pid = Number(/pid = (\d+)/.exec(r.out)?.[1]);
+    return { installed: true, running: Number.isFinite(pid) && pid > 0, ...(pid ? { pid } : {}) };
+  }
+  if (process.platform === 'linux') {
+    const enabled = await sh('systemctl', ['--user', 'is-enabled', 'foreman']);
+    const active = await sh('systemctl', ['--user', 'is-active', 'foreman']);
+    return { installed: enabled.out.trim() === 'enabled' || active.out.trim() === 'active', running: active.out.trim() === 'active' };
+  }
+  return { installed: false, running: false };
+}
+
+/** Stop the service without removing it; `service start` brings it back. */
+async function serviceStop(): Promise<number> {
+  const st = await serviceState();
+  if (!st.installed) { console.log('The service is not installed.'); return 1; }
+  if (process.platform === 'darwin') {
+    // bootout unloads the job until the next login or `service start`; a plain
+    // kill would be undone by KeepAlive within seconds.
+    const r = await sh('launchctl', ['bootout', `gui/${os.userInfo().uid}/${LABEL}`]);
+    if (r.code !== 0 && st.running) { console.error(`launchctl bootout failed: ${r.err.trim() || r.out.trim()}`); return 1; }
+  } else if (process.platform === 'linux') {
+    const r = await sh('systemctl', ['--user', 'stop', 'foreman']);
+    if (r.code !== 0) { console.error(`systemctl stop failed: ${r.err.trim() || r.out.trim()}`); return 1; }
+  }
+  console.log('Service stopped. `foreman service start` starts it again; it also comes back at next login.');
+  return 0;
+}
+
+async function serviceStart(): Promise<number> {
+  if (process.platform === 'darwin') {
+    const file = path.join(os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
+    const r = await sh('launchctl', ['bootstrap', `gui/${os.userInfo().uid}`, file]);
+    if (r.code !== 0 && !/already/i.test(r.err)) { console.error(`launchctl bootstrap failed: ${r.err.trim() || r.out.trim() || 'is the service installed?'}`); return 1; }
+  } else if (process.platform === 'linux') {
+    const r = await sh('systemctl', ['--user', 'start', 'foreman']);
+    if (r.code !== 0) { console.error(`systemctl start failed: ${r.err.trim() || r.out.trim()}`); return 1; }
+  } else { return 2; }
+  for (let i = 0; i < 40; i++) { if (await listening(PORT)) break; await new Promise((r) => setTimeout(r, 250)); }
+  console.log((await listening(PORT)) ? `Service started · http://localhost:${PORT}` : `Service started; not answering yet — see ${LOG_FILE}`);
+  return 0;
+}
+
+async function serviceRestart(): Promise<number> {
+  if (process.platform === 'darwin') {
+    const r = await sh('launchctl', ['kickstart', '-k', `gui/${os.userInfo().uid}/${LABEL}`]);
+    if (r.code !== 0) { console.error(`launchctl kickstart failed: ${r.err.trim() || r.out.trim() || 'is the service installed?'}`); return 1; }
+  } else if (process.platform === 'linux') {
+    const r = await sh('systemctl', ['--user', 'restart', 'foreman']);
+    if (r.code !== 0) { console.error(`systemctl restart failed: ${r.err.trim() || r.out.trim()}`); return 1; }
+  } else { return 2; }
+  for (let i = 0; i < 40; i++) { if (await listening(PORT)) break; await new Promise((r) => setTimeout(r, 250)); }
+  console.log((await listening(PORT)) ? `Service restarted · http://localhost:${PORT}` : `Service restarted; not answering yet — see ${LOG_FILE}`);
+  return 0;
 }
 
 async function serviceStatus(): Promise<number> {
@@ -223,6 +291,14 @@ function alive(pid: number): boolean {
 
 async function up(bin: string): Promise<number> {
   if (await listening(PORT)) { console.log(`Already up at http://localhost:${PORT}`); return 0; }
+  // One owner per port. With the service installed, a second server started
+  // here would hold the port and leave launchd/systemd retrying its own copy
+  // every few seconds against the preflight's "already in use".
+  const svc = await serviceState();
+  if (svc.installed) {
+    console.log('The service runs Foreman on this machine. Use `foreman service start` (or `restart`); `foreman service uninstall` if you would rather run it by hand.');
+    return 1;
+  }
   await mkdir(path.dirname(LOG_FILE), { recursive: true });
   const out = openSync(LOG_FILE, 'a');
   const child = spawn(process.execPath, [bin, 'start'], {
@@ -263,7 +339,8 @@ async function status(): Promise<number> {
   const pid = await readPid();
   const isUp = await listening(PORT);
   if (isUp) {
-    const how = pid && alive(pid) ? `background, pid ${pid}` : 'a terminal or the service';
+    const svc = await serviceState();
+    const how = pid && alive(pid) ? `background, pid ${pid}` : svc.running ? `the service${svc.pid ? `, pid ${svc.pid}` : ''}` : 'a terminal';
     console.log(`Up at http://localhost:${PORT} (${how})`);
     return 0;
   }
@@ -272,11 +349,80 @@ async function status(): Promise<number> {
   return 1;
 }
 
+/**
+ * Stop whatever is serving :PORT, by the means it was started with. A
+ * background server (pid file) is signalled; a service is stopped through
+ * its manager, since killing it would only make KeepAlive restart it; a
+ * terminal session is yours to Ctrl+C, and it says so.
+ */
+async function stop(): Promise<number> {
+  const pid = await readPid();
+  if (pid && alive(pid)) return down();
+  const svc = await serviceState();
+  if (svc.running) return serviceStop();
+  if (await listening(PORT)) {
+    console.log(`Something answers on :${PORT} that neither \`foreman up\` nor the service started — a terminal session, most likely. Stop it there (Ctrl+C).`);
+    return 1;
+  }
+  await rm(PID_FILE, { force: true });
+  console.log('Not up.');
+  return 0;
+}
+
+async function restart(bin: string): Promise<number> {
+  const pid = await readPid();
+  if (pid && alive(pid)) { const c = await down(); if (c !== 0) return c; return up(bin); }
+  const svc = await serviceState();
+  if (svc.running) return serviceRestart();
+  if (await listening(PORT)) {
+    console.log(`The server on :${PORT} was started in a terminal; restart it there. (\`foreman up\` and \`foreman service install\` are the restartable ways to run it.)`);
+    return 1;
+  }
+  return up(bin);
+}
+
+async function logs(): Promise<number> {
+  const svc = await serviceState();
+  if (process.platform === 'linux' && svc.installed) return serviceLogs();
+  const child = spawn('tail', ['-n', '100', '-f', LOG_FILE], { stdio: 'inherit' });
+  return new Promise((r) => child.on('exit', (c) => r(c ?? 0)));
+}
+
+/**
+ * Take Foreman off this machine, in the right order: the service, then a
+ * background server, then — only with --purge, which destroys every run's
+ * history — the data directory. The package itself is npm's to remove; the
+ * last line says how, because a bin cannot uninstall the package it lives in.
+ */
+async function uninstall(flags: string[]): Promise<number> {
+  const purge = flags.includes('--purge');
+  const svc = await serviceState();
+  if (svc.installed) await serviceUninstall();
+  const pid = await readPid();
+  if (pid && alive(pid)) await down();
+  if (purge) {
+    if (!flags.includes('--yes')) {
+      console.error(`--purge deletes ${HOME_DIR}: every run, its transcripts and settings, the Telegram link. Add --yes to confirm.`);
+      return 2;
+    }
+    await rm(HOME_DIR, { recursive: true, force: true });
+    console.log(`Removed ${HOME_DIR}.`);
+  } else {
+    console.log(`Kept ${HOME_DIR} (runs, settings). \`foreman uninstall --purge --yes\` removes it too.`);
+  }
+  console.log('Now remove the package:\n  npm uninstall -g @amenophis1er/foreman');
+  return 0;
+}
+
 export async function runCli(command: string, rest: string[], ctx: { version: string; bin: URL }): Promise<number> {
   const bin = fileURLToPath(ctx.bin);
   switch (command) {
     case 'up': return up(bin);
     case 'down': return down();
+    case 'stop': return stop();
+    case 'restart': return restart(bin);
+    case 'logs': return logs();
+    case 'uninstall': return uninstall(rest);
     case 'status': return status();
     case 'doctor': return doctor();
     case 'open': return open();
@@ -284,9 +430,12 @@ export async function runCli(command: string, rest: string[], ctx: { version: st
       const sub = rest[0];
       if (sub === 'install') return serviceInstall(bin);
       if (sub === 'uninstall') return serviceUninstall();
+      if (sub === 'start') return serviceStart();
+      if (sub === 'stop') return serviceStop();
+      if (sub === 'restart') return serviceRestart();
       if (sub === 'status') return serviceStatus();
       if (sub === 'logs') return serviceLogs();
-      console.error('foreman service <install|uninstall|status|logs>');
+      console.error('foreman service <install|uninstall|start|stop|restart|status|logs>');
       return 1;
     }
     default: return 1;

@@ -19,14 +19,19 @@ const USAGE = `foreman ${pkg.version}
 
   foreman                    Start in this terminal (same as "start"); Ctrl+C stops it
   foreman up                 Start in the background; logs to ~/.foreman/logs/server.log
-  foreman down               Stop a background server started with "up"
-  foreman status             Is a server up? Which port, which pid?
-  foreman doctor             Check credentials, providers, browser, port, Tailscale — and exit
+  foreman stop               Stop it, however it was started (background server, or the service)
+  foreman restart            Stop and start it again the same way
+  foreman status             Is a server up? Which port, how was it started?
+  foreman logs               Tail the log
   foreman open               Open the dashboard in your browser
+  foreman doctor             Check credentials, providers, browser, port, Tailscale — and exit
+
   foreman service install    Keep Foreman running: start at login, restart if it dies
+  foreman service start|stop|restart|status|logs
   foreman service uninstall  Remove that
-  foreman service status     Is the service registered and running?
-  foreman service logs       Tail the service's log
+
+  foreman uninstall          Remove the service and the background server; keeps ~/.foreman
+  foreman uninstall --purge --yes   …and delete ~/.foreman (every run's history) too
   foreman --version | --help
 
 Environment:
@@ -48,7 +53,7 @@ if (command === '--help' || command === '-h' || command === 'help') {
 } else if (command === 'start') {
   register();
   await import(new URL('../src/server.ts', import.meta.url).href);
-} else if (['doctor', 'open', 'service', 'up', 'down', 'status'].includes(command)) {
+} else if (['doctor', 'open', 'service', 'up', 'down', 'stop', 'restart', 'status', 'logs', 'uninstall'].includes(command)) {
   register();
   const { runCli } = await import(new URL('../src/cli.ts', import.meta.url).href);
   process.exitCode = await runCli(command, rest, { version: pkg.version, bin: new URL(import.meta.url) });
