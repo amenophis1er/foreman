@@ -9,4 +9,4 @@ Answers "who was doing what, when" at a glance — the parity gap the transcript
 - Lane colors are identity colors; tick colors mean event kind. Hover a tick for `HH:MM:SS · title`.
 - Selecting a lane is the same filter as clicking an `AgentRow`; keep the two in sync.
 
-The lanes carry a shared ruler: faint gridlines at round wall-clock times (aimed at five or six across the run), labelled on the scale below, with the run's total duration in bold at the right. An hour-long run and a two-minute one must not look the same.
+The lanes carry a shared ruler: faint gridlines at round wall-clock times (aimed at five or six across the run), labelled on the scale below between the start and end times. The run's total duration is the header meter's, not the ruler's. An hour-long run and a two-minute one must not look the same.

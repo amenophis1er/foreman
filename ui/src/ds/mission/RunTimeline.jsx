@@ -1,6 +1,5 @@
 import React from 'react';
 import { AgentDot, agentColor } from '../status/AgentDot';
-import { formatDuration } from '../core/duration';
 
 function fmt(ms) { return new Date(ms).toLocaleTimeString(undefined, { hour12: false }); }
 
@@ -91,9 +90,7 @@ export function RunTimeline({ agents = [], entries = [], live, selected, onSelec
         );
       })}
       <span />
-      {/* The scale, read like a ruler: the ends anchored, round times between
-          them, and — the question the eye actually asks of a long run — how
-          long the whole thing took. */}
+      {/* The scale, read like a ruler: the ends anchored, round times between. */}
       <div style={{ position: 'relative', height: 16, fontVariantNumeric: 'tabular-nums' }}>
         <span style={{ position: 'absolute', left: 0, top: 0 }}>{fmt(t0)}</span>
         {marks.map((t) => {
@@ -106,9 +103,8 @@ export function RunTimeline({ agents = [], entries = [], live, selected, onSelec
             </span>
           );
         })}
-        <span style={{ position: 'absolute', right: 0, top: 0 }}>
-          {live ? 'now' : fmt(t1)} · <b style={{ color: 'var(--ink-1)', fontWeight: 'var(--fw-semibold)' }}>{formatDuration(span)}</b>
-        </span>
+        {/* The end time only. The run's total lives in the header meter, once. */}
+        <span style={{ position: 'absolute', right: 0, top: 0 }}>{live ? 'now' : fmt(t1)}</span>
       </div>
     </div>
   );
