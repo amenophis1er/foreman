@@ -10,7 +10,7 @@ import { Icon } from '../core/Icon';
  */
 const fileKey = (f) => `${f.name}:${f.size}`;
 
-export function ChatBar({ value, onChange, onSend, busy, disabled, disabledReason, placeholder, who, onChangeModel, autoFocus, style }) {
+export function ChatBar({ value, onChange, onSend, onStop, busy, disabled, disabledReason, placeholder, who, onChangeModel, autoFocus, style }) {
   const [localText, setLocalText] = useState('');
   const [focus, setFocus] = useState(false);
   const [files, setFiles] = useState([]);
@@ -101,7 +101,9 @@ export function ChatBar({ value, onChange, onSend, busy, disabled, disabledReaso
         <Button size="sm" variant="ghost" icon="attach" disabled={disabled}
           title="Attach files — or drop them here, or paste an image"
           onClick={() => picker.current?.click()} style={{ marginLeft: 'auto' }}>Attach</Button>
-        <Button size="sm" icon="send" onClick={send} disabled={!canSend} title="⌘↵">Send</Button>
+        {busy && onStop
+          ? <Button size="sm" variant="danger" icon="close" onClick={onStop} title="Stop the planner and discard the rest of this reply">Stop</Button>
+          : <Button size="sm" icon="send" onClick={send} disabled={!canSend} title="⌘↵">Send</Button>}
       </div>
     </div>
   );

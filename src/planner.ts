@@ -81,7 +81,7 @@ export function answerChatQuestion(projectId: string, id: string, answers: AskAn
 }
 
 /** Called when a turn ends for any reason, so a dead turn never holds a question open. */
-function dropPendingAsk(projectId: string): void {
+export function dropPendingAsk(projectId: string): void {
   const p = pendingAsks.get(projectId);
   if (!p) return;
   p.cancel();
@@ -223,6 +223,8 @@ export interface PlanningTurn {
   agentEnv: AgentEnv;
   /** Broadcasts and persists, exactly like a run's emitter. */
   emit: (event: string, data: unknown) => void;
+  /** Aborting it ends the turn: the model call stops, a parked question is dropped, the reply is discarded. */
+  abort?: AbortController;
 }
 
 export interface PlanningResult {
@@ -234,6 +236,8 @@ export interface PlanningResult {
   proposal?: MissionProposal;
   /** Present when the turn failed; the conversation is still usable. */
   error?: string;
+  /** The human stopped it. Not an error: nothing to fix, nothing to retry. */
+  stopped?: boolean;
 }
 
 /**
@@ -407,6 +411,7 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
         },
         mcpServers: { foreman: createSdkMcpServer({ name: 'foreman', tools: [proposeMission, askUser] }) },
         canUseTool,
+        abortController: turn.abort,
         ...turn.agentEnv,
       },
     });
@@ -423,8 +428,10 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
       }
       turn.emit('message', { agent: 'foreman', msg });
     }
+    if (turn.abort?.signal.aborted) return { sessionId, costUsd, proposal, stopped: true };
     return { sessionId, costUsd, proposal, error: failed ? 'the turn ended with an error' : undefined };
   } catch (err) {
+    if (turn.abort?.signal.aborted) return { sessionId, costUsd, proposal, stopped: true };
     return { sessionId, costUsd, proposal, error: String(err) };
   } finally {
     // A turn that ended with a question still open — crash, interrupt, SDK

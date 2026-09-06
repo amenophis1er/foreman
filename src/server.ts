@@ -35,6 +35,7 @@
  *   GET    /chat?projectId=      A project's planning conversation (log + meta)
  *   POST   /chat                 Send a message to the planner {projectId, text}
  *   POST   /attachments          Save files into <folder>/.foreman/attachments {projectId, files:[{name,data}]}
+ *   POST   /chat/stop            Stop the planner's reply in flight {projectId}
  *   DELETE /chat?projectId=      Forget the conversation and its session
  *   PUT    /providers/{id}/key   Store a provider's key {key}
  *   DELETE /providers/{id}/key   Forget it
@@ -49,6 +50,7 @@ import { MissionRun } from './orchestrator.js';
 import {
   DEFAULT_PLANNER_MODEL, answerChatQuestion, pendingChatQuestion, runPlanningTurn,
   forkSeed,
+  dropPendingAsk,
 } from './planner.js';
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { saveAttachments } from './attachments.js';
@@ -516,6 +518,8 @@ function makeChatEmitter(projectId: string) {
  * session id, quietly forking the conversation.
  */
 const chatTurns = new Set<string>();
+/** The in-flight turn's abort handle per project, so a human can stop it. */
+const chatAborts = new Map<string, AbortController>();
 
 // ---------------------------------------------------------------------------
 // Notifications
@@ -658,6 +662,8 @@ async function driveChatTurn(project: Project, text: string, shown: string = tex
     // per turn because it is per turn: a provider that came up or went away
     // since the last message changes the answer.
     const { models } = await availableModels(project).catch(() => ({ models: [] }));
+    const abort = new AbortController();
+    chatAborts.set(project.id, abort);
     const result = await runPlanningTurn({
       projectId: project.id,
       models: models.map((m) => ({
@@ -670,6 +676,7 @@ async function driveChatTurn(project: Project, text: string, shown: string = tex
       model: settings.plannerModel,
       agentEnv: await agentEnvFor(resolved, `chat:${project.id}`),
       emit,
+      abort,
     });
     const next: ChatMeta = {
       ...meta,
@@ -683,7 +690,8 @@ async function driveChatTurn(project: Project, text: string, shown: string = tex
     };
     await store.writeChatMeta(next);
     emit('chat_cost', { costUsd: next.costUsd, turnUsd: result.costUsd });
-    if (result.error) emit('chat_error', { error: result.error });
+    if (result.stopped) emit('chat_error', { error: 'Stopped — the rest of this reply was discarded.' });
+    else if (result.error) emit('chat_error', { error: result.error });
   } catch (err) {
     // runPlanningTurn does not throw; anything here is a Foreman bug or a
     // storage failure, and must not take the server down with it.
@@ -691,6 +699,7 @@ async function driveChatTurn(project: Project, text: string, shown: string = tex
     emit('chat_error', { error: String(err) });
   } finally {
     chatTurns.delete(project.id);
+    chatAborts.delete(project.id);
     emit('chat_turn', { state: 'idle' });
   }
 }
@@ -1457,6 +1466,18 @@ const server = http.createServer(async (req, res) => {
       } else {
         json(res, 405, { error: 'method not allowed' });
       }
+
+    } else if (req.method === 'POST' && url.pathname === '/chat/stop') {
+      // Stop the reply in flight. The model call is aborted, a question the
+      // planner was parked on is dropped, and the turn closes on the record
+      // with a line saying it was stopped. The conversation stays usable.
+      const { projectId: id } = await readBody(req);
+      if (typeof id !== 'string') return json(res, 400, { error: 'projectId is required' });
+      const abort = chatAborts.get(id);
+      if (!abort) return json(res, 200, { ok: true, stopped: false });
+      dropPendingAsk(id);
+      abort.abort();
+      json(res, 200, { ok: true, stopped: true });
 
     } else if (req.method === 'POST' && url.pathname === '/attachments') {
       // Files for a message — to the planner or in a mission brief. Saved

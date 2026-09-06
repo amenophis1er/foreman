@@ -888,6 +888,7 @@ export function useChat(projectId: string | null): ChatView & {
   /** Answer the planner's pending question with the picker's choices. */
   answer: (id: string, answers: Record<string, string>) => Promise<string | null>;
   clear: () => Promise<void>;
+  stop: () => Promise<void>;
   dismissProposal: () => void;
 } {
   const [state, dispatch] = useReducer(chatReducer, emptyChat);
@@ -947,6 +948,13 @@ export function useChat(projectId: string | null): ChatView & {
     return r.ok ? null : ((await r.json().catch(() => ({}))).error ?? 'could not reach the planner');
   }, [projectId]);
 
+  // Stops the reply in flight. The server aborts the model call and closes
+  // the turn on the record; the `chat_turn idle` frame is what un-busies the bar.
+  const stop = useCallback(async () => {
+    if (!projectId) return;
+    await post('/chat/stop', { projectId }).catch(() => {});
+  }, [projectId]);
+
   const clear = useCallback(async () => {
     if (!projectId) return;
     await fetch(`/chat?projectId=${encodeURIComponent(projectId)}`, { method: 'DELETE' }).catch(() => {});
@@ -966,7 +974,7 @@ export function useChat(projectId: string | null): ChatView & {
   // so. The server still holds it, and the next proposal replaces it.
   const dismissProposal = useCallback(() => dispatch({ t: 'dismiss' }), []);
 
-  return { ...state, send, answer, clear, dismissProposal };
+  return { ...state, send, answer, clear, stop, dismissProposal };
 }
 
 /** `GET /notify` — status only; the token is never part of it. Mirrors NotifyPanel.d.ts. */

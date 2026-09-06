@@ -264,6 +264,11 @@ function PlanPane({
   onSettings: () => void;
 }) {
   const [sendErr, setSendErr] = useState('');
+  // The empty state's input is controlled so a starter can fill it: a starter
+  // is a draft to read and edit, not a message sent behind the human's back.
+  const [draft, setDraft] = useState('');
+  const [draftKey, setDraftKey] = useState(0);
+  const useStarter = (q: string) => { setDraft(q); setDraftKey((k) => k + 1); };
   // Files ride along as paths in the project folder; the planner reads them.
   const send = async (text: string, files: File[] = []) => {
     setSendErr('');
@@ -291,7 +296,7 @@ function PlanPane({
               What should this project do next?
             </span>
             <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-2)' }}>
-              Describe it, paste a spec or a screenshot, or start from one of these.
+              Describe it, paste a spec or a screenshot, or pick a starter and edit it before sending.
             </span>
           </div>
           {/* Starters: each is a real first message, sent on click. They
@@ -305,7 +310,7 @@ function PlanPane({
               { t: 'Scope a feature', q: 'I have a feature in mind. Ask me what you need to know to scope it, then draft the mission.' },
               { t: 'Plan a refactor', q: 'Where is this codebase hardest to change? Propose one contained refactor with clear DONE WHEN criteria.' },
             ].map((s) => (
-              <button key={s.t} type="button" onClick={() => void send(s.q)} disabled={chat.thinking} style={{
+              <button key={s.t} type="button" onClick={() => useStarter(s.q)} disabled={chat.thinking} style={{
                 textAlign: 'left', padding: '8px 10px', background: 'var(--bg-card)', border: '1px solid var(--line)',
                 borderRadius: 'var(--r-sm)', cursor: 'pointer', font: 'inherit', color: 'inherit',
                 display: 'flex', flexDirection: 'column', gap: 2,
@@ -315,7 +320,8 @@ function PlanPane({
               </button>
             ))}
           </div>
-          <ChatBar busy={chat.thinking} who={chat.who} onSend={(t, f) => void send(t, f)} onChangeModel={onSettings} autoFocus />
+          <ChatBar key={draftKey} value={draft} onChange={setDraft} busy={chat.thinking} who={chat.who}
+            onSend={(t, f) => void send(t, f)} onStop={() => void chat.stop()} onChangeModel={onSettings} autoFocus />
           {sendErr && <Banner tone="error" inline>{sendErr}</Banner>}
           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textAlign: 'center' }}>
             Planning reads the project and never changes it — a mission does that.
@@ -399,7 +405,7 @@ function PlanPane({
             onAnswer={(answers) => void chat.answer(chat.question!.id, answers)}
             onFreeText={(t) => void send(t)} />
         ) : (
-          <ChatBar busy={chat.thinking} who={chat.who} onSend={(t, f) => void send(t, f)} onChangeModel={onSettings} />
+          <ChatBar busy={chat.thinking} who={chat.who} onSend={(t, f) => void send(t, f)} onStop={() => void chat.stop()} onChangeModel={onSettings} />
         )}
         {sendErr && <Banner tone="error" inline style={{ marginTop: 4 }}>{sendErr}</Banner>}
         {/* The conversation's own line, under the input where its actions are:
@@ -414,6 +420,10 @@ function PlanPane({
               </span>
             )}
             <span style={{ flex: 1 }} />
+            {chat.thinking && (
+              <Button variant="ghost" size="sm" icon="close" title="Stop the planner and discard the rest of this reply"
+                onClick={() => void chat.stop()}>Stop</Button>
+            )}
             {chat.entries.length > 0 && (
               <Button variant="ghost" size="sm" icon="close" disabled={chat.thinking}
                 title={chat.thinking ? 'The planner is replying — clear once it has answered.' : 'Forget this conversation and start a new one'}
