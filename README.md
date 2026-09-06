@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/brand/logo.svg" alt="" width="72" height="72">
+</p>
+
 # Foreman
 
 Foreman runs software missions without you in the loop, and shows you
