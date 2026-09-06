@@ -539,7 +539,7 @@ type RailTab = import('../state').RailTab;
 
 export function ProjectView({
   p, models, modelsLoading, modelsNote, modelsInheritNote, routeRunId, onSelectRun, routeTab, onSelectTab, onBack,
-  refreshFleet, auth, theme, onToggleTheme, onSettings, settings, version, search,
+  refreshFleet, auth, theme, onToggleTheme, onSettings, settings, search,
 }: {
   /** The header finder, rendered by the app. */
   search?: React.ReactNode;
@@ -551,7 +551,6 @@ export function ProjectView({
   routeTab: RailTab; onSelectTab: (tab: RailTab) => void;
   onBack: () => void; refreshFleet: () => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
-  version?: string;
   /** Saved settings, for the rail's glance: global and this project's overlay. */
   settings: { global: Settings; project?: Settings };
 }) {
@@ -852,15 +851,8 @@ export function ProjectView({
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <AppHeader mode="project" title={p.name} folder={p.folder} onBack={onBack}
-        theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings} version={version} search={search}>
+        theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings} search={search}>
         {headerErr && <Banner tone="error" inline>{headerErr}</Banner>}
-        {/* Only when it warns, as on the fleet: a healthy subscription says
-            nothing here. Which provider actually serves a run is said where
-            the run is — the models pill, the rail's Run block, the planning
-            bar's footer — not by a badge naming one payer for the project. */}
-        {(() => { const mode = p.billingMode ?? auth.mode; return (mode === 'api-key' || mode === 'none') && (
-          <BillingBadge mode={mode} compact account={auth.account} source={billingSource(p, auth.source)} />
-        ); })()}
         {selectedRunId && (
           // A run blocked on an approval or question is not "running" in any
           // sense the human cares about. The badge must say so — the ask

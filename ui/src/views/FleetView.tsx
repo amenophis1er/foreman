@@ -3,7 +3,7 @@ import { FLEET_CHAT_ID, api, basisOf, useChat, type ProjectSummary } from '../st
 import { ChatBar } from '../ds/mission/ChatBar';
 import { TranscriptEntry } from '../ds/mission/TranscriptEntry';
 import { AppHeader } from '../ds/shell/AppHeader';
-import { BillingBadge, type BillingMode } from '../ds/status/BillingBadge';
+import type { BillingMode } from '../ds/status/BillingBadge';
 import { Button } from '../ds/core/Button';
 import { Empty } from '../ds/core/Empty';
 import { SectionTitle } from '../ds/core/SectionTitle';
@@ -189,7 +189,7 @@ const sectionStyle = { display: 'flex', flexDirection: 'column', gap: 'var(--sp-
  * happened to be in, is gone.
  */
 export function FleetView({
-  projects, connected, activity, update, auth, onOpen, onOpenRun, refresh, theme, onToggleTheme, onSettings, version,
+  projects, connected, activity, auth, onOpen, onOpenRun, refresh, theme, onToggleTheme, onSettings,
   query = '', onQuery, search,
 }: {
   /** The header finder's text, owned by the app; the board narrows its cards by it. */
@@ -198,14 +198,11 @@ export function FleetView({
   search?: React.ReactNode;
   projects: ProjectSummary[]; connected: boolean;
   activity: Record<string, string>;
-  /** A newer Foreman on npm, when the server could ask. */
-  update?: { latest: string; current: string } | null;
   auth: { mode: BillingMode; source: string; account?: { email?: string; org?: string } };
   onOpen: (projectId: string) => void; refresh: () => void;
   /** Open a specific run — where an unfinished one's next act (Resume) lives. */
   onOpenRun?: (projectId: string, runId: string) => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
-  version?: string;
 }) {
   const [dragging, setDragging] = useState(false);
   const [drop, setDrop] = useState<{ name: string; matches: string[] | null } | null>(null);
@@ -289,22 +286,11 @@ export function FleetView({
       onDrop={(e) => void onDrop(e)}>
       {dragging && <DropOverlay />}
 
-      <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings} version={version} search={search}>
+      <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings} search={search}>
         {!connected && <Banner tone="disconnected" inline>disconnected</Banner>}
         {/* The page's one status line: what is happening across the fleet —
             including "nothing", said quietly, so the board never reads as
             half-loaded when its first two sections are legitimately empty. */}
-        {/* Knowing is most of updating. The pill says so once and stays out
-            of the way; the act is `foreman update`, by hand, never under a
-            running mission. */}
-        {update && (
-          <span title={`You run ${update.current}. In a terminal: foreman update — it refuses while a mission is live.`} style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6, padding: '2px 10px', borderRadius: 'var(--r-pill)',
-            border: '1px solid var(--line)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', whiteSpace: 'nowrap',
-          }}>
-            {update.latest} available · <span style={{ fontFamily: 'var(--font-mono)' }}>foreman update</span>
-          </span>
-        )}
         {pill && (
           <span style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
@@ -314,16 +300,6 @@ export function FleetView({
             fontSize: 'var(--fs-xs)', color: quiet ? 'var(--ink-3)' : 'var(--ink-1)',
             fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
           }}>{pill}</span>
-        )}
-        {/* Only when it warns. A fleet has many projects, each with its own
-            provider — some with one per role — so one badge naming one payer
-            here says something that is no longer true of the page. The two
-            states that still deserve a global flag are the expensive mistake
-            (an ambient API key outranking a subscription) and "nothing can
-            run at all". A healthy login says nothing; each project's own
-            header says who pays for it. */}
-        {(auth.mode === 'api-key' || auth.mode === 'none') && (
-          <BillingBadge mode={auth.mode} source={auth.source} />
         )}
         {/* The fleet's one creative act. As a trailing grid tile it drifted
             further from the eye with every project linked; in the header it

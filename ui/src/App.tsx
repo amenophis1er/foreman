@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, useFleet, useRoute, useNotify, useRunSearch } from './state';
 import { SearchBox } from './ds/shell/SearchBox';
+import { StatusBar } from './ds/shell/StatusBar';
 import { FleetView } from './views/FleetView';
 import { ProjectView } from './views/ProjectView';
-import { SettingsModal, type Settings } from './ds/settings/SettingsModal';
+import { SettingsModal, type Settings, type SettingsSectionId } from './ds/settings/SettingsModal';
 import type {
   DiscoveredInstance, OllamaInfo, ProviderRef,
 } from './ds/settings/ProviderPicker';
@@ -152,6 +153,8 @@ export default function App() {
   const models = useModels(projectId);
   const [settings, setSettings] = useState<SettingsFile>({ global: {}, projects: {} });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>('models');
+  const openSettings = (section?: SettingsSectionId) => { if (section) setSettingsSection(section); setSettingsOpen(true); };
   const providerChoices = useProviderChoices(settingsOpen);
 
   useEffect(() => {
@@ -248,16 +251,16 @@ export default function App() {
   const shared = {
     theme, onToggleTheme: toggleTheme,
     search,
-    onSettings: () => setSettingsOpen(true),
+    onSettings: () => openSettings(),
     // Which account pays. Cross-cutting, so it rides with the other shell props.
     auth,
-    // The server's version, for the header: what am I running.
-    version,
   };
 
   const notify = useNotify();
+  const phone = notify.status ? (notify.status.telegram.chatId ? (notify.status.telegram.chatLabel ?? 'linked') : null) : undefined;
   return (
-    <div style={{ height: '100%' }}>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: 1, minHeight: 0 }}>
       {project ? (
         <ProjectView p={project} models={models.models} modelsLoading={models.loading}
           modelsNote={models.note} modelsInheritNote={models.inheritNote} routeRunId={runId}
@@ -266,13 +269,17 @@ export default function App() {
           onBack={() => go(null)} refreshFleet={refresh}
           settings={{ global: settings.global, project: settings.projects[project.id] }} {...shared} />
       ) : (
-        <FleetView projects={projects} connected={connected} activity={activity} update={update}
+        <FleetView projects={projects} connected={connected} activity={activity}
           onOpen={(id) => go(id)} onOpenRun={(pid, rid) => goRun(pid, rid)} refresh={refresh}
           query={query} onQuery={setQuery} {...shared} />
       )}
+      </div>
+      <StatusBar connected={connected} localUrl={window.location.origin} publicUrl={notify.status?.publicUrl}
+        phone={phone} auth={auth} version={version} update={update} onOpenSettings={openSettings} />
       {settingsOpen && (
         <SettingsModal
           scope={project ? 'project' : 'global'}
+          section={settingsSection} onSection={setSettingsSection}
           global={settings.global}
           project={project ? settings.projects[project.id] : undefined}
           projectName={project?.name}
