@@ -1131,14 +1131,25 @@ async function startRun(
   await driveRun(projectId, meta);
 }
 
-/** Resumes an interrupted run by restoring the director's session. */
-async function resumeRun(projectId: string, meta: RunMeta): Promise<void> {
+/**
+ * Resumes an interrupted run by restoring the director's session. `pick`
+ * carries models chosen for this resume (the header's "Resume on…"); a role
+ * it names wins over Settings for that role.
+ */
+async function resumeRun(projectId: string, meta: RunMeta, pick: {
+  directorModel?: string; directorProviderId?: string; workerModel?: string; workerProviderId?: string;
+} = {}): Promise<void> {
   const sessionId = meta.directorSessionId;
   // Resume re-reads Settings, so changing models or tool policy after a
   // failure takes effect on the retry. A director session cannot switch
   // model mid-session, so a changed director model restarts the session
   // fresh (the mission doc carries the state forward).
-  const settings = await effectiveSettings(projectId);
+  const base = await effectiveSettings(projectId);
+  const settings = {
+    ...base,
+    ...(pick.directorModel ? { directorModel: modelChoice(pick.directorModel), directorProviderId: pick.directorProviderId } : {}),
+    ...(pick.workerModel ? { workerModel: modelChoice(pick.workerModel), workerProviderId: pick.workerProviderId } : {}),
+  };
   // A model is picked together with the provider that serves it, so a
   // change of either moves the role. Without the provider following the
   // model, "resume on Sonnet" after a Codex usage limit went back through
@@ -1871,7 +1882,14 @@ const server = http.createServer(async (req, res) => {
       if (!reserveProject(meta.projectId)) {
         return json(res, 409, { error: 'this project already has an active mission' });
       }
-      void resumeRun(meta.projectId, meta);
+      // "Resume on…": models picked for this resume, ahead of Settings. A
+      // model without a provider id means the project's own provider.
+      const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+      const overrides = {
+        directorModel: str(resumeBody.directorModel), directorProviderId: str(resumeBody.directorProviderId),
+        workerModel: str(resumeBody.workerModel), workerProviderId: str(resumeBody.workerProviderId),
+      };
+      void resumeRun(meta.projectId, meta, overrides);
       json(res, 200, { ok: true });
 
     } else if (req.method === 'GET' && runEventsMatch) {

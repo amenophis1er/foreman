@@ -1138,8 +1138,9 @@ export const api = {
       workerProviderId: opts.workerProviderId || undefined,
       browserTools: opts.browserTools || undefined,
     }),
-  resume: (runId: string) =>
-    post(`/runs/${encodeURIComponent(runId)}/resume`, {}),
+  /** Resume; `on` names models for this resume ("Resume on…"), ahead of Settings. */
+  resume: (runId: string, on: { directorModel?: string; directorProviderId?: string; workerModel?: string; workerProviderId?: string } = {}) =>
+    post(`/runs/${encodeURIComponent(runId)}/resume`, on),
   permission: (id: string, behavior: 'allow' | 'allow_always' | 'deny', message?: string) =>
     post('/permission', { id, behavior, message }),
   answer: (id: string, text: string) => post('/answer', { id, text }),

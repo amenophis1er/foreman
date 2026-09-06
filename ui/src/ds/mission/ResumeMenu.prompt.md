@@ -1,0 +1,3 @@
+"Resume on…" sits next to Resume in the header of a failed or interrupted run. It opens a small anchored panel: one line of explanation (a new director starts a fresh session and reads the mission doc; workers change for the next spawns), a Director picker and a Workers picker pre-filled with the run's current models, Cancel and Resume. Resume is enabled only once a model differs from the current one — otherwise the plain Resume button is the right control. Escape and a click outside close it.
+
+It exists for the moment a provider says no — a usage limit, an outage — while the work is fine: pick another provider's model and keep going, without a trip through Settings. Only the changed roles are sent; a model picked without a provider id means the project's own provider.

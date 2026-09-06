@@ -31,6 +31,7 @@ import { SettingsGlance } from '../ds/settings/SettingsGlance';
 import { DEFAULT_SETTINGS, type Settings } from '../ds/settings/SettingsModal';
 import { CrewPanel } from '../ds/mission/CrewPanel';
 import type { ModelInfo } from '../ds/forms/ModelSelect';
+import { ResumeMenu } from '../ds/mission/ResumeMenu';
 
 /**
  * Where this project's spend actually lands. A pinned provider names itself;
@@ -665,11 +666,11 @@ export function ProjectView({
   const activity = useMemo(() => (isRunning ? nowActivity(run) : null), [isRunning, run]);
   const doneWhen = useMemo(() => parseDoneWhen(run.missionDoc), [run.missionDoc]);
 
-  const doResume = async () => {
+  const doResume = async (on: Parameters<typeof api.resume>[1] = {}) => {
     if (!selectedRunId) return;
     setHeaderErr('');
     setResuming(true);
-    const r = await api.resume(selectedRunId).finally(() => setResuming(false));
+    const r = await api.resume(selectedRunId, on).finally(() => setResuming(false));
     if (!r.ok) setHeaderErr((await r.json()).error);
     else refreshFleet();
   };
@@ -874,11 +875,16 @@ export function ProjectView({
           <Button variant="danger" onClick={() => void api.interrupt(selectedRunId!)}>Interrupt</Button>
         )}
         {canResume && (
-          <Button variant="good" icon="resume" disabled={resuming}
-            title="Restore the director's session and continue this mission"
-            onClick={() => void doResume()}>
-            {resuming ? 'Resuming…' : 'Resume'}
-          </Button>
+          <>
+            <ResumeMenu director={selectedRun?.directorModel} worker={selectedRun?.workerModel}
+              models={models} loading={modelsLoading} note={modelsNote} busy={resuming}
+              onResume={(on) => void doResume(on)} />
+            <Button variant="good" icon="resume" disabled={resuming}
+              title="Restore the director's session and continue this mission"
+              onClick={() => void doResume()}>
+              {resuming ? 'Resuming…' : 'Resume'}
+            </Button>
+          </>
         )}
         {/* A finished run is a starting point, not a dead end: the planner
             opens with its brief, mission doc and final report already read,
