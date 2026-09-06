@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatDuration } from '../core/duration';
 import { Icon } from '../core/Icon';
 
 /** 12,345 -> "12.3k". Tokens run into the millions where raw digits stop being
@@ -38,7 +39,11 @@ const STRIPES = 'repeating-linear-gradient(-45deg, var(--line-strong) 0 3px, tra
  * nothing is being spent; a striped one says something is, and that no one
  * here can say how much.
  */
-export function BudgetMeter({ spent, budget, costBasis = 'priced', usage = null, turns, detail = false, style }) {
+export function BudgetMeter({ spent, budget, costBasis = 'priced', usage = null, turns, elapsedMs, detail = false, style }) {
+  // The wall clock is the one cost every provider charges, and the only one a
+  // local model charges at all: an hour of laptop is an hour whatever the
+  // token table says. It goes beside the tokens, not instead of them.
+  const took = typeof elapsedMs === 'number' && elapsedMs > 0 ? ` · ${formatDuration(elapsedMs)}` : '';
   spent = Number(spent) || 0;
   budget = Number(budget) || 0;
 
@@ -71,7 +76,7 @@ export function BudgetMeter({ spent, budget, costBasis = 'priced', usage = null,
           {detail
             ? `${formatTokens(usage?.inputTokens ?? 0)} in · ${formatTokens(usage?.outputTokens ?? 0)} out`
             : `${formatTokens(tokens)} tok`}
-          {typeof turns === 'number' ? ` · ${turns} turn${turns === 1 ? '' : 's'}` : ''}
+          {typeof turns === 'number' ? ` · ${turns} turn${turns === 1 ? '' : 's'}` : ''}{took}
         </span>
       </div>
     );
@@ -91,7 +96,7 @@ export function BudgetMeter({ spent, budget, costBasis = 'priced', usage = null,
       </div>
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-sm)', color: 'var(--ink-1)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
         {level !== 'ok' && <Icon name={level} size={12} strokeWidth={2.25} color={barColor} />}
-        ${spent.toFixed(2)} / ${budget.toFixed(0)}
+        ${spent.toFixed(2)} / ${budget.toFixed(0)}{took}
       </span>
     </div>
   );

@@ -653,11 +653,13 @@ export function ProjectView({
   const pendingCount = run.approvals.length + run.questions.length;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (pendingCount === 0) return;
+    // Also while the run is live: the header's elapsed time is a clock, and a
+    // clock that only moves when someone is waiting on an ask is a stopped one.
+    if (pendingCount === 0 && !isRunning) return;
     setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 30_000);
+    const t = setInterval(() => setNow(Date.now()), 10_000);
     return () => clearInterval(t);
-  }, [pendingCount]);
+  }, [pendingCount, isRunning]);
 
   // A new run resets the reading position. The rail tab is in the URL, and
   // a run change writes a URL without the suffix, so it resets by itself.
@@ -868,7 +870,10 @@ export function ProjectView({
         )}
         {selectedRunId && (
           <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} detail
-            costBasis={run.costBasis} usage={run.usage} turns={selectedRun?.turns} />
+            costBasis={run.costBasis} usage={run.usage} turns={selectedRun?.turns}
+            elapsedMs={selectedRun?.createdAt
+              ? (isRunning ? now : (selectedRun.endedAt ?? now)) - selectedRun.createdAt
+              : undefined} />
         )}
         {modelsPill}
         {isRunning && (

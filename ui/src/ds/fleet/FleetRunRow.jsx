@@ -59,6 +59,8 @@ export function FleetRunRow({
 
       {/* The same meter as the run header: dollars only when priced, tokens
           and turns otherwise, striped when the spend is real but unpriced. */}
+      {/* No elapsed time here: the row already prints the run's age on its
+          right, and the meter would say it twice. */}
       <BudgetMeter spent={costUsd} budget={budgetUsd} costBasis={costBasis} usage={usage} turns={turns} />
 
       <div style={{

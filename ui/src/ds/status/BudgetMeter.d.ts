@@ -37,6 +37,8 @@ export interface BudgetMeterProps {
   usage?: MeterUsage | null;
   /** Turn count to show alongside tokens when not `priced`, and known. */
   turns?: number;
+  /** Wall clock the run has taken; rendered after the tokens and turns. */
+  elapsedMs?: number;
   /**
    * Split the token figure into input and output rather than summing.
    *
