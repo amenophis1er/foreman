@@ -24,7 +24,7 @@
   "author": "Amen AMOUZOU",
   "type": "module",
   "bin": {
-    "foreman": "./bin/foreman.mjs"
+    "foreman": "bin/foreman.mjs"
   },
   "files": [
     "bin",
