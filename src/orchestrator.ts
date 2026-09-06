@@ -92,6 +92,7 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
 import { WORK_DIR, makePolicy, type PendingPermission } from './policy.js';
 import type { AgentEnv } from './provider.js';
 import { generateRunTitle } from './title.js';
+import { describeStop } from './errors.js';
 import { combineBasis, costBasisOf, isPriced, type CostBasis } from './types.js';
 import { priceUsage, type ModelPrice } from './prices.js';
 import { captureBaseline } from './deck.js';
@@ -1192,6 +1193,7 @@ export class MissionRun {
       });
 
       let lastTurnFailed = false;
+      let lastFailure = '';
       for await (const msg of this.directorQ as AsyncIterable<SDKMessage>) {
         const m = msg as Record<string, unknown>;
         if (typeof m.session_id === 'string') this.meta.directorSessionId = m.session_id;
@@ -1212,6 +1214,7 @@ export class MissionRun {
             this.addUsage(m.usage);
           }
           lastTurnFailed = Boolean(m.is_error);
+          if (lastTurnFailed) lastFailure = String(m.result ?? '');
           this.noteUsageLimit(String(m.result ?? ''));
 
           // Enforce the cap against the director's own spend, at the only
@@ -1246,8 +1249,11 @@ export class MissionRun {
       // 'done' would claim a mission finished that the budget ended.
       this.meta.status = this.wasInterrupted || this.usageLimited || this.budgetStopped ? 'interrupted'
         : lastTurnFailed ? 'error' : 'done';
+      // The strip above a stopped run says why, in a sentence, not the JSON.
+      this.meta.error = this.meta.status === 'error' ? describeStop(lastFailure)?.text : undefined;
     } catch (err) {
       this.meta.status = 'error';
+      this.meta.error = describeStop(String(err))?.text;
       this.emit('run_error', { error: String(err) });
     } finally {
       // Stop polling before anything else: the run is over, every result is
