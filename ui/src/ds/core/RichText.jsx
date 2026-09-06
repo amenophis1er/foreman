@@ -8,7 +8,7 @@ function inline(text, slots) {
     if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
       return <code key={i} style={{ fontFamily: 'var(--font-mono)', fontSize: '0.92em', background: 'var(--bg-inset)', border: '1px solid var(--line)', borderRadius: 4, padding: '0 5px' }}>{part.slice(1, -1)}</code>;
     }
-    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) return <strong key={i} style={{ fontWeight: 'var(--fw-semibold)' }}>{part.slice(2, -2)}</strong>;
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) return <strong key={i} style={{ fontWeight: 'var(--fw-semibold)', color: 'var(--ink-0)' }}>{part.slice(2, -2)}</strong>;
     if (slots && part.startsWith('<') && part.endsWith('>')) {
       return <span key={i} style={{ background: 'var(--brand-wash-strong)', border: '1px dashed var(--brand)', borderRadius: 4, padding: '0 5px', color: 'var(--ink-0)' }}>{part.slice(1, -1)}</span>;
     }

@@ -26,6 +26,10 @@
   --ink-0: #e7e8eb;
   --ink-1: #b0b4bb;
   --ink-2: #8b9099;
+  /* Long-form bodies — transcripts, briefs, reports. A step below --ink-0 so
+     a paragraph of light text on a dark card does not glare; headings and
+     emphasis inside it stay on --ink-0 and carry the hierarchy. */
+  --ink-prose: #c4c7cd;
 
   /* Identity — fixed per role, never cycled or reassigned */
   --brand: #e8b04b;
@@ -69,6 +73,7 @@
   --ink-0: #1c1e22;
   --ink-1: #555c67;
   --ink-2: #6b727d;
+  --ink-prose: #2f333a;
   --brand: #c98f1f;
   --brand-ink: #ffffff;
   --agent-worker: #6f57d6;
