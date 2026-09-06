@@ -13,22 +13,24 @@ LOG="${FOREMAN_LOG:-/private/tmp/foreman-server.log}"
 FORCE="${1:-}"
 
 busy() {
-  curl -sf "http://localhost:${PORT}/projects" | python3 -c '
-import json, sys, urllib.request
-d = json.load(sys.stdin)
+  PORT="$PORT" python3 - <<'PY' 2>/dev/null
+import json, os, sys, urllib.request
+port = os.environ["PORT"]
+d = json.load(urllib.request.urlopen(f"http://localhost:{port}/projects", timeout=3))
 running = [p["name"] for p in d["projects"] if p.get("activeRun")]
 needs = sum(len(p.get("needs") or []) for p in d["projects"])
 thinking = []
 for p in d["projects"]:
     try:
-        c = json.load(urllib.request.urlopen(f"http://localhost:'"${PORT}"'/chat?projectId={p[\"id\"]}", timeout=3))
-        if c.get("thinking"): thinking.append(p["name"])
+        c = json.load(urllib.request.urlopen("http://localhost:%s/chat?projectId=%s" % (port, p["id"]), timeout=3))
+        if c.get("thinking"):
+            thinking.append(p["name"])
     except Exception:
         pass
 if running or needs or thinking:
-    print(f"running={running} needs={needs} planners={thinking}")
+    print("running=%s needs=%d planners=%s" % (running, needs, thinking))
     sys.exit(1)
-' 2>/dev/null
+PY
 }
 
 if [ "$FORCE" != "--force" ]; then
