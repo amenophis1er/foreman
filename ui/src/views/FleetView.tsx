@@ -457,11 +457,11 @@ export function FleetView({
                   <OutcomeTile key={p.id} name={p.name} folder={p.folder}
                     lastRun={p.lastRun && p.lastRun.status !== 'idle' && p.lastRun.status !== 'running'
                       ? p.lastRun : null}
-                    // A run that ended badly is unfinished business: open it,
-                    // where Resume is. A done run's next act is planning.
+                    // The tile names a run, so the click opens that run — its
+                    // report, files and "Plan the next step" — not a blank planner.
                     onOpen={() => {
                       const r = p.lastRun;
-                      if (r?.id && onOpenRun && (r.status === 'error' || r.status === 'interrupted')) onOpenRun(p.id, r.id);
+                      if (r?.id && onOpenRun) onOpenRun(p.id, r.id);
                       else onOpen(p.id);
                     }}
                     onUnlink={() => setUnlinking(p)} />

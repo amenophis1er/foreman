@@ -240,7 +240,14 @@ function Transcript({ run, filter, jump, order, header }: {
  */
 function PlanPane({
   chat, folder, starting, error, models, modelsLoading, modelsNote, modelsInheritNote, onStart, onCompose, hasRuns, projectId, onSettings,
+  recent = [], onOpenRun, onForkRun, forking = false,
 }: {
+  /** The project's latest runs, newest first, for the empty state's "pick up where you left off". */
+  recent?: RunSummary[];
+  onOpenRun?: (runId: string) => void;
+  /** "Plan the next step" from a finished run: a seeded conversation replaces this empty state. */
+  onForkRun?: (runId: string) => void;
+  forking?: boolean;
   chat: ReturnType<typeof useChat>;
   folder: string;
   starting: boolean;
@@ -296,30 +303,67 @@ function PlanPane({
         <div style={{ margin: 'auto', width: '100%', maxWidth: 'var(--composer-max)', padding: 'var(--sp-4) var(--sp-3)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
           <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: 'var(--sp-1)' }}>
             <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 'var(--fw-semibold)' }}>
-              What should this project do next?
+              {recent.length ? 'Pick up where you left off, or start something new' : 'What should this project do next?'}
             </span>
             <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-2)' }}>
-              Describe it, paste a spec or a screenshot, or pick a starter and edit it before sending.
+              {recent.length
+                ? 'Open a run to see what it built, plan the next step from it, or describe something new below.'
+                : 'Describe it, paste a spec or a screenshot, or pick a starter and edit it before sending.'}
             </span>
           </div>
-          {/* Starters: each is a real first message, sent on click. They
-              teach what the planner is for better than a paragraph did. */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 'var(--sp-2)' }}>
+          {/* A project with history leads with it: what happened, and the two
+              ways on from each run. The full list stays in the rail's Runs tab. */}
+          {recent.length > 0 && (
+            <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-md)', background: 'var(--bg-card)', overflow: 'hidden' }}>
+              {recent.slice(0, 4).map((r, i) => {
+                const finished = r.status !== 'running';
+                const when = new Date(r.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                return (
+                  <div key={r.id} style={{
+                    display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', alignItems: 'center', gap: 'var(--sp-3)',
+                    padding: 'var(--sp-2) var(--sp-3)', borderTop: i > 0 ? '1px solid var(--line)' : 'none',
+                  }}>
+                    <button type="button" onClick={() => onOpenRun?.(r.id)} title="Open this run"
+                      style={{ minWidth: 0, textAlign: 'left', background: 'none', border: 0, padding: 0, font: 'inherit', color: 'inherit', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.title || r.mission.split('\n')[0]}
+                      </span>
+                      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', display: 'inline-flex', alignItems: 'center', gap: 'var(--sp-2)', fontVariantNumeric: 'tabular-nums' }}>
+                        <StatusBadge status={r.status} />
+                        <span>{when}</span>
+                        {basisOf(r) === 'priced' && <span>${r.costUsd.toFixed(2)}</span>}
+                      </span>
+                    </button>
+                    <span style={{ display: 'inline-flex', gap: 'var(--sp-1)', flex: '0 0 auto' }}>
+                      <Button variant="ghost" size="sm" onClick={() => onOpenRun?.(r.id)}>Open</Button>
+                      {finished && (
+                        <Button size="sm" icon="steer" disabled={forking || chat.thinking}
+                          title="Start a planning conversation seeded with what this run built"
+                          onClick={() => onForkRun?.(r.id)}>Plan the next step</Button>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {/* Starters: each is a draft first message, edited before sending.
+              A project with history gets them as one quiet row; the runs
+              above are the better starting point. */}
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fit, minmax(${recent.length ? 150 : 200}px, 1fr))`, gap: 'var(--sp-2)' }}>
             {[
-              hasRuns
-                ? { t: 'Review the last run', q: 'Look at what the last mission built and verify it still holds. What would you fix or finish next?' }
-                : { t: 'Survey the project', q: 'Read this project and tell me what it is, how it is built, and what state it is in.' },
+              ...(recent.length ? [] : [{ t: 'Survey the project', q: 'Read this project and tell me what it is, how it is built, and what state it is in.' }]),
               { t: 'Find risks worth a mission', q: 'Audit this project for bugs, security holes and missing tests. Rank what you find and propose the one mission most worth running first.' },
               { t: 'Scope a feature', q: 'I have a feature in mind. Ask me what you need to know to scope it, then draft the mission.' },
               { t: 'Plan a refactor', q: 'Where is this codebase hardest to change? Propose one contained refactor with clear DONE WHEN criteria.' },
             ].map((s) => (
-              <button key={s.t} type="button" onClick={() => useStarter(s.q)} disabled={chat.thinking} style={{
-                textAlign: 'left', padding: '8px 10px', background: 'var(--bg-card)', border: '1px solid var(--line)',
+              <button key={s.t} type="button" onClick={() => useStarter(s.q)} disabled={chat.thinking} title={recent.length ? s.q : undefined} style={{
+                textAlign: 'left', padding: recent.length ? '6px 10px' : '8px 10px', background: 'var(--bg-card)', border: '1px solid var(--line)',
                 borderRadius: 'var(--r-sm)', cursor: 'pointer', font: 'inherit', color: 'inherit',
                 display: 'flex', flexDirection: 'column', gap: 2,
               }}>
                 <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 'var(--fw-semibold)', color: 'var(--ink-0)' }}>{s.t}</span>
-                <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', lineHeight: 'var(--lh)' }}>{s.q}</span>
+                {!recent.length && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', lineHeight: 'var(--lh)' }}>{s.q}</span>}
               </button>
             ))}
           </div>
@@ -328,7 +372,6 @@ function PlanPane({
           {sendErr && <Banner tone="error" inline>{sendErr}</Banner>}
           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textAlign: 'center' }}>
             Planning reads the project and never changes it — a mission does that.
-            {hasRuns && <> To build on a finished run, open it and choose <b style={{ color: 'var(--ink-1)' }}>Plan the next step</b>.</>}
           </span>
           <button type="button" onClick={onCompose} style={{
             display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', width: '100%', boxSizing: 'border-box',
@@ -974,6 +1017,7 @@ export function ProjectView({
                 modelsNote={modelsNote} modelsInheritNote={modelsInheritNote}
                 onStart={(v) => void startMission(v)}
                 onCompose={() => setComposeOpen(true)} hasRuns={history.length > 0}
+                recent={history} onOpenRun={(id) => setSelectedRunId(id)} onForkRun={(id) => void forkPlan(id)} forking={forking}
                 projectId={p.id} onSettings={onSettings} />
             </>
           )}
