@@ -13,9 +13,8 @@ the result, and reports back — from a single UI, with no terminal.
 Status (2026-09-06): **built and published** as `@amenophis1er/foreman`. This
 is the founding document, kept as written: the concept, the architecture as
 first drawn, and the non-goals (§11), which still hold. What exists today is
-described by the [README](README.md); how the provider model, the unattended
-policy and the phone came to be is in [docs/](docs/). Where this document and
-the code disagree, the code and the README are current.
+described by the [README](README.md). Where this document and the code
+disagree, the code and the README are current.
 
 ---
 

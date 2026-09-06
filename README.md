@@ -186,10 +186,7 @@ shows exactly what a watcher saw. The director's tools are in-process MCP
 tools; a worker's report lands in the director's context as an ordinary tool
 result.
 
-Design and its history: [DESIGN.md](DESIGN.md) · the provider model:
-[docs/provider-model.md](docs/provider-model.md) · resilience and the
-unattended policy: [docs/crew-resilience.md](docs/crew-resilience.md) · what
-is next: [docs/features.md](docs/features.md).
+Design and its history: [DESIGN.md](DESIGN.md).
 
 ## Contributing
 

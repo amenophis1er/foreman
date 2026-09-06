@@ -3,3 +3,7 @@ node_modules/
 ui/node_modules/
 ui/dist/
 *.tgz
+
+# Internal working material: kept locally, never pushed
+Design_System/
+docs/
