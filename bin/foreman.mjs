@@ -43,6 +43,7 @@ Environment:
   FOREMAN_CLAUDE_CONFIG_DIR   Claude Code install missions run under
   FOREMAN_CLAUDE_EXECUTABLE   Claude Code executable (default: bundled)
   FOREMAN_AUTH_MODE           Assert 'api-key' or 'subscription'; fail on mismatch
+  FOREMAN_NO_TELEGRAM=1       Do not attach the Telegram bot (a second server beside the main one)
 `;
 
 const [command = 'start', ...rest] = process.argv.slice(2);

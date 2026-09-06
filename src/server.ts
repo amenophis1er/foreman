@@ -608,6 +608,11 @@ let telegramBot: TelegramBot | null = null;
 /** (Re)build the Telegram side from the stored token and linked chat. */
 async function reattachTelegram(): Promise<boolean> {
   notifyHub.detach('telegram');
+  // A second server beside the installed one (a dev checkout on another
+  // port) must not start a second poller: Telegram allows one per bot, and
+  // two fight over getUpdates. FOREMAN_NO_TELEGRAM=1 leaves the channel to
+  // whichever server does not set it.
+  if (process.env.FOREMAN_NO_TELEGRAM === '1') return false;
   const s = await notifySettings();
   const token = await getSecret(store.root, 'telegram');
   if (!token) { void telegramBot?.stop(); telegramBot = null; return false; }
