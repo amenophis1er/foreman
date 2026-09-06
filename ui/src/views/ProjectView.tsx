@@ -94,60 +94,6 @@ function nowActivity(run: RunViewState): NowActivity | null {
   return { line, agent: latest.agent, crew };
 }
 
-/**
- * Which run the body shows, and the way to the others. The selected run's
- * own row on top (title, date, cost, status), and the rest of the history
- * behind one disclosure — a run is opened seldom enough that a permanent
- * column of them was paying rent for nothing.
- */
-function RunSwitcher({ history, selectedRunId, live, onSelectRun, right }: {
-  history: RunSummary[]; selectedRunId: string | null; live: boolean;
-  onSelectRun: (id: string) => void; right?: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(false);
-  const current = history.find((r) => r.id === selectedRunId);
-  const others = history.filter((r) => r.id !== selectedRunId);
-  // The row also carries the body tabs: it must stay even before the history
-  // has loaded, or a fresh run has no way to reach its deck or crew.
-  if (history.length === 0 && !right) return null;
-  return (
-    <div style={{ flex: '0 0 auto', borderBottom: '1px solid var(--line)', background: 'var(--bg-panel)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', padding: '4px var(--sp-3) 4px var(--sp-2)', minWidth: 0 }}>
-        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textTransform: 'uppercase', letterSpacing: 'var(--ls-caps)', flex: '0 0 auto' }}>
-          {live ? 'This run' : current ? 'Past run' : 'Planning'}
-        </span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {current ? (
-            <RunRow mission={current.mission} title={current.title} createdAt={current.createdAt}
-              costUsd={current.costUsd} costBasis={basisOf(current)} usage={current.usage}
-              status={current.status} current style={{ marginBottom: 0, padding: '2px 8px' }} />
-          ) : <Empty>No run yet — talk the next mission through below, or open a past run.</Empty>}
-        </div>
-        {right}
-        {others.length > 0 && (
-          <Button variant="ghost" size="sm" icon={open ? 'chevronDown' : 'chevronRight'}
-            title={open ? 'Hide the other runs' : 'Show the other runs'}
-            onClick={() => setOpen(!open)}>
-            {others.length} other{others.length === 1 ? '' : 's'}
-          </Button>
-        )}
-      </div>
-      {open && others.length > 0 && (
-        <div style={{
-          padding: '0 var(--sp-3) var(--sp-2)', display: 'grid', gap: 2,
-          gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', maxHeight: 220, overflowY: 'auto',
-        }}>
-          {others.map((r) => (
-            <RunRow key={r.id} mission={r.mission} title={r.title} createdAt={r.createdAt}
-              costUsd={r.costUsd} costBasis={basisOf(r)} usage={r.usage} status={r.status}
-              onSelect={() => { setOpen(false); onSelectRun(r.id); }} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 /** A one-line toggle with a chevron, for the mission doc and the timeline. Not a Tabs — it hides, it does not switch. */
 function Disclosure({ label, open, onToggle, children }: {
   label: React.ReactNode; open: boolean; onToggle: () => void; children: React.ReactNode;
@@ -382,6 +328,27 @@ function PlanPane({
             onFreeText={(t) => void chat.send(t)} />
         ) : (
           <ChatBar busy={chat.thinking} who={chat.who} onSend={(t) => void chat.send(t)} />
+        )}
+        {/* The conversation's own line, under the input where its actions are:
+            what it has cost, and the way to start over. Clearing waits for a
+            reply in flight — the server refuses mid-turn — and says so. */}
+        {(chat.costUsd > 0 || chat.entries.length > 0) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', padding: '4px 2px 0', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+            {chat.costUsd > 0 && (
+              <span title="What this conversation has cost so far. Planning is not charged to any mission budget."
+                style={{ fontVariantNumeric: 'tabular-nums' }}>
+                conversation ${chat.costUsd.toFixed(3)}
+              </span>
+            )}
+            <span style={{ flex: 1 }} />
+            {chat.entries.length > 0 && (
+              <Button variant="ghost" size="sm" icon="close" disabled={chat.thinking}
+                title={chat.thinking ? 'The planner is replying — clear once it has answered.' : 'Forget this conversation and start a new one'}
+                onClick={() => void chat.clear()}>
+                {chat.thinking ? 'Clear (after this reply)' : 'Clear conversation'}
+              </Button>
+            )}
+          </div>
         )}
       </div>
     </>
@@ -666,6 +633,20 @@ export function ProjectView({
       ))}
     </div>
   );
+  // The rail, shared by the run screen and the planning screen so the two
+  // are one place: same edge, same width, same resizer, same Runs list.
+  const rail = (top: React.ReactNode, content: React.ReactNode) => (
+    <aside style={{
+      position: 'relative', borderLeft: '1px solid var(--line)', background: 'var(--bg-panel)',
+      minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column',
+    }}>
+      <div role="separator" aria-orientation="vertical" aria-label="Resize the rail"
+        title="Drag to resize" onPointerDown={startRailDrag}
+        style={{ position: 'absolute', left: -4, top: 0, bottom: 0, width: 8, cursor: 'col-resize', zIndex: 2 }} />
+      {top && <div style={{ padding: 'var(--sp-2) var(--sp-3) 0', flex: '0 0 auto' }}>{top}</div>}
+      <div style={{ minHeight: 0, overflowY: 'auto', padding: 'var(--sp-3)' }}>{content}</div>
+    </aside>
+  );
   const missionDocPane = (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
       {runHead}
@@ -824,16 +805,18 @@ export function ProjectView({
         </Banner>
       )}
 
-      {/* While planning there is no rail, so the past runs are reached here.
-          In a run, the rail's Mission tab names the run and its Runs tab lists
-          the rest — a strip under the header was the only home they had. */}
-      {idle && (
-        <RunSwitcher history={history} selectedRunId={selectedRunId} live={viewingLive}
-          onSelectRun={setSelectedRunId} />
-      )}
 
       {idle ? (
-        <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: wide ? 'grid' : 'flex', flexDirection: 'column', gridTemplateColumns: wide ? `minmax(0, 1fr) ${railWidth}px` : undefined }}>
+        <div style={{ minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          {/* Narrow: the runs fold into the top of the conversation. */}
+          {!wide && history.length > 0 && (
+            <div style={{ padding: '6px var(--sp-3) 0', flex: '0 0 auto' }}>
+              <Disclosure label={`Runs · ${history.length}`} open={showRunsNarrow} onToggle={() => setShowRunsNarrow(!showRunsNarrow)}>
+                {runsPane}
+              </Disclosure>
+            </div>
+          )}
           {composeOpen ? (
             <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
               <div style={{ padding: 'var(--sp-2) var(--sp-3) 0', flex: '0 0 auto' }}>
@@ -873,25 +856,6 @@ export function ProjectView({
             </div>
           ) : (
             <>
-              {(chat.costUsd > 0 || chat.entries.length > 0) && (
-                <div style={{
-                  display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', flex: '0 0 auto',
-                  padding: '4px var(--sp-3) 0', width: '100%', maxWidth: 'var(--spine-max)', margin: '0 auto', boxSizing: 'border-box',
-                }}>
-                  <span style={{ flex: 1 }} />
-                  {chat.costUsd > 0 && (
-                    <span title="What this conversation has cost so far. Planning is not charged to any mission budget."
-                      style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums' }}>
-                      conversation ${chat.costUsd.toFixed(3)}
-                    </span>
-                  )}
-                  {chat.entries.length > 0 && (
-                    <Button variant="ghost" size="sm" icon="close" disabled={chat.thinking}
-                      title="Forget this conversation and start a new one"
-                      onClick={() => void chat.clear()}>Clear</Button>
-                  )}
-                </div>
-              )}
               <PlanPane chat={chat} folder={p.folder} starting={starting} error={composerErr}
                 models={models} modelsLoading={modelsLoading}
                 modelsNote={modelsNote} modelsInheritNote={modelsInheritNote}
@@ -910,24 +874,22 @@ export function ProjectView({
             </>
           )}
         </div>
+        {/* Planning is the run screen's idle state, so it keeps the rail: the
+            runs are right there, and a past run is one click from the talk
+            about the next one. */}
+        {wide && rail(
+          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textTransform: 'uppercase', letterSpacing: 'var(--ls-caps)', padding: '6px 0 2px' }}>
+            Runs · {history.length}
+          </div>,
+          history.length > 0 ? runsPane : <Empty>No runs yet — the first mission you start here will be the first.</Empty>,
+        )}
+        </div>
       ) : (
         <main style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           {wide ? (
             <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: `minmax(0, 1fr) ${railWidth}px` }}>
               {transcriptColumn}
-              <aside style={{
-                position: 'relative', borderLeft: '1px solid var(--line)', background: 'var(--bg-panel)',
-                minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column',
-              }}>
-                {/* The resizer: a thin grab zone on the rail's left edge. */}
-                <div role="separator" aria-orientation="vertical" aria-label="Resize the rail"
-                  title="Drag to resize" onPointerDown={startRailDrag}
-                  style={{ position: 'absolute', left: -4, top: 0, bottom: 0, width: 8, cursor: 'col-resize', zIndex: 2 }} />
-                <div style={{ padding: 'var(--sp-2) var(--sp-3) 0', flex: '0 0 auto' }}>{railTabs}</div>
-                <div style={{ minHeight: 0, overflowY: 'auto', padding: 'var(--sp-3)' }}>
-                  {railTab === 'mission' ? missionDocPane : railTab === 'files' ? filesPane : runsPane}
-                </div>
-              </aside>
+              {rail(railTabs, railTab === 'mission' ? missionDocPane : railTab === 'files' ? filesPane : runsPane)}
             </div>
           ) : (
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
