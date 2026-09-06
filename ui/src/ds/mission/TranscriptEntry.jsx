@@ -44,7 +44,7 @@ export function TranscriptEntry({ agent, title, kind = 'text', body, ts, to, tim
       {isTool
         ? <ToolCall tool={toolName} body={body} />
         : kind === 'text' && typeof body === 'string'
-          ? <div style={{ color: 'var(--ink-prose)' }}><RichText text={body} /></div>
+          ? <RichText text={body} />
           : <FoldedBody body={body} />}
     </Card>
   );

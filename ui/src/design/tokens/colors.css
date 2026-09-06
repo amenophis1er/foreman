@@ -29,7 +29,7 @@
   /* Long-form bodies — transcripts, briefs, reports. A step below --ink-0 so
      a paragraph of light text on a dark card does not glare; headings and
      emphasis inside it stay on --ink-0 and carry the hierarchy. */
-  --ink-prose: #c4c7cd;
+  --ink-prose: #bfc3c9;
 
   /* Identity — fixed per role, never cycled or reassigned */
   --brand: #e8b04b;

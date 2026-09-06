@@ -52,7 +52,9 @@ function parse(text) {
 export function RichText({ text, slots = true, style }) {
   const blocks = parse(text);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, lineHeight: 'var(--lh-prose)', color: 'var(--ink-0)', ...style }}>
+    // Prose ink for the body; headings, bold and slots keep --ink-0 so the
+    // emphasis reads against the paragraph rather than blending into it.
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, lineHeight: 'var(--lh-prose)', color: 'var(--ink-prose, var(--ink-0))', ...style }}>
       {blocks.map((b, k) => {
         if (b.t === 'code') return (
           <pre key={k} style={{ margin: 0, padding: 'var(--sp-2) var(--sp-3)', background: 'var(--bg-inset)', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', lineHeight: 'var(--lh)', overflowX: 'auto', whiteSpace: 'pre', position: 'relative' }}>
