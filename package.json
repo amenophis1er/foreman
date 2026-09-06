@@ -33,7 +33,6 @@
     "ui/dist",
     "skills",
     "README.md",
-    "DESIGN.md",
     "LICENSE"
   ],
   "engines": {

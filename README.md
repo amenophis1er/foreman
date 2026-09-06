@@ -186,7 +186,6 @@ shows exactly what a watcher saw. The director's tools are in-process MCP
 tools; a worker's report lands in the director's context as an ordinary tool
 result.
 
-Design and its history: [DESIGN.md](DESIGN.md).
 
 ## Contributing
 

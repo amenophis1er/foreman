@@ -1,7 +1,7 @@
 /**
  * Deck — what a mission changed, and what it produced.
  *
- * DESIGN.md §11 fixes the boundary: "The deck is diff and artifacts, not a
+ * The product's non-goals fix the boundary: "The deck is diff and artifacts, not a
  * file manager and not an editor. Its job is to show what this mission
  * changed, which is something your editor cannot tell you and Foreman can."
  * Everything here is read-only with respect to the user's project. The only

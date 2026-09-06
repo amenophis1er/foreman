@@ -1240,7 +1240,7 @@ const server = http.createServer(async (req, res) => {
   }
   const runEventsMatch = url.pathname.match(/^\/runs\/([^/]+)\/events$/);
   // The deck: what a run changed and what it produced. Read-only by design —
-  // DESIGN.md §11 — and handled before the chain because it owns two paths
+  // a stated non-goal — and handled before the chain because it owns two paths
   // under /runs/{id}/ that nothing else claims.
   if (await handleDeckRoute(req, res, url, async (id) => {
     const m = await store.readMeta(id).catch(() => null);

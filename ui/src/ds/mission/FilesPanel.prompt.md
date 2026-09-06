@@ -4,6 +4,6 @@ Structure, top to bottom: one small summary line (`8 changed · +1027 −0 · 21
 
 States: an error line when the working tree could not be read; "No file record for this run" when the server has no baseline; "Reading the working tree…" while loading. A deleted file is struck through and muted. A `preexisting` file says so in its tooltip.
 
-Boundary (DESIGN.md §11): diff and artifacts, never a file manager or an editor.
+Boundary (a stated non-goal): diff and artifacts, never a file manager or an editor.
 
 When the crew has exposed a service (`expose_service`), a **Services** section comes first: label, port, and a link that opens the proxied server in a new tab — a live app wants a window, not the viewer.

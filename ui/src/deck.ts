@@ -1,5 +1,5 @@
 // The deck: what a run changed and what it produced, read from
-// `GET /runs/{id}/deck`. Read-only by design (DESIGN.md §11) — this file
+// `GET /runs/{id}/deck`. Read-only by design (a non-goal: no editor, no file manager) — this file
 // fetches, it never writes.
 import { useCallback, useEffect, useState } from 'react';
 
