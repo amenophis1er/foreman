@@ -4,13 +4,17 @@
  *  doctor   The preflight, and nothing else: what this machine can run, what
  *           is missing, how to fix it. Exit 0 when nothing blocks.
  *  open     The dashboard, in the default browser.
+ *  up/down  A background server without registering anything: a detached
+ *           child, a pid file and a log under ~/.foreman. For "just run it";
+ *           `service install` is for "always run it".
  *  service  Keep Foreman up without a terminal: a launchd agent on macOS, a
  *           systemd user unit on Linux. Start at login, restart on crash,
  *           log to ~/.foreman/logs. Foreman on the move needs the server to
  *           be up when the laptop lid is closed; this is that.
  */
 import { execFile, spawn } from 'node:child_process';
-import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { openSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +24,8 @@ import { detectTailscale } from './tailscale.js';
 const PORT = Number(process.env.PORT ?? 4177);
 const HOME_DIR = process.env.FOREMAN_HOME || path.join(os.homedir(), '.foreman');
 const LABEL = 'dev.foreman.server';
+const PID_FILE = path.join(HOME_DIR, 'foreman.pid');
+const LOG_FILE = path.join(HOME_DIR, 'logs', 'server.log');
 
 function sh(cmd: string, args: string[]): Promise<{ code: number; out: string; err: string }> {
   return new Promise((resolve) => {
@@ -191,9 +197,77 @@ async function open(): Promise<number> {
   return 0;
 }
 
+async function listening(port: number): Promise<boolean> {
+  try { const r = await fetch(`http://127.0.0.1:${port}/projects`, { signal: AbortSignal.timeout(1500) }); return r.ok; }
+  catch { return false; }
+}
+
+async function readPid(): Promise<number | null> {
+  try { const n = Number((await readFile(PID_FILE, 'utf8')).trim()); return Number.isInteger(n) && n > 0 ? n : null; }
+  catch { return null; }
+}
+
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+async function up(bin: string): Promise<number> {
+  if (await listening(PORT)) { console.log(`Already up at http://localhost:${PORT}`); return 0; }
+  await mkdir(path.dirname(LOG_FILE), { recursive: true });
+  const out = openSync(LOG_FILE, 'a');
+  const child = spawn(process.execPath, [bin, 'start'], {
+    detached: true, stdio: ['ignore', out, out],
+    env: { ...process.env, FOREMAN_HOME: HOME_DIR },
+  });
+  child.unref();
+  await writeFile(PID_FILE, `${child.pid}\n`);
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    if (await listening(PORT)) {
+      console.log(`Foreman is up at http://localhost:${PORT} (pid ${child.pid}) · log: ${LOG_FILE} · stop with: foreman down`);
+      return 0;
+    }
+    if (child.pid && !alive(child.pid)) break;
+  }
+  console.error(`Foreman did not come up. The preflight may have refused — see ${LOG_FILE}`);
+  await rm(PID_FILE, { force: true });
+  return 1;
+}
+
+async function down(): Promise<number> {
+  const pid = await readPid();
+  if (!pid || !alive(pid)) {
+    await rm(PID_FILE, { force: true });
+    if (await listening(PORT)) { console.log(`Something answers on :${PORT} but it was not started with \`foreman up\` (a terminal, or the service). Stop it there.`); return 1; }
+    console.log('Not up.'); return 0;
+  }
+  process.kill(pid, 'SIGTERM');
+  for (let i = 0; i < 40 && alive(pid); i++) await new Promise((r) => setTimeout(r, 250));
+  if (alive(pid)) process.kill(pid, 'SIGKILL');
+  await rm(PID_FILE, { force: true });
+  console.log('Stopped.');
+  return 0;
+}
+
+async function status(): Promise<number> {
+  const pid = await readPid();
+  const isUp = await listening(PORT);
+  if (isUp) {
+    const how = pid && alive(pid) ? `background, pid ${pid}` : 'a terminal or the service';
+    console.log(`Up at http://localhost:${PORT} (${how})`);
+    return 0;
+  }
+  if (pid) await rm(PID_FILE, { force: true });
+  console.log(`Not up. \`foreman up\` starts it in the background, \`foreman\` in this terminal.`);
+  return 1;
+}
+
 export async function runCli(command: string, rest: string[], ctx: { version: string; bin: URL }): Promise<number> {
   const bin = fileURLToPath(ctx.bin);
   switch (command) {
+    case 'up': return up(bin);
+    case 'down': return down();
+    case 'status': return status();
     case 'doctor': return doctor();
     case 'open': return open();
     case 'service': {

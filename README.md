@@ -24,9 +24,10 @@ npm install -g @amenophis1er/foreman # keep it — then `foreman` from any shell
 
 ```sh
 foreman doctor             # what this machine can run, what is missing, how to fix it
-foreman                    # start the server and serve the dashboard
+foreman                    # start in this terminal (Ctrl+C stops it)
+foreman up                 # …or in the background; foreman down stops it, foreman status asks
 foreman open               # the dashboard, in your browser
-foreman service install    # keep it running: start at login, restart if it dies
+foreman service install    # keep it running for good: start at login, restart if it dies
 foreman --help             # the rest, and the environment variables
 ```
 

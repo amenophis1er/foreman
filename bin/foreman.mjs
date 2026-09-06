@@ -17,7 +17,10 @@ const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url),
 
 const USAGE = `foreman ${pkg.version}
 
-  foreman                    Start the server and serve the dashboard (same as "start")
+  foreman                    Start in this terminal (same as "start"); Ctrl+C stops it
+  foreman up                 Start in the background; logs to ~/.foreman/logs/server.log
+  foreman down               Stop a background server started with "up"
+  foreman status             Is a server up? Which port, which pid?
   foreman doctor             Check credentials, providers, browser, port, Tailscale — and exit
   foreman open               Open the dashboard in your browser
   foreman service install    Keep Foreman running: start at login, restart if it dies
@@ -45,7 +48,7 @@ if (command === '--help' || command === '-h' || command === 'help') {
 } else if (command === 'start') {
   register();
   await import(new URL('../src/server.ts', import.meta.url).href);
-} else if (command === 'doctor' || command === 'open' || command === 'service') {
+} else if (['doctor', 'open', 'service', 'up', 'down', 'status'].includes(command)) {
   register();
   const { runCli } = await import(new URL('../src/cli.ts', import.meta.url).href);
   process.exitCode = await runCli(command, rest, { version: pkg.version, bin: new URL(import.meta.url) });
