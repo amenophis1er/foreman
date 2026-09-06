@@ -19,6 +19,7 @@ jobs:
             package-lock.json
             ui/package-lock.json
       - run: npm ci
+      - run: npm ci --prefix ui
       - run: npm run typecheck
       - run: npm test
       - run: npm pack --dry-run
