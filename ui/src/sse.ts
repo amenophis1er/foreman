@@ -35,7 +35,7 @@ export const SSE_EVENTS = [
   'permission_request', 'permission_resolved', 'permission_timeout',
   'question', 'question_answered', 'question_timeout',
   // planning conversation
-  'chat_message', 'chat_turn', 'chat_cost', 'chat_error', 'chat_cleared',
+  'chat_message', 'chat_turn', 'chat_cost', 'chat_error', 'chat_cleared', 'chat_proposal_dismissed',
   'chat_question', 'chat_answered', 'chat_question_timeout',
   'mission_proposed', 'mission_started',
   // server

@@ -68,11 +68,14 @@ export interface NotifyContext {
 export type Answer =
   | { kind: 'perm'; id: string; behavior: 'allow' | 'deny' }
   | { kind: 'q'; id: string; text: string }
-  | { kind: 'cq'; projectId: string; id: string; answers: Record<string, string> };
+  | { kind: 'cq'; projectId: string; id: string; answers: Record<string, string> }
+  /** A tap on a proposal the planner made from the phone: start it as proposed, or drop it. */
+  | { kind: 'proposal'; projectId: string; action: 'start' | 'discard' };
 
 /** How long an identical announcement is suppressed. */
 export const DEDUPE_TTL_MS = 60_000;
 
+export function escapeHtml(s: unknown): string { return esc(s); }
 const esc = (s: unknown): string =>
   String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const clip = (s: unknown, n = 160): string => {
@@ -173,6 +176,24 @@ export function shape(env: Envelope, ctx: NotifyContext): Shaped | null {
         buttons: opts.length
           ? opts.map((o, i) => [{ label: `${i + 1}. ${clip(o, 40)}${i === 0 ? ' ★' : ''}`, data: `q|${d.id}|${i}` }])
           : undefined,
+      };
+    }
+    case 'mission_proposed': {
+      // Only for a conversation the phone started: a proposal drafted at the
+      // desk has its card on the desk. `via` is stamped by the server.
+      if (d.via !== 'telegram') return null;
+      const done = Array.isArray(d.doneWhen) ? d.doneWhen as string[] : [];
+      const models = [d.directorModel, d.workerModel].filter(Boolean).join(' · ');
+      const lines = [
+        head('Mission proposed'),
+        `\n${esc(clip(String(d.mission ?? ''), 700))}`,
+        done.length ? `\n<b>Done when</b>\n${done.slice(0, 6).map((x) => `• ${esc(clip(x, 120))}`).join('\n')}${done.length > 6 ? `\n… ${done.length - 6} more` : ''}` : '',
+        `\n<i>cap $${Number(d.budgetUsd ?? 0)}${models ? ` · ${esc(models)}` : ''}${d.browser ? ' · browser on' : ''}</i>`,
+      ].filter(Boolean).join('\n');
+      return {
+        key: `proposal:${env.projectId}`, gate: 'needsYou',
+        text: lines + foot,
+        buttons: [[{ label: 'Start mission', data: `sp|${env.projectId}` }, { label: 'Discard', data: `dp|${env.projectId}` }]],
       };
     }
     case 'chat_question': {
@@ -336,6 +357,10 @@ export class NotifyHub {
    */
   handleCallback(data: string, messageId?: string): boolean {
     const [kind, id, a, b] = data.split('|');
+    if (kind === 'sp' || kind === 'dp') {
+      this.answerHandler?.({ kind: 'proposal', projectId: id, action: kind === 'sp' ? 'start' : 'discard' });
+      return true;
+    }
     if (kind === 'p' && (a === 'allow' || a === 'deny')) {
       const ask = this.pending.get(`perm:${id}`);
       if (!ask) return false;
@@ -452,11 +477,11 @@ export class NotifyHub {
     this.byMessage.delete(m.id);
   }
 
-  /** Send something outside the event flow — the Settings "test" button. */
-  async say(text: string): Promise<boolean> {
+  /** Send something outside the event flow — the Settings "test" button, a command's reply, the planner's words. */
+  async say(text: string, opts?: { buttons?: Button[][] }): Promise<boolean> {
     let ok = false;
     for (const t of this.transports) {
-      try { if (await t.send(text)) ok = true; } catch { this.failures++; }
+      try { if (await t.send(text, opts)) ok = true; } catch { this.failures++; }
     }
     return ok;
   }

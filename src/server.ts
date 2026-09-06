@@ -54,6 +54,8 @@ import {
 } from './planner.js';
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { saveAttachments } from './attachments.js';
+import { HELP_TEXT, parseCommand, projectsRoot, slug } from './notify/commands.js';
+import { escapeHtml as escTg } from './notify.js';
 import { RunStore, newRunId } from './store.js';
 import { preflight, reportPreflight } from './preflight.js';
 import { defaultInstance, discoverInstances, effectiveConfigDir } from './instance.js';
@@ -584,7 +586,7 @@ async function reattachTelegram(): Promise<boolean> {
       // Taps and replies from the linked chat become the same calls the tab
       // makes, through the hub — the channel never learns Foreman's routes.
       onCallback: (data, messageId) => notifyHub.handleCallback(data, messageId),
-      onText: (text, replyTo) => notifyHub.handleText(text, replyTo),
+      onText: (text, replyTo) => void handlePhoneText(text, replyTo),
     });
     telegramBot.start();
   }
@@ -606,8 +608,133 @@ notifyHub.onAnswer((a) => {
     if (answerChatQuestion(a.projectId, a.id, a.answers)) {
       makeChatEmitter(a.projectId)('chat_answered', { id: a.id, answers: a.answers, source: 'telegram' });
     }
+  } else if (a.kind === 'proposal') {
+    void (async () => {
+      const project = await store.getProject(a.projectId);
+      const meta = await store.readChatMeta(a.projectId).catch(() => null);
+      const prop = meta?.proposal;
+      if (!project || !prop) { void notifyHub.say('That proposal is no longer there.'); return; }
+      if (a.action === 'discard') {
+        const { proposal: _gone, ...rest } = meta!;
+        await store.writeChatMeta({ ...rest, updatedAt: Date.now() });
+        broadcastChat(a.projectId, 'chat_proposal_dismissed', {});
+        void notifyHub.say(`Discarded the proposal for <b>${escTg(project.name)}</b>. Tell the planner what to change.`);
+        return;
+      }
+      if (!reserveProject(a.projectId)) { void notifyHub.say(`<b>${escTg(project.name)}</b> already has an active mission.`); return; }
+      // Exactly what the card in the browser would start: the proposal's
+      // brief, its budget, its models and its browser judgement.
+      void startRun(a.projectId, project.folder, prop.mission, prop.budgetUsd,
+        modelChoice(prop.directorModel), modelChoice(prop.workerModel), prop.browser === true,
+        providerOf(project), { director: prop.directorProviderId, worker: prop.workerProviderId });
+      void notifyHub.say(`Started <b>${escTg(project.name)}</b> as proposed, cap $${prop.budgetUsd}.`);
+    })();
   }
 });
+
+/** The project the phone last planned with; plain text continues it. */
+let lastPhonePlanning: string | null = null;
+
+/** A project by name (case-insensitive), id, or folder basename. */
+async function findProject(ref: string): Promise<Project | null> {
+  const want = ref.trim().toLowerCase();
+  const all = await store.listProjects();
+  return all.find((p) => p.id === ref)
+    ?? all.find((p) => p.name.toLowerCase() === want)
+    ?? all.find((p) => path.basename(p.folder).toLowerCase() === want)
+    ?? null;
+}
+
+/**
+ * Text from the linked chat. In order: a command; an answer to an open ask
+ * (the hub's job); a continuation of the last planning conversation the
+ * phone started; else the help text — never silence.
+ */
+async function handlePhoneText(text: string, replyTo?: string): Promise<void> {
+  const say = (t: string) => void notifyHub.say(t);
+  const cmd = parseCommand(text);
+  if (cmd) {
+    try {
+      switch (cmd.cmd) {
+        case 'help': return say(HELP_TEXT);
+        case 'projects': {
+          const all = await store.listProjects();
+          if (!all.length) return say('No projects linked yet. /new &lt;name&gt; creates one.');
+          const runs = await store.listRuns();
+          const lines = all.map((p) => {
+            const live = activeByProject.has(p.id);
+            const last = runs.filter((r) => r.folder === p.folder).sort((a, b) => b.createdAt - a.createdAt)[0];
+            return `• <b>${escTg(p.name)}</b> — ${live ? 'running' : last ? `last run ${last.status}` : 'no runs yet'}`;
+          });
+          return say(`<b>Fleet</b>\n${lines.join('\n')}`);
+        }
+        case 'status': {
+          const live = activeRuns();
+          if (!live.length) return say('All quiet — nothing running.');
+          const lines = live.map((r) => {
+            const name = projectsCache.get(r.meta.projectId ?? '')?.name ?? r.meta.folder;
+            const spend = r.meta.costBasis === 'priced' ? `$${r.meta.costUsd.toFixed(2)} of $${r.meta.budgetUsd}` : 'unpriced';
+            const asks = r.pendingAsks().length;
+            return `• <b>${escTg(name)}</b> — ${escTg(r.meta.title || r.meta.mission.split('\n')[0].slice(0, 80))}\n  ${spend}${asks ? ` · <b>${asks} waiting on you</b>` : ''}`;
+          });
+          return say(`<b>Running · ${live.length}</b>\n${lines.join('\n')}`);
+        }
+        case 'new': {
+          const settings = await store.readSettings().catch(() => ({ global: {}, projects: {} }));
+          const root = projectsRoot((settings.global as Record<string, unknown>).projectsRoot);
+          const name = slug(cmd.name);
+          if (!name) return say('That name leaves nothing to call a folder. Try letters and digits.');
+          const folder = path.join(root, name);
+          if (await findProject(name)) return say(`<b>${escTg(name)}</b> is already linked. /plan ${escTg(name)} &lt;what you want&gt;`);
+          await mkdir(folder, { recursive: true });
+          const project = await store.addProject(folder, cmd.name.trim());
+          projectsCache.set(project.id, { name: project.name });
+          lastPhonePlanning = project.id;
+          return say(`Created <b>${escTg(project.name)}</b> at <code>${escTg(folder)}</code> and linked it.\nNow tell me what it should do — just type it, or /plan ${escTg(name)} &lt;what you want&gt;.`);
+        }
+        case 'plan': case 'run': {
+          const project = await findProject(cmd.project);
+          if (!project) return say(`No project called <b>${escTg(cmd.project)}</b>. /projects lists them; /new creates one.`);
+          if (activeByProject.has(project.id)) return say(`<b>${escTg(project.name)}</b> has a mission running — /status shows it.`);
+          if (cmd.cmd === 'plan') {
+            if (chatTurns.has(project.id)) return say('The planner is still replying — /stop ends that.');
+            chatTurns.add(project.id);
+            void driveChatTurn(project, cmd.text, cmd.text, 'telegram');
+            return;
+          }
+          // /run: skip the talk. The project's default cap bounds it; the
+          // browser is off unless the brief says otherwise, like the composer.
+          if (!reserveProject(project.id)) return say(`<b>${escTg(project.name)}</b> already has an active mission.`);
+          void startRun(project.id, project.folder, cmd.text, project.defaultBudgetUsd,
+            modelChoice(undefined), modelChoice(undefined), /screenshot|browser|render|console/i.test(cmd.text),
+            providerOf(project));
+          return say(`Started a mission on <b>${escTg(project.name)}</b> with a $${project.defaultBudgetUsd} cap. I will tell you when it needs you or ends.`);
+        }
+        case 'stop': {
+          const project = cmd.project ? await findProject(cmd.project) : (lastPhonePlanning ? await store.getProject(lastPhonePlanning) : null);
+          const abort = project && chatAborts.get(project.id);
+          if (!project || !abort) return say('No planner reply is in flight.');
+          dropPendingAsk(project.id);
+          abort.abort();
+          return say(`Stopped the planner on <b>${escTg(project.name)}</b>.`);
+        }
+      }
+    } catch (err) {
+      return say(`That failed: ${escTg(err instanceof Error ? err.message : String(err))}`);
+    }
+  }
+  if (notifyHub.handleText(text, replyTo)) return;
+  if (lastPhonePlanning) {
+    const project = await store.getProject(lastPhonePlanning);
+    if (project && !activeByProject.has(project.id)) {
+      if (chatTurns.has(project.id)) return say('The planner is still replying — wait, or /stop.');
+      chatTurns.add(project.id);
+      void driveChatTurn(project, text, text, 'telegram');
+      return;
+    }
+  }
+  say(`Nothing is waiting on an answer. ${HELP_TEXT}`);
+}
 
 /** One linking attempt at a time; a new code cancels the previous wait. */
 let telegramLink: { code: string; abort(): void; startedAt: number } | null = null;
@@ -634,11 +761,30 @@ async function chatMetaOf(projectId: string): Promise<ChatMeta> {
  * reload mid-turn still shows what was asked), then the planner's reply
  * streams out through the same envelope machinery as a mission.
  */
-/** `shown` is what the transcript records as the human's message when it differs from what the planner is sent (a fork's seed). */
-async function driveChatTurn(project: Project, text: string, shown: string = text): Promise<void> {
-  const emit = makeChatEmitter(project.id);
+/**
+ * `shown` is what the transcript records as the human's message when it
+ * differs from what the planner is sent (a fork's seed). `via: 'telegram'`
+ * means the phone started this turn: the planner's words go back there, and
+ * a proposal it makes gets a card with Start / Discard.
+ */
+async function driveChatTurn(project: Project, text: string, shown: string = text, via?: 'telegram'): Promise<void> {
+  const raw = makeChatEmitter(project.id);
+  let said = '';
+  let asked = false;
+  const emit = via !== 'telegram' ? raw : (event: string, data: unknown) => {
+    if (event === 'message') {
+      const m = (data as { msg?: { type?: string; message?: { content?: Array<{ type?: string; text?: string }> } } }).msg;
+      if (m?.type === 'assistant') {
+        for (const b of m.message?.content ?? []) if (b.type === 'text' && b.text?.trim()) said = b.text.trim();
+      }
+    }
+    if (event === 'chat_question') asked = true;
+    if (event === 'mission_proposed') { asked = true; data = { ...(data as object), via }; }
+    raw(event, data);
+  };
+  if (via === 'telegram') lastPhonePlanning = project.id;
   const meta = await chatMetaOf(project.id);
-  emit('chat_message', { text: shown });
+  emit('chat_message', { text: shown, ...(via ? { via } : {}) });
   try {
     const settings = await effectiveSettings(project.id);
     const resolved = await resolveProvider(providerOf(project), store.root);
@@ -692,6 +838,12 @@ async function driveChatTurn(project: Project, text: string, shown: string = tex
     emit('chat_cost', { costUsd: next.costUsd, turnUsd: result.costUsd });
     if (result.stopped) emit('chat_error', { error: 'Stopped — the rest of this reply was discarded.' });
     else if (result.error) emit('chat_error', { error: result.error });
+    // The phone hears the planner's last words unless a card (question or
+    // proposal) already said them; a bare "done" would be noise.
+    if (via === 'telegram') {
+      if (result.error) void notifyHub.say(`<b>${escTg(project.name)}</b> · the planner hit an error: ${escTg(result.error)}`);
+      else if (!asked && said) void notifyHub.say(`<b>${escTg(project.name)}</b>\n${escTg(said.slice(0, 3500))}`);
+    }
   } catch (err) {
     // runPlanningTurn does not throw; anything here is a Foreman bug or a
     // storage failure, and must not take the server down with it.

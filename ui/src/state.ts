@@ -773,6 +773,9 @@ function applyChatWire(s: ChatView, e: WireEvent): ChatView {
     // fork). Same as the local reset, so a stale proposal cannot outlive it.
     case 'chat_cleared':
       return chatReducer(s, { t: 'reset' });
+    // Discarded from the phone: the card goes here too.
+    case 'chat_proposal_dismissed':
+      return { ...s, proposal: null };
     case 'chat_message':
       return {
         ...s,
