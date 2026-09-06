@@ -203,6 +203,10 @@ export interface FleetTurn {
   models?: PlannerModel[];
   /** Who asked: the phone, or an HTTP caller (the fleet page, a curl). */
   via?: 'telegram' | 'http';
+  /** One line per notable fleet event since the previous turn, oldest first. */
+  news?: string[];
+  /** How long ago the previous turn ended. */
+  sinceMs?: number;
   emit: (event: string, data: unknown) => void;
   abort?: AbortController;
 }
@@ -216,6 +220,29 @@ export interface FleetResult {
   handedOff?: string;
   error?: string;
   stopped?: boolean;
+}
+
+/**
+ * What a receptionist knows without being told: the time, where the
+ * message came from, and what happened since the human last spoke. Rebuilt
+ * every turn, appended after the charter so it is never stale.
+ */
+export function situation(turn: Pick<FleetTurn, 'via' | 'news' | 'sinceMs'>, now = new Date()): string {
+  const when = now.toLocaleString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+  const lines = [
+    '',
+    `NOW: ${when}. Use this for "today", "this morning", "an hour ago"; never guess the time.`,
+    `THIS MESSAGE ARRIVED VIA ${turn.via === 'telegram' ? 'TELEGRAM' : 'THE DESK (HTTP)'}.`,
+  ];
+  const gap = turn.sinceMs === undefined ? '' : turn.sinceMs < 90_000 ? 'moments ago' : turn.sinceMs < 3_600_000 ? `${Math.round(turn.sinceMs / 60_000)} min ago` : `${(turn.sinceMs / 3_600_000).toFixed(1)} h ago`;
+  if (turn.news?.length) {
+    lines.push(`SINCE THE HUMAN'S LAST MESSAGE${gap ? ` (${gap})` : ''}, oldest first:`);
+    for (const n of turn.news) lines.push(`  - ${n}`);
+    lines.push('Lead with what matters from this if it is relevant to what they ask; do not recite it otherwise.');
+  } else if (gap) {
+    lines.push(`Nothing notable happened in the fleet since the human's last message (${gap}).`);
+  }
+  return lines.join('\n') + '\n';
 }
 
 /** No built-in tools at all: the front desk sees the fleet through its own verbs only. */
@@ -316,8 +343,7 @@ export async function runFleetTurn(turn: FleetTurn): Promise<FleetResult> {
         permissionMode: 'default',
         systemPrompt: {
           type: 'preset', preset: 'claude_code',
-          append: CHARTER + modelsSection(turn.models)
-            + `\nTHIS MESSAGE ARRIVED VIA ${turn.via === 'telegram' ? 'TELEGRAM' : 'THE DESK (HTTP)'}.\n`,
+          append: CHARTER + modelsSection(turn.models) + situation(turn),
         },
         mcpServers: { fleet: createSdkMcpServer({ name: 'fleet', tools }) },
         canUseTool,

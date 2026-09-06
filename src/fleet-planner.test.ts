@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FLEET_CHAT_ID, PHONE_CONTEXT_MS, fleetSummary, phoneRoute } from './fleet-planner.js';
+import { FLEET_CHAT_ID, PHONE_CONTEXT_MS, fleetSummary, phoneRoute, situation } from './fleet-planner.js';
 
 test('plain phone text goes to the fleet planner when no project conversation is open', () => {
   assert.equal(phoneRoute(null), 'fleet');
@@ -39,4 +39,16 @@ test('fleetSummary says what is running, what is waiting, and what finished last
   assert.match(text, /P7 .*\n  idle · last run "Pomodoro" done 3 h ago\n  a mission proposal is waiting/);
   assert.match(text, /fresh .*\n  idle · no runs yet\n  its planner is replying right now/);
   assert.equal(fleetSummary([]), 'No projects are linked yet.');
+});
+
+test('situation carries the clock, the channel, and the news since the last message', () => {
+  const now = new Date(2026, 8, 6, 14, 5);
+  const s = situation({ via: 'telegram', sinceMs: 12 * 60_000, news: ['13:58 P7 — mission ended: done ($0.78)'] }, now);
+  assert.match(s, /NOW: .*2026.*14:05|NOW: .*2:05/);
+  assert.match(s, /ARRIVED VIA TELEGRAM/);
+  assert.match(s, /SINCE THE HUMAN'S LAST MESSAGE \(12 min ago\)/);
+  assert.match(s, /- 13:58 P7 — mission ended: done/);
+  const quiet = situation({ via: 'http', sinceMs: 2 * 3_600_000, news: [] }, now);
+  assert.match(quiet, /ARRIVED VIA THE DESK/);
+  assert.match(quiet, /Nothing notable happened .*\(2\.0 h ago\)/);
 });

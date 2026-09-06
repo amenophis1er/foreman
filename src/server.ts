@@ -457,6 +457,49 @@ function activeRuns(): MissionRun[] {
 }
 
 /** Broadcasts an enveloped frame to live clients and persists the bare event. */
+/**
+ * What happened in the fleet lately, in one line each, for the front desk.
+ *
+ * In memory only: it exists so the fleet planner can open with the news
+ * instead of asking, and the news is by definition recent. A restart
+ * empties it and says so. Two hundred lines outlast any plausible gap
+ * between two phone messages.
+ */
+const SERVER_STARTED_AT = Date.now();
+const fleetLog: Array<{ ts: number; projectId: string; text: string }> = [];
+function noteFleetEvent(projectId: string, event: string, d: Record<string, unknown>): void {
+  const short = (v: unknown, n = 90): string => { const t = String(v ?? '').split('\n')[0].trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+  let text: string | null = null;
+  switch (event) {
+    case 'run_started': text = `mission started: "${short(d.mission)}"`; break;
+    case 'run_resumed': text = 'mission resumed'; break;
+    case 'run_finished': text = `mission ended: ${d.status}${typeof d.costUsd === 'number' ? ` ($${(d.costUsd as number).toFixed(2)})` : ''}`; break;
+    case 'run_error': text = `run error: ${short(d.error, 120)}`; break;
+    case 'mission_incomplete': text = `ended with boxes unticked: ${short(d.text, 120)}`; break;
+    case 'permission_request': text = `${d.agent ?? 'the crew'} asked to use ${d.toolName ?? d.tool ?? 'a tool'} — waiting on the human`; break;
+    case 'question': text = `${d.agent ?? 'the director'} asked the human: "${short(d.question)}"`; break;
+    case 'worker_stalled': text = `a worker stalled: ${short(d.text, 100)}`; break;
+    case 'service_exposed': text = `service up: ${short(d.label)} at ${d.url ?? ''}`; break;
+    case 'mission_proposed': text = `a mission was proposed (cap $${d.budgetUsd}): "${short(d.mission)}"`; break;
+    case 'mission_started': text = 'the proposal was started as a mission'; break;
+    case 'chat_proposal_dismissed': text = 'the proposal was discarded'; break;
+  }
+  if (!text) return;
+  fleetLog.push({ ts: Date.now(), projectId, text });
+  if (fleetLog.length > 200) fleetLog.splice(0, fleetLog.length - 200);
+}
+
+/** The news since `since`, as lines for the front desk's prompt. */
+function fleetNews(since: number, max = 12): string[] {
+  const hhmm = (t: number) => new Date(t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const lines = fleetLog.filter((e) => e.ts > since && e.projectId !== FLEET_CHAT_ID)
+    .map((e) => `${hhmm(e.ts)} ${projectsCache.get(e.projectId)?.name ?? e.projectId} — ${e.text}`);
+  const out = lines.slice(-max);
+  if (lines.length > max) out.unshift(`(${lines.length - max} earlier lines not shown)`);
+  if (SERVER_STARTED_AT > since) out.unshift(`Foreman restarted at ${hhmm(SERVER_STARTED_AT)}; anything before that is not listed here (the tools still know).`);
+  return out;
+}
+
 function makeEmitter(runId: string, projectId: string) {
   return (event: string, data: unknown): void => {
     const evt: ForemanEvent = { ts: Date.now(), event, data };
@@ -464,6 +507,7 @@ function makeEmitter(runId: string, projectId: string) {
       `event: ${event}\ndata: ${JSON.stringify({ runId, projectId, data })}\n\n`;
     for (const res of sseClients) res.write(frame);
     void store.append(runId, evt);
+    noteFleetEvent(projectId, event, (data ?? {}) as Record<string, unknown>);
     // The one place notifications hang off the mission stream. Labels are
     // cached here from the events themselves so a message can name the run
     // without a disk read on the emitter's path.
@@ -527,6 +571,7 @@ function ledgerKeyFor(meta: RunMeta): string {
 function broadcastChat(projectId: string, event: string, data: unknown): void {
   const frame = `event: ${event}\ndata: ${JSON.stringify({ runId: null, projectId, chat: true, data })}\n\n`;
   for (const res of sseClients) res.write(frame);
+  noteFleetEvent(projectId, event, (data ?? {}) as Record<string, unknown>);
 }
 
 function makeChatEmitter(projectId: string) {
@@ -536,6 +581,7 @@ function makeChatEmitter(projectId: string) {
       `event: ${event}\ndata: ${JSON.stringify({ runId: null, projectId, chat: true, data })}\n\n`;
     for (const res of sseClients) res.write(frame);
     void store.appendChat(projectId, evt);
+    noteFleetEvent(projectId, event, (data ?? {}) as Record<string, unknown>);
     if (!projectsCache.has(projectId)) {
       void store.getProject(projectId).then((p) => { if (p) projectsCache.set(projectId, { name: p.name }); });
     }
@@ -911,8 +957,12 @@ async function driveFleetTurn(text: string, via: 'telegram' | 'http'): Promise<{
     const cwd = projectsRoot(g.projectsRoot);
     await mkdir(cwd, { recursive: true }).catch(() => {});
     const { models } = await availableModels(null).catch(() => ({ models: [] }));
+    // The first turn ever looks back two hours; every later one looks back
+    // to the end of the previous turn.
+    const since = meta.sessionId ? meta.updatedAt : Date.now() - 2 * 3_600_000;
     const result = await runFleetTurn({
       sessionId: meta.sessionId, text, model, cwd, host: fleetHost, via,
+      news: fleetNews(since), sinceMs: Date.now() - since,
       models: models.map((m) => ({ id: m.id, label: m.label, providerId: m.providerId, providerLabel: m.providerLabel, costBasis: m.costBasis, note: m.note })),
       agentEnv: await agentEnvFor(resolved, `chat:${FLEET_CHAT_ID}`),
       emit, abort,
