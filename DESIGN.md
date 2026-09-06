@@ -285,7 +285,7 @@ but the choice of tool matters:
 > into, which is how a personal Foreman rides a subscription without any third
 > party minting tokens. The generalisation of that idea — Codex installs, local
 > Ollama, OpenAI-compatible endpoints — is designed in
-> [docs/provider-model.md](docs/provider-model.md). The last bullet below still
+> the provider-model design notes (kept outside this repository). The last bullet below still
 > governs everything.
 
 - **API key only.** SDK apps authenticate via `ANTHROPIC_API_KEY` (or a cloud
@@ -368,7 +368,7 @@ copy of something else. They are permanent, not "at least at first".
   sandbox you then have to sync back.
 - **Never mint credentials.** Foreman reads what a first-party CLI already put
   there (`~/.claude`, `~/.codex`); it does not reimplement anyone's OAuth flow
-  to obtain tokens itself. See [docs/provider-model.md](docs/provider-model.md).
+  to obtain tokens itself. See the provider-model design notes (kept outside this repository).
 - **Not blanket `bypassPermissions`.** Autonomy comes from good `canUseTool`
   policy + budgets, never from removing the floor.
 
