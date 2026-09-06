@@ -236,7 +236,7 @@ function Transcript({ run, filter, jump, order, header }: {
  * continuous story rather than two products bolted together.
  */
 function PlanPane({
-  chat, folder, starting, error, models, modelsLoading, modelsNote, modelsInheritNote, onStart,
+  chat, folder, starting, error, models, modelsLoading, modelsNote, modelsInheritNote, onStart, onCompose, hasRuns,
 }: {
   chat: ReturnType<typeof useChat>;
   folder: string;
@@ -254,6 +254,10 @@ function PlanPane({
     mission: string; budget: number; directorModel?: string; workerModel?: string;
     directorProviderId?: string; workerProviderId?: string; browserTools?: boolean;
   }) => void;
+  /** "Skip the talk": open the mission composer instead. */
+  onCompose: () => void;
+  /** The project has finished runs — the empty state can point at "Plan the next step". */
+  hasRuns?: boolean;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
@@ -262,6 +266,43 @@ function PlanPane({
     const el = box.current;
     if (el && pinned.current) el.scrollTop = el.scrollHeight;
   }, [chat.entries.length, chat.proposal, chat.thinking]);
+
+  const fresh = chat.entries.length === 0 && !chat.thinking && !chat.question && !chat.proposal;
+  if (fresh) {
+    // Nothing said yet: the input is the page. Centre the invitation and the
+    // input together; the bar drops to the bottom once there is a conversation
+    // above it to read.
+    return (
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ margin: 'auto', width: '100%', maxWidth: 'var(--composer-max)', padding: 'var(--sp-4) var(--sp-3)', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
+          <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
+            <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 'var(--fw-semibold)' }}>
+              What should this project do next?
+            </span>
+            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-1)', lineHeight: 'var(--lh-prose)' }}>
+              The foreman reads <span style={{ fontFamily: 'var(--font-mono)' }}>{folder}</span> and
+              thinks it through with you — what you want, what is already there, what could go wrong.
+              When the shape is clear it drafts a mission for you to start.
+            </span>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+              It can read the project. It cannot change it — only a mission does that.
+              {hasRuns && <> To build on a finished run, open it and choose <b style={{ color: 'var(--ink-1)' }}>Plan the next step</b>.</>}
+            </span>
+          </div>
+          <ChatBar busy={chat.thinking} who={chat.who} onSend={(t) => void chat.send(t)} autoFocus />
+          <button type="button" onClick={onCompose} style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', width: '100%', boxSizing: 'border-box',
+            background: 'none', border: '1px dashed var(--line-strong)', borderRadius: 'var(--r-sm)',
+            cursor: 'pointer', font: 'inherit', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textAlign: 'left',
+          }}>
+            <Icon name="write" size={12} />
+            Or skip the talk: describe the mission and start it
+            <Icon name="chevronRight" size={12} style={{ marginLeft: 'auto' }} />
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -274,24 +315,6 @@ function PlanPane({
           flex: 1, minHeight: 0, overflowY: 'auto', padding: 'var(--sp-3)',
           display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)',
         }}>
-        {chat.entries.length === 0 && !chat.thinking && (
-          <div style={{
-            margin: 'auto', maxWidth: '34rem', textAlign: 'center',
-            display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)',
-          }}>
-            <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 'var(--fw-semibold)' }}>
-              Talk it through first
-            </span>
-            <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-1)', lineHeight: 'var(--lh-prose)' }}>
-              The foreman reads <span style={{ fontFamily: 'var(--font-mono)' }}>{folder}</span> and
-              thinks it through with you — what you want, what is already there, what could go wrong.
-              When the shape is clear it drafts a mission for you to start.
-            </span>
-            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
-              It can read the project. It cannot change it — only a mission does that.
-            </span>
-          </div>
-        )}
         <div style={SPINE_COL}>
         {chat.entries.map((e, i) => {
           // Entries carry only a clock time; a conversation picked up days
@@ -369,6 +392,17 @@ function PlanPane({
           </div>
         )}
       </div>
+      <button type="button" onClick={onCompose} style={{
+        flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 6,
+        margin: '0 auto var(--sp-3)', padding: '6px 10px',
+        width: 'calc(100% - 2 * var(--sp-3))', maxWidth: 'calc(var(--spine-max) - 2 * var(--sp-3))', boxSizing: 'border-box',
+        background: 'none', border: '1px dashed var(--line-strong)', borderRadius: 'var(--r-sm)',
+        cursor: 'pointer', font: 'inherit', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textAlign: 'left',
+      }}>
+        <Icon name="write" size={12} />
+        Or skip the talk: describe the mission and start it
+        <Icon name="chevronRight" size={12} style={{ marginLeft: 'auto' }} />
+      </button>
     </>
   );
 }
@@ -877,18 +911,8 @@ export function ProjectView({
               <PlanPane chat={chat} folder={p.folder} starting={starting} error={composerErr}
                 models={models} modelsLoading={modelsLoading}
                 modelsNote={modelsNote} modelsInheritNote={modelsInheritNote}
-                onStart={(v) => void startMission(v)} />
-              <button type="button" onClick={() => setComposeOpen(true)} style={{
-                flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 6,
-                margin: '0 auto var(--sp-3)', padding: '6px 10px',
-                width: 'calc(100% - 2 * var(--sp-3))', maxWidth: 'calc(var(--spine-max) - 2 * var(--sp-3))', boxSizing: 'border-box',
-                background: 'none', border: '1px dashed var(--line-strong)', borderRadius: 'var(--r-sm)',
-                cursor: 'pointer', font: 'inherit', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textAlign: 'left',
-              }}>
-                <Icon name="write" size={12} />
-                Or skip the talk: describe the mission and start it
-                <Icon name="chevronRight" size={12} style={{ marginLeft: 'auto' }} />
-              </button>
+                onStart={(v) => void startMission(v)}
+                onCompose={() => setComposeOpen(true)} hasRuns={history.length > 0} />
             </>
           )}
         </div>

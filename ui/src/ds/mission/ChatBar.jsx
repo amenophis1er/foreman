@@ -7,7 +7,7 @@ import { Icon } from '../core/Icon';
  * transcript, the same shell as SteerBar without the recipient and timing
  * controls — there is one listener here, and nothing to interrupt.
  */
-export function ChatBar({ value, onChange, onSend, busy, disabled, disabledReason, placeholder, who, style }) {
+export function ChatBar({ value, onChange, onSend, busy, disabled, disabledReason, placeholder, who, autoFocus, style }) {
   const [localText, setLocalText] = useState('');
   const [focus, setFocus] = useState(false);
   const ta = useRef(null);
@@ -43,7 +43,7 @@ export function ChatBar({ value, onChange, onSend, busy, disabled, disabledReaso
         <span className={busy ? 'pulse' : undefined} style={{ marginTop: 3, flex: '0 0 auto', display: 'inline-flex' }}>
           <Icon name={busy ? 'loading' : 'steer'} size={15} color="var(--brand)" />
         </span>
-        <textarea ref={ta} rows={1} value={text} disabled={disabled}
+        <textarea ref={ta} rows={1} value={text} disabled={disabled} autoFocus={autoFocus}
           placeholder={disabled
             ? (disabledReason || 'Not available right now.')
             : (placeholder || 'Ask, think out loud, or describe what you want built…')}

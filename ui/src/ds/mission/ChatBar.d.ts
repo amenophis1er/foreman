@@ -13,6 +13,8 @@ export interface ChatBarProps {
   onSend?: (text: string) => void;
   /** A turn is in flight: the icon pulses and Send is held until the reply lands. */
   busy?: boolean;
+  /** Focus the input on mount — for an empty state where the input is the page. */
+  autoFocus?: boolean;
   /** Planning is unavailable (a mission is running — steer the director instead). */
   disabled?: boolean;
   disabledReason?: string;
