@@ -27,6 +27,8 @@ import { RunRow } from '../ds/mission/RunRow';
 import { NowStrip, type NowActivity } from '../ds/mission/NowStrip';
 import { DoneWhenList, doneWhenLabel, parseDoneWhen } from '../ds/mission/DoneWhenList';
 import { FilesPanel } from '../ds/mission/FilesPanel';
+import { SettingsGlance } from '../ds/settings/SettingsGlance';
+import { DEFAULT_SETTINGS, type Settings } from '../ds/settings/SettingsModal';
 import { CrewPanel } from '../ds/mission/CrewPanel';
 import type { ModelInfo } from '../ds/forms/ModelSelect';
 
@@ -536,7 +538,7 @@ type RailTab = import('../state').RailTab;
 
 export function ProjectView({
   p, models, modelsLoading, modelsNote, modelsInheritNote, routeRunId, onSelectRun, routeTab, onSelectTab, onBack,
-  refreshFleet, auth, theme, onToggleTheme, onSettings,
+  refreshFleet, auth, theme, onToggleTheme, onSettings, settings,
 }: {
   p: ProjectSummary; models: ModelInfo[] | null;
   modelsLoading?: boolean; modelsNote?: string; modelsInheritNote?: string;
@@ -546,8 +548,15 @@ export function ProjectView({
   routeTab: RailTab; onSelectTab: (tab: RailTab) => void;
   onBack: () => void; refreshFleet: () => void;
   theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
+  /** Saved settings, for the rail's glance: global and this project's overlay. */
+  settings: { global: Settings; project?: Settings };
 }) {
   const history = useRunHistory(p.id);
+  const effectiveSettings = { ...DEFAULT_SETTINGS, ...settings.global, ...(settings.project ?? {}) } as Settings;
+  const settingOverrides = Object.keys(settings.project ?? {});
+  const settingsGlance = (
+    <SettingsGlance effective={effectiveSettings} overrides={settingOverrides} onOpen={onSettings} />
+  );
   const activeRunId = p.activeRun?.id ?? null;
   // The selected run lives in the URL so a refresh restores the same view.
   const selectedRunId = routeRunId;
@@ -760,6 +769,7 @@ export function ProjectView({
             liveBasis={run.costBasis} liveUsage={run.usage} liveTurns={selectedRun.turns}
             onChanged={refreshFleet} />
         )} />
+      {settingsGlance}
     </div>
   );
   const filesPane = selectedRunId ? (
@@ -973,10 +983,16 @@ export function ProjectView({
             runs are right there, and a past run is one click from the talk
             about the next one. */}
         {wide && rail(
-          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textTransform: 'uppercase', letterSpacing: 'var(--ls-caps)', padding: '6px 0 2px' }}>
-            Runs · {history.length}
+          null,
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
+            {settingsGlance}
+            <section>
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textTransform: 'uppercase', letterSpacing: 'var(--ls-caps)', padding: '0 0 6px' }}>
+                Runs · {history.length}
+              </div>
+              {history.length > 0 ? runsPane : <Empty>No runs yet — the first mission you start here will be the first.</Empty>}
+            </section>
           </div>,
-          history.length > 0 ? runsPane : <Empty>No runs yet — the first mission you start here will be the first.</Empty>,
         )}
         </div>
       ) : (

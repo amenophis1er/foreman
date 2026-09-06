@@ -233,13 +233,15 @@ export default function App() {
           modelsNote={models.note} modelsInheritNote={models.inheritNote} routeRunId={runId}
           onSelectRun={(id) => goRun(project.id, id)}
           routeTab={tab} onSelectTab={(t) => runId && goRun(project.id, runId, t)}
-          onBack={() => go(null)} refreshFleet={refresh} {...shared} />
+          onBack={() => go(null)} refreshFleet={refresh}
+          settings={{ global: settings.global, project: settings.projects[project.id] }} {...shared} />
       ) : (
         <FleetView projects={projects} connected={connected} activity={activity}
           onOpen={(id) => go(id)} refresh={refresh} {...shared} />
       )}
       {settingsOpen && (
         <SettingsModal
+          scope={project ? 'project' : 'global'}
           global={settings.global}
           project={project ? settings.projects[project.id] : undefined}
           projectName={project?.name}

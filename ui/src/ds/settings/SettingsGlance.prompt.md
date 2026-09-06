@@ -1,0 +1,3 @@
+A read-only block for the mission rail: what a mission started in this project would run with. Seven label/value rows in small type (director, workers, planner, cap per run, warn at, at the cap, read-only tools), values in mono, and a gold "override" mark on rows the project sets itself; everything else inherits Global. One ghost button, "Change…", opens Settings on the project scope.
+
+It exists because per-project settings lived only behind a scope switch inside the Settings modal and did not feel like the project's own property. This makes them visible where the project is; the modal stays the one place they are edited.

@@ -194,7 +194,9 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
     <Modal width="51.25rem" onClose={onClose} dismissible={false} style={{ maxHeight: '82vh', height: '37.5rem', ...style }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', padding: 'var(--sp-2) var(--sp-3)', borderBottom: '1px solid var(--line)' }}>
         <span style={{ fontSize: 'var(--fs-lg)', fontWeight: 'var(--fw-semibold)' }}>Settings</span>
-        <Tabs size="sm" value={scope} onChange={setScope} tabs={[{ value: 'global', label: 'Global' }, ...(projectName ? [{ value: 'project', label: projectName, icon: 'folder' }] : [])]} />
+        {/* Opened from a project, the project comes first: it is what the
+            person came to change, and Global is the way up, not the default. */}
+        <Tabs size="sm" value={scope} onChange={setScope} tabs={[...(projectName ? [{ value: 'project', label: projectName, icon: 'folder' }] : []), { value: 'global', label: 'Global' }]} />
         <IconButton icon="close" label="Close" onClick={onClose} style={{ marginLeft: 'auto' }} />
       </div>
       <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: '11.25rem 1fr' }}>
