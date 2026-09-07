@@ -9,6 +9,7 @@ import {
   stalledWorkerReport, workerStatusBlock,
   watchRepeats, watchSilence, REPEAT_EXEMPT, observeToolUse,
   DEFAULT_ASK_TIMEOUT_MS, armAskTimeout, unattendedAnswer, unattendedDenyMessage,
+  tokenCapLabel,
 } from './orchestrator.js';
 import { makePolicy, type PendingPermission } from './policy.js';
 import type { AgentEnv } from './provider.js';
@@ -1144,4 +1145,94 @@ test('pendingAsks exposes an open question with its text and options, and forget
   run.answerQuestion(open[0].id, open[0].options![0]);
   await p;
   assert.deepEqual(run.pendingAsks(), []);
+});
+
+// ---------------------------------------------------------------------------
+// The token cap: the bound that holds where dollars cannot
+// ---------------------------------------------------------------------------
+
+/**
+ * A run whose usage is whatever the test says it is. Usage is read through
+ * liveUsage(), so setting `meta.usage` is enough — the confirmed half of the
+ * figure the cap actually consults.
+ */
+function cappedRun(over: Partial<RunMeta> = {}, usage?: Partial<{
+  inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number;
+}>) {
+  const run = new MissionRun(
+    meta({ costBasis: 'free', ...over }), () => {}, () => {}, noopAgentEnv,
+  ) as unknown as {
+    meta: RunMeta; turns: number;
+    capReached(): string | null;
+    budgetLine(): string;
+  };
+  if (usage) {
+    run.meta.usage = {
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, ...usage,
+    };
+  }
+  return run;
+}
+
+test('capReached says nothing while the token total is under the cap', () => {
+  const run = cappedRun({}, {
+    inputTokens: 1_000_000, outputTokens: 100_000,
+    cacheReadTokens: 1_000_000, cacheWriteTokens: 500_000,
+  });
+  assert.equal(run.capReached(), null);
+});
+
+test('capReached counts cache tokens too, and fires at the default 5M', () => {
+  // Under on input and output alone; over once cache is counted — which is
+  // exactly the run the cap exists for, since cache reads are most of the
+  // traffic on a long director loop.
+  const run = cappedRun({}, {
+    inputTokens: 500_000, outputTokens: 100_000,
+    cacheReadTokens: 4_000_000, cacheWriteTokens: 400_000,
+  });
+  const cap = run.capReached();
+  assert.ok(cap?.startsWith('TOKEN CAP REACHED'), `got ${cap}`);
+  assert.match(cap!, /5\.0M tokens/);
+});
+
+test('capReached honours an explicit maxTokens over the default', () => {
+  const run = cappedRun({ maxTokens: 1_000_000 }, { inputTokens: 1_200_000 });
+  assert.ok(run.capReached()?.startsWith('TOKEN CAP REACHED'));
+  const roomy = cappedRun({ maxTokens: 20_000_000 }, { inputTokens: 6_000_000 });
+  assert.equal(roomy.capReached(), null);
+});
+
+test('the turn cap still wins when turns and tokens are both past their caps', () => {
+  const run = cappedRun({ maxTurns: 10, maxTokens: 1_000 }, { inputTokens: 9_000_000 });
+  run.turns = 50;
+  assert.match(run.capReached()!, /^TURN CAP REACHED/);
+});
+
+test('the token cap binds a free run, which has no dollar cap to bind it', () => {
+  // Priced or not, the token bound applies: it is checked before the test that
+  // sends unpriced runs home with nothing.
+  for (const basis of ['free', 'unpriced', 'priced'] as const) {
+    const run = cappedRun({ costBasis: basis }, { inputTokens: 6_000_000 });
+    assert.ok(run.capReached()?.startsWith('TOKEN CAP REACHED'), `basis ${basis}`);
+  }
+});
+
+test('budgetLine tells an unmetered director its turn AND token bounds', () => {
+  const free = cappedRun({ costBasis: 'free' }).budgetLine();
+  assert.match(free, /150 director turns and 5M tokens/);
+  const unpriced = cappedRun({ costBasis: 'unpriced' }).budgetLine();
+  assert.match(unpriced, /150 director turns and 5M tokens/);
+  // A custom cap is quoted as set, not as the default.
+  assert.match(cappedRun({ maxTokens: 2_000_000 }).budgetLine(), /2M tokens/);
+  // A priced run still speaks in dollars, and says nothing about tokens.
+  const priced = cappedRun({ costBasis: 'priced' }).budgetLine();
+  assert.match(priced, /^Budget: \$5\.00/);
+  assert.doesNotMatch(priced, /tokens/);
+});
+
+test('tokenCapLabel rounds to a figure a director can hold in mind', () => {
+  assert.equal(tokenCapLabel(5_000_000), '5M tokens');
+  assert.equal(tokenCapLabel(1_500_000), '1.5M tokens');
+  assert.equal(tokenCapLabel(250_000), '250k tokens');
+  assert.equal(tokenCapLabel(400), '400 tokens');
 });

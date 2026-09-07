@@ -23,6 +23,11 @@ import { detectTailscale } from './tailscale.js';
 import { PACKAGE, checkForUpdate, currentVersion } from './update.js';
 
 const PORT = Number(process.env.PORT ?? 4177);
+/** The second listener, for exposed dev servers — same default as the server's. */
+const SERVICES_PORT = (() => {
+  const n = Number(process.env.FOREMAN_SERVICES_PORT);
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : PORT + 1;
+})();
 const HOME_DIR = process.env.FOREMAN_HOME || path.join(os.homedir(), '.foreman');
 const LABEL = 'dev.foreman.server';
 const PID_FILE = path.join(HOME_DIR, 'foreman.pid');
@@ -321,7 +326,7 @@ async function update(bin: string, flags: string[]): Promise<number> {
 async function doctor(): Promise<number> {
   const tailnet = await detectTailscale(PORT);
   const distDir = fileURLToPath(new URL('../ui/dist', import.meta.url));
-  const checks = await preflight({ port: PORT, foremanHome: HOME_DIR, distDir, tailnet });
+  const checks = await preflight({ port: PORT, servicesPort: SERVICES_PORT, foremanHome: HOME_DIR, distDir, tailnet });
   // Port-in-use is an error for `start` and a fact for `doctor`: it usually means Foreman is already up.
   for (const c of checks) {
     if (c.name.startsWith('Port') && c.status === 'error') { c.status = 'warn'; c.detail = 'in use — Foreman is probably already running'; c.fix = `foreman open · or PORT=${PORT + 1} foreman`; }

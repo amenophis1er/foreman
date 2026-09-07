@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { ServiceRegistry, parseServicePath, portOpen, proxyToService, servicePath } from './services.js';
+import { ServiceRegistry, parseServicePath, portOpen, proxyToService, servicePath, servicesHandler } from './services.js';
+import { requestAllowed } from './guard.js';
 
 test('service paths round-trip and reject junk', () => {
   assert.equal(servicePath('run-1', 8934), '/svc/run-1/8934/');
@@ -49,5 +50,39 @@ test('proxyToService streams a response and reports a dead port as 502', async (
     assert.equal(await portOpen(port), false);
   } finally {
     front.close();
+  }
+});
+
+test('the services port serves only /svc/ — everything else is a 404', async () => {
+  const registry = new ServiceRegistry();
+  // The guard checks the Host against the port it is given, and the port is
+  // only known after listen(), so it is read out of a box the listener fills.
+  let port = 0;
+  const server = http.createServer(servicesHandler({
+    registry,
+    allowed: (req) => requestAllowed(req, { port, tailnet: null }),
+  }));
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  port = (server.address() as { port: number }).port;
+  try {
+    const other = await fetch(`http://127.0.0.1:${port}/anything`);
+    assert.equal(other.status, 404);
+    assert.deepEqual(await other.json(), { error: 'not found' });
+
+    const undeclared = await fetch(`http://127.0.0.1:${port}/svc/run-1/3000/`);
+    assert.equal(undeclared.status, 404);
+    assert.deepEqual(await undeclared.json(), { error: 'no such service' });
+
+    // And the guard still runs first: a rebound Host never reaches the proxy.
+    // Raw http, not fetch — undici refuses to let a caller set Host.
+    const rebound = await new Promise<number>((resolve, reject) => {
+      const r = http.request({ host: '127.0.0.1', port, path: '/svc/run-1/3000/', headers: { host: 'evil.example' } },
+        (res2) => { res2.resume(); resolve(res2.statusCode ?? 0); });
+      r.on('error', reject);
+      r.end();
+    });
+    assert.equal(rebound, 421);
+  } finally {
+    server.close();
   }
 });

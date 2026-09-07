@@ -69,6 +69,7 @@ exits. Nothing blocks unless it says so.
 | Variable | Meaning | Default |
 |---|---|---|
 | `PORT` | listen port | `4177` |
+| `FOREMAN_SERVICES_PORT` | the port dev servers the crew exposed are proxied on — their own origin, so a page the crew built cannot call Foreman's API | `PORT` + 1 |
 | `FOREMAN_HOME` | state directory: runs, settings, logs | `~/.foreman` |
 | `FOREMAN_BIND` | `auto` (loopback + Tailscale when present), `local`, or `all` | `auto` |
 | `FOREMAN_BROWSER` | browser for missions: `chrome`, `chromium`, `msedge`, `firefox` | `chrome` |
@@ -94,7 +95,8 @@ exits. Nothing blocks unless it says so.
 4. **Files.** What the run changed, against a baseline taken at start (git
    ref or snapshot), with diffs; what it produced — screenshots, logs, work
    files — viewable in place, arrow keys to step through; any dev server the
-   crew exposed, one click away. HTML renders in a sandbox with its own
+   crew exposed, one click away — on its own port, and so its own origin, so a
+   page an agent wrote cannot turn around and call Foreman's API. HTML renders in a sandbox with its own
    scripts, so a built page is a page, not a source listing.
 5. **Next.** A finished run is a starting point: **Plan the next step** opens
    a new planning conversation already seeded with what was built, the
@@ -128,7 +130,10 @@ itself. A local model is `free`. A cloud model with no published price is
 `unpriced`, and the meter shows what is true instead: tokens in, tokens out,
 turns. The one exception is a dated table of OpenAI's list prices, visible in
 `src/openai-prices.ts` with the day it was checked. Budget caps bind on
-dollars where dollars are real and on wall clock always.
+dollars where dollars are real and on wall clock always — and, on a run that
+is `free` or `unpriced`, on tokens too: 5M by default across input, output and
+cache, because turns and minutes alone do not notice a director whose turns
+are cheap and enormous.
 
 Which account pays is printed at startup and shown wherever a mission can be
 started. Pin it with `FOREMAN_CLAUDE_CONFIG_DIR`; assert it with
@@ -224,7 +229,7 @@ result.
 ```sh
 npm ci && npm run setup      # dependencies, then the dashboard build
 npm start                    # serves http://localhost:4177
-npm test                     # 299 tests, node:test
+npm test                     # 358 tests, node:test
 npm run typecheck            # server and dashboard
 npm run dev                  # API + Vite together
 scripts/dev-restart.sh       # restarts the server only when nothing would be lost

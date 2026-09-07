@@ -63,6 +63,8 @@ import {
   dropPendingAsk,
 } from './planner.js';
 import { DEFAULT_TOOL_POLICY } from './policy.js';
+import { pathPermitted, requestAllowed } from './guard.js';
+import { BodyError, bodyLimitFor, parseBody } from './http-body.js';
 import { saveAttachments } from './attachments.js';
 import { cloneRepo, looksLikeRepoUrl, parseRepoUrl } from './clone.js';
 import { readMemory } from './memory.js';
@@ -71,7 +73,7 @@ import { reconcileRole } from './role-provider.js';
 import { closeMissionBranch, compareUrl, createPullRequest, ensureMissionBranch, ghReady, gitInfo, prDraft, pullRequestState, pushBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
-import { ServiceRegistry, SVC_PREFIX, parseServicePath, portOpen, proxyToService, servicePath } from './services.js';
+import { ServiceRegistry, portOpen, servicesHandler } from './services.js';
 import { HELP_TEXT, expandHome, parseCommand, projectsRoot, slug } from './notify/commands.js';
 import {
   DEFAULT_FLEET_MODEL, FLEET_CHAT_ID, PHONE_CONTEXT_MS, phoneRoute, runFleetTurn,
@@ -391,7 +393,6 @@ function toPath(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() ? v.trim() : undefined;
 }
 
-/** Parses a model choice: a known alias or a full claude-* id; else inherit. */
 /**
  * A model id from any provider.
  *
@@ -443,6 +444,19 @@ async function locateFolders(name: string): Promise<string[]> {
 
 const PORT = Number(process.env.PORT ?? 4177);
 /**
+ * Where the dev servers the crew exposed are proxied — a second port, and so a
+ * second origin. Those pages are written by an agent, and a browser gives a
+ * page the run of every API on its own origin: served from Foreman's port, an
+ * exposed preview could start missions, read the folder tree and spend the
+ * budget with a line of fetch(). On a port of its own the same-origin policy
+ * does that refusing for us. FOREMAN_SERVICES_PORT overrides; PORT + 1 by default.
+ */
+const SERVICES_PORT = (() => {
+  const raw = process.env.FOREMAN_SERVICES_PORT;
+  const n = Number(raw);
+  return raw && Number.isInteger(n) && n >= 1 && n <= 65535 ? n : PORT + 1;
+})();
+/**
  * Where to listen. Default: loopback, plus the tailnet address when this
  * machine is on one — never every interface, since there is no login.
  * `FOREMAN_BIND=all` opens it wide on purpose (a trusted LAN, a container);
@@ -474,12 +488,30 @@ const authPromise = detectAuth();
 const activeByProject = new Map<string, MissionRun | null>();
 const sseClients = new Set<http.ServerResponse>();
 
+/**
+ * A comment frame down every open stream, often enough that nothing in the
+ * middle calls the connection dead.
+ *
+ * A quiet fleet produces no events for minutes at a time, and an idle stream
+ * is exactly what proxies (`tailscale serve`, anything else in front) and
+ * phone radios reclaim — the dashboard then sits there looking live while
+ * receiving nothing. `:` starts a comment in the SSE grammar, so this costs
+ * the client nothing to parse and never reaches an event handler. Unref'd:
+ * it must not be the reason the process stays up. Clients that have gone
+ * away are dropped here rather than waiting for a real event to notice.
+ */
+setInterval(() => {
+  for (const res of sseClients) {
+    if (res.destroyed || res.writableEnded) { sseClients.delete(res); continue; }
+    try { res.write(': ping\n\n'); } catch { sseClients.delete(res); }
+  }
+}, 25_000).unref();
+
 function activeRuns(): MissionRun[] {
   // Filter out reservation placeholders (see reserveProject).
   return [...activeByProject.values()].filter((r): r is MissionRun => Boolean(r));
 }
 
-/** Broadcasts an enveloped frame to live clients and persists the bare event. */
 /**
  * What happened in the fleet lately, in one line each, for the front desk.
  *
@@ -582,10 +614,6 @@ function ledgerKeyFor(meta: RunMeta): string {
   return `${meta.id}.${meta.resumes ?? 0}`;
 }
 
-/**
- * Chat frames carry `chat: true` and no run id, so a UI following the same
- * stream can tell a planning conversation from a mission without guessing.
- */
 /**
  * A chat event for open tabs only, not the log: the log it would describe
  * is the one being thrown away. Used when a conversation is cleared, so a
@@ -1220,11 +1248,6 @@ async function chatMetaOf(projectId: string): Promise<ChatMeta> {
 }
 
 /**
- * Runs one planning turn: the human's message goes into the log first (so a
- * reload mid-turn still shows what was asked), then the planner's reply
- * streams out through the same envelope machinery as a mission.
- */
-/**
  * `shown` is what the transcript records as the human's message when it
  * differs from what the planner is sent (a fork's seed). `via: 'telegram'`
  * means the phone started this turn: the planner's words go back there, and
@@ -1349,6 +1372,28 @@ function reserveProject(projectId: string): boolean {
   if (activeByProject.has(projectId)) return false;
   activeByProject.set(projectId, null); // reservation placeholder
   return true;
+}
+
+/**
+ * Where an exposed service is reachable from, without the trailing slash — the
+ * same address the human already uses for Foreman, but on SERVICES_PORT.
+ *
+ * The starting point is the URL the dashboard hands out (Settings, else the
+ * tailnet, else localhost), because that is the one that actually reaches this
+ * machine from wherever the human reads their notifications. Only the port
+ * changes. An https URL cannot simply be re-pointed: it is `tailscale serve`
+ * terminating TLS in front of the main port, and serve fronts that port alone,
+ * so the honest answer is plain http straight at the tailnet address.
+ */
+async function servicesBase(): Promise<string> {
+  const publicUrl = (await notifySettings().catch(() => null))?.publicUrl
+    ?? (tailnet ? tailnetUrl(tailnet, PORT) : `http://localhost:${PORT}`);
+  const direct = () => `http://${tailnet ? (tailnet.dnsName ?? tailnet.ip) : 'localhost'}:${SERVICES_PORT}`;
+  let u: URL;
+  try { u = new URL(publicUrl); } catch { return direct(); }
+  if (u.protocol !== 'http:') return direct();
+  u.port = String(SERVICES_PORT);
+  return u.origin;
 }
 
 /** Runs a mission to completion. The project must already be reserved. */
@@ -1481,8 +1526,7 @@ async function driveRun(
     exposeService: async (runId, port, label) => {
       if (!(await portOpen(port))) return { ok: false, reason: `nothing is listening on 127.0.0.1:${port} — start the server first` };
       const svc = services.register(runId, port, label);
-      const base = (await notifySettings().catch(() => null))?.publicUrl ?? (tailnet ? tailnetUrl(tailnet, PORT) : `http://localhost:${PORT}`);
-      return { ok: true, url: `${base.replace(/\/+$/, '')}${svc.path}`, path: svc.path };
+      return { ok: true, url: `${await servicesBase()}${svc.path}`, path: svc.path };
     },
   });
   activeByProject.set(projectId, run);
@@ -1719,13 +1763,52 @@ async function serveStatic(pathname: string, res: http.ServerResponse): Promise<
 // Request helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * The request body as an object, refusing to buffer more than the route's cap.
+ *
+ * Both failures throw a `BodyError`, which the handler's outer catch turns
+ * into the client's own status instead of a 500 that reads like a Foreman bug:
+ * 413 when the body outgrows the cap (see `src/http-body.ts` for why there is
+ * one), 400 when what arrived is not JSON. Content-Length is consulted first
+ * so an oversized upload is refused before a single byte is read.
+ */
 async function readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+  const pathname = new URL(req.url ?? '/', `http://localhost:${PORT}`).pathname;
+  const limit = bodyLimitFor(req.method, pathname);
+  const declared = Number(req.headers['content-length']);
+  if (Number.isFinite(declared) && declared > limit) throw new BodyError(413, 'request body too large');
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let seen = 0;
+  for await (const c of req) {
+    const buf = c as Buffer;
+    seen += buf.length;
+    if (seen > limit) throw new BodyError(413, 'request body too large');
+    chunks.push(buf);
+  }
   if (!chunks.length) return {};
-  const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString());
-  return typeof parsed === 'object' && parsed !== null
-    ? (parsed as Record<string, unknown>) : {};
+  return parseBody(Buffer.concat(chunks));
+}
+
+/**
+ * The folders the folder picker may look inside.
+ *
+ * `/browse` and `/mkdir` exist to let the human point at a project, and they
+ * took any absolute path — which made them a directory listing and a
+ * `mkdir -p` for the whole filesystem, reachable from a page that got past
+ * nothing but a URL. The answer is the same one the permission cards use:
+ * name the places a project could plausibly live — the home directory, the
+ * configured projects root (it may be on another volume), and every folder
+ * already linked as a project — and refuse the rest. Read afresh per request
+ * because linking a project is what widens the set.
+ */
+async function browseRoots(): Promise<string[]> {
+  const settings = await store.readSettings().catch(() => ({ global: {} as Record<string, unknown> }));
+  const roots = [
+    os.homedir(),
+    projectsRoot((settings.global as Record<string, unknown>).projectsRoot),
+  ];
+  for (const p of await store.listProjects().catch(() => [])) roots.push(p.folder);
+  return roots;
 }
 
 function json(res: http.ServerResponse, code: number, body: unknown): void {
@@ -1738,31 +1821,16 @@ function json(res: http.ServerResponse, code: number, body: unknown): void {
 // ---------------------------------------------------------------------------
 
 const server = http.createServer(async (req, res) => {
+  // Before any route, including the service proxy: is this request one we
+  // should be answering at all? Foreman has no login, so a browser that can
+  // reach the port can otherwise act as the operator — a page on any domain
+  // can point that name at 127.0.0.1 (DNS rebinding) or simply POST at
+  // localhost from whatever tab the operator has open. See src/guard.ts.
+  const verdict = requestAllowed(req, { port: PORT, tailnet, bindAll: BIND === 'all' });
+  if (!verdict.ok) { json(res, verdict.status, { error: verdict.error }); return; }
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
-  // Services the crew exposed: /svc/<run>/<port>/… goes to 127.0.0.1:<port>,
-  // but only for a pair a run declared. A page served this way asks for its
-  // absolute-path assets (`/app.js`) against Foreman's root; those arrive as
-  // sub-resource requests carrying the service page as Referer, and are
-  // routed to the same service. Documents never are — a typed URL is Foreman's.
-  {
-    const svc = parseServicePath(url.pathname);
-    if (svc) {
-      if (!services.has(svc.runId, svc.port)) { json(res, 404, { error: 'no such service' }); return; }
-      proxyToService(req, res, svc.port, svc.rest, url.search, servicePath(svc.runId, svc.port));
-      return;
-    }
-    const ref = req.headers.referer;
-    const dest = String(req.headers['sec-fetch-dest'] ?? '');
-    if (ref && dest && dest !== 'document' && dest !== 'empty' && !url.pathname.startsWith(SVC_PREFIX)) {
-      try {
-        const via = parseServicePath(new URL(ref).pathname);
-        if (via && services.has(via.runId, via.port)) {
-          proxyToService(req, res, via.port, url.pathname, url.search, servicePath(via.runId, via.port));
-          return;
-        }
-      } catch { /* not a URL we can read — fall through to Foreman's own routes */ }
-    }
-  }
+  // Note: /svc/… is not handled here. Exposed dev servers live on
+  // SERVICES_PORT, on their own origin — see servicesServer below.
   const runEventsMatch = url.pathname.match(/^\/runs\/([^/]+)\/events$/);
   // The deck: what a run changed and what it produced. Read-only by design —
   // a stated non-goal — and handled before the chain because it owns two paths
@@ -2605,6 +2673,9 @@ const server = http.createServer(async (req, res) => {
     } else if (req.method === 'GET' && url.pathname === '/browse') {
       const requested = url.searchParams.get('path') || os.homedir();
       const dir = path.resolve(requested);
+      if (!pathPermitted(dir, await browseRoots())) {
+        return json(res, 400, { error: 'path outside the folders Foreman may browse' });
+      }
       const st = await stat(dir).catch(() => null);
       if (!st?.isDirectory()) return json(res, 400, { error: `not a directory: ${dir}` });
       const entries = await readdir(dir, { withFileTypes: true });
@@ -2623,6 +2694,11 @@ const server = http.createServer(async (req, res) => {
       if (typeof name !== 'string' || !name.trim() || /[/\\]/.test(name) || name.trim().startsWith('.')) {
         return json(res, 400, { error: 'invalid folder name' });
       }
+      // The parent is what is being written into, so the parent is what has
+      // to be inside the allowed folders.
+      if (!pathPermitted(parent, await browseRoots())) {
+        return json(res, 400, { error: 'path outside the folders Foreman may browse' });
+      }
       const parentSt = await stat(parent).catch(() => null);
       if (!parentSt?.isDirectory()) return json(res, 400, { error: `not a directory: ${parent}` });
       const created = path.join(parent, name.trim());
@@ -2638,12 +2714,31 @@ const server = http.createServer(async (req, res) => {
       json(res, 404, { error: 'not found' });
     }
   } catch (err) {
+    if (err instanceof BodyError) {
+      // The answer goes out before the stream is torn down: destroying the
+      // request first makes the client see a connection reset instead of the
+      // 413 that explains it. `res.end` has already queued the bytes by the
+      // time `req.destroy` stops the sender from writing more.
+      json(res, err.status, { error: err.message });
+      if (!req.readableEnded) req.destroy();
+      return;
+    }
     json(res, 500, { error: String(err) });
   }
 });
 
+/**
+ * The second origin: nothing but the crew's exposed dev servers, guarded the
+ * same way as the dashboard. Kept separate so a page an agent wrote cannot
+ * reach a single Foreman route from the browser — see src/services.ts.
+ */
+const servicesServer = http.createServer(servicesHandler({
+  registry: services,
+  allowed: (req) => requestAllowed(req, { port: SERVICES_PORT, tailnet, bindAll: BIND === 'all' }),
+}));
+
 // Fail loudly on a misconfigured install before anything else happens.
-if (!reportPreflight(await preflight({ port: PORT, foremanHome: store.root, distDir: DIST_DIR, tailnet }))) {
+if (!reportPreflight(await preflight({ port: PORT, servicesPort: SERVICES_PORT, foremanHome: store.root, distDir: DIST_DIR, tailnet }))) {
   process.exit(1);
 }
 
@@ -2688,11 +2783,13 @@ void store.listRuns().then((runs) => {
 }).catch(() => {});
 
 if (BIND === 'all') {
-  server.listen(PORT, () => console.log(`Foreman listening on http://0.0.0.0:${PORT} (FOREMAN_BIND=all)`));
+  server.listen(PORT, () => console.log(`Foreman listening on http://0.0.0.0:${PORT} (FOREMAN_BIND=all) · services on http://0.0.0.0:${SERVICES_PORT}`));
+  servicesServer.listen(SERVICES_PORT);
 } else {
   server.listen(PORT, '127.0.0.1', () => {
-    console.log(`Foreman listening on http://localhost:${PORT}${tailnet ? ` · ${tailnetUrl(tailnet, PORT)}` : ''}`);
+    console.log(`Foreman listening on http://localhost:${PORT}${tailnet ? ` · ${tailnetUrl(tailnet, PORT)}` : ''} · services on http://localhost:${SERVICES_PORT}`);
   });
+  servicesServer.listen(SERVICES_PORT, '127.0.0.1');
   if (tailnet) {
     // A second listener on the tailnet address, feeding the same handler.
     // Not 0.0.0.0: the café Wi-Fi is not the tailnet.
@@ -2700,7 +2797,12 @@ if (BIND === 'all') {
     const viaTailnet = http.createServer(onRequest);
     viaTailnet.on('error', (err) => console.warn(`[tailscale] could not listen on ${tailnet.ip}:${PORT} — ${err.message}`));
     viaTailnet.listen(PORT, tailnet.ip);
-    for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => viaTailnet.close());
+    // The services port needs the same reach: the human opens those previews
+    // from their phone, over the tailnet, like everything else.
+    const svcViaTailnet = http.createServer(servicesServer.listeners('request')[0] as http.RequestListener);
+    svcViaTailnet.on('error', (err) => console.warn(`[tailscale] could not listen on ${tailnet.ip}:${SERVICES_PORT} — ${err.message}`));
+    svcViaTailnet.listen(SERVICES_PORT, tailnet.ip);
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => { viaTailnet.close(); svcViaTailnet.close(); });
   }
 }
 
