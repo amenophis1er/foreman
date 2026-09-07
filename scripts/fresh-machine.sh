@@ -7,6 +7,7 @@
 #   scripts/fresh-machine.sh           build and start (replaces a running one)
 #   scripts/fresh-machine.sh doctor    just run `foreman doctor` and exit
 #   scripts/fresh-machine.sh stop      remove the container
+#   ANTHROPIC_API_KEY=sk-ant-… scripts/fresh-machine.sh   the signed-in (API key) path
 #
 # FOREMAN_BIND=all inside, because the container's loopback is not the host's;
 # the port is published on 127.0.0.1 only, so nothing else can reach it.
@@ -26,7 +27,12 @@ case "${1:-start}" in
   doctor) docker run --rm "$NAME" foreman doctor ;;
   start)
     docker rm -f "$NAME" >/dev/null 2>&1 || true
-    docker run -d --name "$NAME" -p 127.0.0.1:4190:4177 -p 127.0.0.1:4191:4178 "$NAME" >/dev/null
+    # An API key set in the shell that runs this script is handed to the
+    # container's environment — the signed-in path, without the key passing
+    # through anything but the shell you typed it in. A key exported inside
+    # `docker exec` reaches only that shell, never the server (PID 1).
+    docker run -d --name "$NAME" -p 127.0.0.1:4190:4177 -p 127.0.0.1:4191:4178 \
+      ${ANTHROPIC_API_KEY:+-e ANTHROPIC_API_KEY} "$NAME" >/dev/null
     sleep 3; docker logs "$NAME" 2>&1 | tail -20
     echo; echo "fresh machine: http://localhost:4190  ·  shell: docker exec -it $NAME bash  ·  stop: $0 stop" ;;
 esac
