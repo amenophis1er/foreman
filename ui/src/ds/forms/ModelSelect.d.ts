@@ -13,6 +13,8 @@ export interface ModelInfo {
   cost?: 0 | 1 | 2 | 3 | 4;
   /** One line of guidance shown under the label — where it runs and what it costs. Never reconstructed client-side, so a row Foreman can't price never grows a dollar figure it doesn't have. */
   note?: string;
+  /** Its track record on this machine, from Foreman's run ledger: "here: director 4/5 done (~$0.78, ~18 min) · workers 3/4 finished". */
+  record?: string;
   /** What spending on it is: `priced`, `free`, or real-but-unquantified (`unpriced`). Informational only here — the note already says so; ModelSelect never invents cost language from it. */
   costBasis?: 'priced' | 'free' | 'unpriced';
 }

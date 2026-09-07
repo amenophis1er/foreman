@@ -66,6 +66,7 @@ import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { saveAttachments } from './attachments.js';
 import { cloneRepo, looksLikeRepoUrl, parseRepoUrl } from './clone.js';
 import { readMemory } from './memory.js';
+import { budgetAnchor, modelRecords, projectRecord, recordLine } from './track-record.js';
 import { closeMissionBranch, compareUrl, createPullRequest, ensureMissionBranch, ghReady, gitInfo, prDraft, pullRequestState, pushBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
@@ -238,6 +239,8 @@ interface ModelOption {
   providerLabel: string;
   cost?: number;
   note?: string;
+  /** Its track record on this machine, from the run ledger; absent until it has one. */
+  record?: string;
   /** What spending on this model is: priced, free, or real-but-unquantified. */
   costBasis: CostBasis;
   /** @deprecated Mirrors `costBasis === 'priced'` for older clients. */
@@ -258,6 +261,15 @@ async function availableModels(project: Project | null): Promise<{
   reachable: boolean;
 }> {
   const out: ModelOption[] = [];
+  // The ledger, read back: each model's record across every run on this
+  // machine, attached as one line so the picker and the planner can weigh
+  // "cheap" against "finished last time".
+  const records = modelRecords(await store.listRuns().catch(() => []));
+  const withRecord = (m: ModelOption): ModelOption => {
+    const r = records.get(m.id) ?? records.get(m.model) ?? records.get(m.label);
+    const line = recordLine(r);
+    return line ? { ...m, record: line } : m;
+  };
 
   // Anthropic, via whichever Claude Code install or key the server resolves.
   // Always offered: it is the default, and the shipped configuration.
@@ -335,7 +347,7 @@ async function availableModels(project: Project | null): Promise<{
       count: out.filter((x) => x.providerLabel === m.providerLabel).length,
     }));
 
-  return { models: out, groups, reachable: true };
+  return { models: out.map(withRecord), groups, reachable: true };
 }
 
 /**
@@ -905,6 +917,8 @@ const fleetHost: FleetHost = {
         if (words.error) lines.push(`it stopped with: ${clipText(words.error, 300)}`);
       }
     }
+    const rec = projectRecord((await store.listRuns().catch(() => [] as RunMeta[])).filter((r) => r.folder === project.folder));
+    if (rec.done >= 2 && rec.medianCostUsd !== undefined) lines.push(`track record: ${rec.done} of ${rec.runs} missions finished; a finished one here costs about $${rec.medianCostUsd.toFixed(2)}${rec.medianMinutes !== undefined ? ` and takes ~${rec.medianMinutes} min` : ''}${rec.capHits ? `; ${rec.capHits} hit the cap` : ''}`);
     const meta = await store.readChatMeta(project.id).catch(() => null);
     if (meta?.proposal) lines.push(`a proposal is waiting for Start or Discard: "${clipText(firstLine(meta.proposal.mission), 100)}" cap $${meta.proposal.budgetUsd}`);
     if (chatTurns.has(project.id)) lines.push('its planner is replying right now');
@@ -1023,7 +1037,7 @@ async function driveFleetTurn(text: string, via: 'telegram' | 'http'): Promise<{
     const result = await runFleetTurn({
       sessionId: meta.sessionId, text, model, cwd, host: fleetHost, via,
       news: fleetNews(since), sinceMs: Date.now() - since,
-      models: models.map((m) => ({ id: m.id, label: m.label, providerId: m.providerId, providerLabel: m.providerLabel, costBasis: m.costBasis, note: m.note })),
+      models: models.map((m) => ({ id: m.id, label: m.label, providerId: m.providerId, providerLabel: m.providerLabel, costBasis: m.costBasis, note: m.note, record: m.record })),
       agentEnv: await agentEnvFor(resolved, `chat:${FLEET_CHAT_ID}`),
       emit, abort,
     });
@@ -1263,8 +1277,9 @@ async function driveChatTurn(project: Project, text: string, shown: string = tex
       projectId: project.id,
       models: models.map((m) => ({
         id: m.id, label: m.label, providerId: m.providerId,
-        providerLabel: m.providerLabel, costBasis: m.costBasis, note: m.note,
+        providerLabel: m.providerLabel, costBasis: m.costBasis, note: m.note, record: m.record,
       })),
+      anchor: await budgetAnchorFor(project).catch(() => ''),
       sessionId: meta.sessionId,
       folder: project.folder,
       text,
@@ -1525,6 +1540,12 @@ async function effectiveSettings(projectId: string): Promise<{
     workerProviderId: str(p.workerProviderId ?? g.workerProviderId),
     gitBranchPerMission: (p.gitBranchPerMission ?? g.gitBranchPerMission) !== false,
   };
+}
+
+/** What missions have cost in this project and across the fleet, as the planner's anchor. */
+async function budgetAnchorFor(project: Project): Promise<string> {
+  const runs = await store.listRuns();
+  return budgetAnchor(projectRecord(runs.filter((r) => r.folder === project.folder)), projectRecord(runs), project.name);
 }
 
 /** Git facts per folder, for the fleet poll — asked at most every few seconds per project. */

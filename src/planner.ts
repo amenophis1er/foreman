@@ -173,6 +173,8 @@ export interface PlannerModel {
   providerLabel: string;
   costBasis: 'priced' | 'free' | 'unpriced';
   note?: string;
+  /** Its track record here, from the run ledger: "here: director 4/5 done (~$0.78, ~18 min)". */
+  record?: string;
 }
 
 /**
@@ -206,7 +208,7 @@ export function pickKnownModel(
 export function modelsSection(models: PlannerModel[] | undefined): string {
   if (!models?.length) return '';
   const lines = models.map((m) =>
-    `  - ${m.id} — ${m.providerLabel} · ${m.costBasis}${m.note ? ` · ${m.note}` : ''}`);
+    `  - ${m.id} — ${m.providerLabel} · ${m.costBasis}${m.note ? ` · ${m.note}` : ''}${m.record ? ` · ${m.record}` : ''}`);
   return `\nMODELS AVAILABLE ON THIS MACHINE (use these exact ids in propose_mission):\n${lines.join('\n')}\n`;
 }
 
@@ -215,6 +217,8 @@ export interface PlanningTurn {
   projectId: string;
   /** What the machine can run, so recommendations are real ids, not guesses. */
   models?: PlannerModel[];
+  /** What missions have cost here and across the fleet, from the ledger; '' when too little history. */
+  anchor?: string;
   /** Session to resume; absent starts a fresh conversation. */
   sessionId?: string;
   folder: string;
@@ -408,7 +412,7 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
         // thinking about the proposal, not discover it by asking.
         systemPrompt: {
           type: 'preset', preset: 'claude_code',
-          append: PLANNER_CHARTER + modelsSection(turn.models) + memorySection((await readMemory(turn.folder)).text, 'planner'),
+          append: PLANNER_CHARTER + modelsSection(turn.models) + (turn.anchor ?? '') + memorySection((await readMemory(turn.folder)).text, 'planner'),
         },
         mcpServers: { foreman: createSdkMcpServer({ name: 'foreman', tools: [proposeMission, askUser] }) },
         canUseTool,

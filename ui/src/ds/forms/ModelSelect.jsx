@@ -88,7 +88,7 @@ export function ModelSelect({ align = 'left', block = false, value = '', onChang
   // and "cheap" all narrow the way a person would expect.
   const filterable = rows.length > 6;
   const needle = q.trim().toLowerCase();
-  const hit = (m) => !needle || [m.label, m.model, m.id, m.providerLabel, m.note].some((s) => String(s ?? '').toLowerCase().includes(needle));
+  const hit = (m) => !needle || [m.label, m.model, m.id, m.providerLabel, m.note, m.record].some((s) => String(s ?? '').toLowerCase().includes(needle));
   const shownRows = filterable && needle ? rows.filter(hit) : rows;
   // Real providers only — the inherit row isn't one of the server's groups
   // and would otherwise show up as its own single-row "Anthropic" bucket.
@@ -248,6 +248,8 @@ function ModelRow({ m, selected, hover, onHover, onClick }) {
             reconstructed here, so a row Foreman can't price never grows a
             dollar sign. */}
         {m.note && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>{m.note}</span>}
+        {/* The ledger's one line: what this model has actually done on this machine. */}
+        {m.record && <span title="From Foreman's own run records on this machine" style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-1)', fontVariantNumeric: 'tabular-nums' }}>{m.record}</span>}
       </span>
       <span style={{ paddingTop: 3 }}><CostMark cost={m.cost} /></span>
     </button>
