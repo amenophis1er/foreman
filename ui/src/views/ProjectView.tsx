@@ -787,6 +787,20 @@ export function ProjectView({
   const [headerErr, setHeaderErr] = useState('');
   const [forking, setForking] = useState(false);
   const [prOpen, setPrOpen] = useState(false);
+  // The pull request's fate, asked of gh when a run with one is opened.
+  // A final answer is remembered on the run by the server; open is re-asked.
+  const [prState, setPrState] = useState<{ runId: string; state: 'open' | 'merged' | 'closed' | null } | null>(null);
+  const prUrl = selectedRun?.git?.pr;
+  useEffect(() => {
+    if (!selectedRunId || !prUrl) { setPrState(null); return; }
+    if (selectedRun?.git?.prState) { setPrState({ runId: selectedRunId, state: selectedRun.git.prState }); return; }
+    let cancelled = false;
+    api.prState(selectedRunId).then(async (r) => {
+      const d = r.ok ? await r.json() as { state: 'open' | 'merged' | 'closed' | null } : { state: null };
+      if (!cancelled) setPrState({ runId: selectedRunId, state: d.state });
+    }).catch(() => { if (!cancelled) setPrState({ runId: selectedRunId, state: null }); });
+    return () => { cancelled = true; };
+  }, [selectedRunId, prUrl, selectedRun?.git?.prState]);
   const forkPlan = async (runId: string) => {
     setHeaderErr('');
     setForking(true);
@@ -1056,7 +1070,11 @@ export function ProjectView({
             remote. Never from an agent, never from the phone. */}
         {!activeRunId && selectedRunId && selectedRun?.git && selectedRun.status !== 'running' && p.git?.remote && (
           selectedRun.git.pr
-            ? <Button icon="preview" onClick={() => window.open(selectedRun.git!.pr, '_blank', 'noopener')} title={selectedRun.git.pr}>Pull request ↗</Button>
+            ? <Button icon={prState?.state === 'merged' ? 'check' : prState?.state === 'closed' ? 'close' : 'preview'}
+                onClick={() => window.open(selectedRun.git!.pr, '_blank', 'noopener')}
+                title={`${selectedRun.git.pr}${prState?.state ? ` · ${prState.state}` : ''}`}>
+                Pull request{prState?.runId === selectedRunId && prState.state ? ` · ${prState.state}` : ''} ↗
+              </Button>
             : <Button icon="steer" onClick={() => setPrOpen(true)} title={`Push ${selectedRun.git.branch} and open a pull request against ${selectedRun.git.base}`}>Open pull request…</Button>
         )}
         {!activeRunId && selectedRunId && (

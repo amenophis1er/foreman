@@ -121,7 +121,7 @@ export type RunSummary = {
   createdAt: number; endedAt?: number;
   directorModel?: string; workerModel?: string; resumes?: number;
   /** The branch this mission ran on, when Foreman gave it one; `pr` once the human opened one from it. */
-  git?: { branch: string; base: string; baseHead: string | null; commits?: number; commit?: string; pr?: string };
+  git?: { branch: string; base: string; baseHead: string | null; commits?: number; commit?: string; pr?: string; prState?: 'merged' | 'closed' };
   browserTools?: boolean;
   directorSessionId?: string;
   /** What this run's spend is — see src/types.ts. Absent on older runs. */
@@ -1216,6 +1216,7 @@ export const api = {
   /** The pull request Foreman would draft for a finished run; and the act itself. */
   prDraft: (runId: string) => fetch(`/runs/${encodeURIComponent(runId)}/pr`),
   openPr: (runId: string, title: string, body: string) => post(`/runs/${encodeURIComponent(runId)}/pr`, { title, body }),
+  prState: (runId: string) => fetch(`/runs/${encodeURIComponent(runId)}/pr/state`),
   instances: () => fetch('/instances'),
   updateProject: (
     projectId: string,

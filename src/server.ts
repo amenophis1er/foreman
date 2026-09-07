@@ -32,6 +32,7 @@
  *   DELETE /fleet/chat           Forget the fleet conversation
  *   GET    /runs/{id}/pr         The pull request Foreman would draft for a finished run on its own branch
  *   POST   /runs/{id}/pr         Push that branch and open the PR (gh) or hand back the compare URL {title, body}
+ *   GET    /runs/{id}/pr/state   open | merged | closed, from gh; a final answer is remembered on the run
  *   POST   /steer                Send an operator note to a running director {runId, text}
  *   POST   /interrupt            Interrupt a run {runId}
  *   GET    /runs?projectId=      Persisted run summaries, newest first
@@ -63,7 +64,7 @@ import {
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { saveAttachments } from './attachments.js';
 import { cloneRepo, looksLikeRepoUrl, parseRepoUrl } from './clone.js';
-import { closeMissionBranch, compareUrl, createPullRequest, ensureMissionBranch, ghReady, gitInfo, prDraft, pushBranch, startMissionBranch, type GitInfo } from './gitwork.js';
+import { closeMissionBranch, compareUrl, createPullRequest, ensureMissionBranch, ghReady, gitInfo, prDraft, pullRequestState, pushBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
 import { ServiceRegistry, SVC_PREFIX, parseServicePath, portOpen, proxyToService, servicePath } from './services.js';
@@ -1729,6 +1730,7 @@ const server = http.createServer(async (req, res) => {
   })) return;
   const runResumeMatch = url.pathname.match(/^\/runs\/([^/]+)\/resume$/);
   const prMatch = url.pathname.match(/^\/runs\/([^/]+)\/pr$/);
+  const prStateMatch = url.pathname.match(/^\/runs\/([^/]+)\/pr\/state$/);
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
   const providerKeyMatch = url.pathname.match(/^\/providers\/([A-Za-z0-9_-]{1,64})\/key$/);
 
@@ -2391,6 +2393,19 @@ const server = http.createServer(async (req, res) => {
       await store.clearChat(FLEET_CHAT_ID).catch(() => {});
       broadcastChat(FLEET_CHAT_ID, 'chat_cleared', {});
       json(res, 200, { ok: true });
+
+    } else if (prStateMatch && req.method === 'GET') {
+      // What became of the run's pull request. A final answer (merged,
+      // closed) is written to the run so it is not asked again; open is.
+      const meta = await store.readMeta(prStateMatch[1]).catch(() => null);
+      if (!meta?.git?.pr) return json(res, 404, { error: 'no pull request on this run' });
+      if (meta.git.prState) return json(res, 200, { url: meta.git.pr, state: meta.git.prState, cached: true });
+      const s = await pullRequestState(meta.folder, meta.git.pr);
+      if (s && s.state !== 'open') {
+        meta.git = { ...meta.git, prState: s.state };
+        await store.writeMeta(meta).catch(() => {});
+      }
+      json(res, 200, { url: meta.git.pr, state: s?.state ?? null, mergedAt: s?.mergedAt, number: s?.number });
 
     } else if (prMatch && req.method === 'GET') {
       // The pull request as Foreman would draft it, for the sheet to edit.

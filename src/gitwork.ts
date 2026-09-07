@@ -203,6 +203,22 @@ export async function ghReady(): Promise<{ present: boolean; authed: boolean }> 
   });
 }
 
+/** What became of a pull request, from gh: open, merged or closed. Null when gh cannot say. */
+export function pullRequestState(folder: string, url: string): Promise<{ state: 'open' | 'merged' | 'closed'; mergedAt?: string; number?: number } | null> {
+  return new Promise((resolve) => {
+    execFile('gh', ['pr', 'view', url, '--json', 'state,mergedAt,number'], {
+      cwd: folder, timeout: 15_000, env: { ...process.env, GH_PROMPT_DISABLED: '1' },
+    }, (err, stdout) => {
+      if (err) return resolve(null);
+      try {
+        const d = JSON.parse(String(stdout)) as { state?: string; mergedAt?: string | null; number?: number };
+        const state = d.state === 'MERGED' ? 'merged' : d.state === 'CLOSED' ? 'closed' : d.state === 'OPEN' ? 'open' : null;
+        resolve(state ? { state, mergedAt: d.mergedAt ?? undefined, number: d.number } : null);
+      } catch { resolve(null); }
+    });
+  });
+}
+
 /** `gh pr create`, as the user. Resolves to the PR's URL, or to why not. */
 export function createPullRequest(folder: string, opts: { base: string; branch: string; title: string; body: string }): Promise<{ url?: string; error?: string }> {
   return new Promise((resolve) => {
