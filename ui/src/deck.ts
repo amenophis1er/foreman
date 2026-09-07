@@ -94,3 +94,28 @@ export function useDeck(runId: string | null, running: boolean): DeckState {
 
   return { deck, loading, error, missing, refresh };
 }
+
+/** The project's working tree as it stands, from `GET /projects/{id}/tree`. Fetched once per mount; `refresh` re-reads. */
+export function useProjectTree(projectId: string | null): { files: DeckArtifact[]; truncated: boolean; loading: boolean; error: string | null; refresh: () => void } {
+  const [files, setFiles] = useState<DeckArtifact[]>([]);
+  const [truncated, setTruncated] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  const refresh = useCallback(() => setTick((n) => n + 1), []);
+  useEffect(() => {
+    setFiles([]); setError(null);
+    if (!projectId) { setLoading(false); return; }
+    let cancelled = false;
+    setLoading(true);
+    fetch(`/projects/${encodeURIComponent(projectId)}/tree`).then(async (r) => {
+      if (cancelled) return;
+      if (!r.ok) { setError((await r.json().catch(() => ({} as { error?: string }))).error || `HTTP ${r.status}`); return; }
+      const d = await r.json() as { files: DeckArtifact[]; truncated: boolean };
+      setFiles(d.files ?? []); setTruncated(Boolean(d.truncated));
+    }).catch(() => { if (!cancelled) setError('Could not reach the server.'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [projectId, tick]);
+  return { files, truncated, loading, error, refresh };
+}

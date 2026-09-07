@@ -24,6 +24,7 @@
  *   POST   /runs/{id}/resume     Resume an interrupted/failed run
  *   POST   /permission           Resolve an approval {id, behavior, message?}
  *   POST   /answer               Answer a director question {id, text}
+ *   GET    /projects/{id}/tree    The project's files as they stand (read-only, jailed); …/artifact and …/preview as for runs
  *   GET    /search?q=            Runs across the fleet matching title, brief, project or folder
  *   POST   /fleet/chat           One turn with the fleet planner {text} → {text, costUsd}
  *   POST   /fleet/stop           Stop the fleet planner reply in flight
@@ -1606,7 +1607,11 @@ const server = http.createServer(async (req, res) => {
   // The deck: what a run changed and what it produced. Read-only by design —
   // a stated non-goal — and handled before the chain because it owns two paths
   // under /runs/{id}/ that nothing else claims.
-  if (await handleDeckRoute(req, res, url, async (id) => {
+  if (await handleDeckRoute(req, res, url, async (scope, id) => {
+    if (scope === 'projects') {
+      const project = await store.getProject(id).catch(() => null);
+      return project ? { folder: project.folder } : null;
+    }
     const m = await store.readMeta(id).catch(() => null);
     return m ? { folder: m.folder } : null;
   })) return;

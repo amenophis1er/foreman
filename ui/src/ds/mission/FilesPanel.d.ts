@@ -36,6 +36,10 @@ export interface FilesPanelProps {
   missing?: boolean;
   /** Dev servers the crew exposed; each opens in a new tab through Foreman's proxy. */
   services?: Array<{ port: number; label: string; path: string; since: number }>;
+  /** A project's tree rather than a run's deck: no changed-files section, "Files" instead of "Artifacts". */
+  tree?: boolean;
+  /** Where artifact/preview URLs are served from; defaults to `/runs/{runId}`. */
+  urlBase?: string;
   style?: CSSProperties;
 }
 

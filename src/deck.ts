@@ -759,6 +759,25 @@ async function artifactsFor(folder: string, runId: string, since: number | undef
   return out.slice(0, ARTIFACT_CAP);
 }
 
+/** Listed files per project tree. */
+const TREE_CAP = 2_000;
+
+/**
+ * The project's working tree as it stands: every file the deck would consider,
+ * minus `.foreman`, which is Foreman's own. No baseline, no diff — this is the
+ * view for a project between missions, where "what is in this folder" is the
+ * question and every run shares the answer.
+ */
+export async function projectTree(folder: string): Promise<{ files: DeckArtifact[]; truncated: boolean }> {
+  const { files, truncated } = await walk(folder, { skipWork: true, limit: TREE_CAP });
+  const out: DeckArtifact[] = [];
+  for (const f of files) {
+    if (f.rel === '.foreman' || f.rel.startsWith('.foreman/')) continue;
+    out.push({ path: f.rel, kind: artifactKind(f.rel), size: f.size, mtimeMs: f.mtimeMs });
+  }
+  return { files: out, truncated };
+}
+
 /**
  * Resolve an artifact path for serving, or null if it is not something the
  * deck may hand out. The jail is the realpath of `folder`: `..`, absolute
@@ -820,28 +839,35 @@ function sendJson(res: ServerResponse, code: number, body: unknown): void {
 }
 
 /**
- * `GET /runs/{id}/deck`, `GET /runs/{id}/artifact?path=<rel>` and
- * `GET /runs/{id}/preview/<rel>` (sandboxed render, see below). Returns
+ * `GET /runs/{id}/deck`, `GET /projects/{id}/tree`, `GET …/artifact?path=<rel>`
+ * and `GET …/preview/<rel>` (sandboxed render, see below). Returns
  * true when the URL was one of ours (whatever the outcome), false so the
  * caller's router falls through. `lookup` maps a run id to its folder; null
  * means unknown run, which is a 404 rather than an error.
  */
 export async function handleDeckRoute(
   req: IncomingMessage, res: ServerResponse, url: URL,
-  lookup: (runId: string) => Promise<{ folder: string } | null>,
+  lookup: (scope: 'runs' | 'projects', id: string) => Promise<{ folder: string } | null>,
 ): Promise<boolean> {
-  const m = url.pathname.match(/^\/runs\/([^/]+)\/(deck|artifact|preview)(?:\/(.*))?$/);
+  // The same jail and the same viewer serve two scopes: a run (its deck,
+  // relative to a baseline) and a project (its tree as it stands, no baseline).
+  const m = url.pathname.match(/^\/(runs|projects)\/([^/]+)\/(deck|tree|artifact|preview)(?:\/(.*))?$/);
   if (!m) return false;
-  const [, runId, what, previewRel] = m;
+  const [, scope, runId, what, previewRel] = m;
   if ((what === 'preview') !== (previewRel !== undefined)) return false;
+  if ((what === 'deck' && scope !== 'runs') || (what === 'tree' && scope !== 'projects')) return false;
   try {
     if (req.method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return true; }
     if (!RUN_ID_RE.test(runId)) { sendJson(res, 404, { error: 'not found' }); return true; }
-    const run = await lookup(runId);
+    const run = await lookup(scope as 'runs' | 'projects', runId);
     if (!run) { sendJson(res, 404, { error: 'not found' }); return true; }
 
     if (what === 'deck') {
       sendJson(res, 200, await deckFor(run.folder, runId));
+      return true;
+    }
+    if (what === 'tree') {
+      sendJson(res, 200, await projectTree(run.folder));
       return true;
     }
 

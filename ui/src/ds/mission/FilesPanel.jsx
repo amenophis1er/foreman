@@ -22,11 +22,11 @@ function fmtAgo(ms, now) {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
 }
-function previewUrl(runId, path) {
-  return `/runs/${encodeURIComponent(runId)}/preview/${path.split('/').map(encodeURIComponent).join('/')}`;
+function previewUrl(base, path) {
+  return `${base}/preview/${path.split('/').map(encodeURIComponent).join('/')}`;
 }
-function artifactUrl(runId, path) {
-  return `/runs/${encodeURIComponent(runId)}/artifact?path=${encodeURIComponent(path)}`;
+function artifactUrl(base, path) {
+  return `${base}/artifact?path=${encodeURIComponent(path)}`;
 }
 
 /** A path that keeps its file name when the rail is narrow: the directory clips, the name never does. */
@@ -68,14 +68,16 @@ function Row({ onClick, title, children }) {
  * anything opens it in the viewer, where a diff or a screenshot has the room
  * it needs. The rail lists; the viewer shows.
  */
-export function FilesPanel({ runId, deck, loading, error, missing, services = [], style }) {
+export function FilesPanel({ runId, deck, loading, error, missing, services = [], tree = false, urlBase, style }) {
   const now = Date.now();
+  // Where the files are served from: a run's deck routes, or a project's.
+  const base = urlBase ?? `/runs/${encodeURIComponent(runId)}`;
   const [viewingIdx, setViewingIdx] = useState(null);
   const wrap = { display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)', ...style };
 
   if (error) return <div style={wrap}><Empty>Could not read the working tree: {error}</Empty></div>;
   if (missing || (!deck && !loading)) {
-    return <div style={wrap}><Empty>No file record for this run — the server has no baseline for it.</Empty></div>;
+    return <div style={wrap}><Empty>{tree ? 'Could not list the folder.' : 'No file record for this run — the server has no baseline for it.'}</Empty></div>;
   }
   if (!deck) return <div style={wrap}><Empty>Reading the working tree…</Empty></div>;
 
@@ -102,11 +104,17 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
   return (
     <div style={wrap}>
       <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', lineHeight: 'var(--lh)' }}>
-        <span style={{ color: 'var(--ink-0)' }}>
-          {totals.files} changed · <span style={{ color: 'var(--status-good)' }}>+{totals.additions}</span>{' '}
-          <span style={{ color: 'var(--status-critical)' }}>−{totals.deletions}</span> · {artifacts.length} artifact{artifacts.length === 1 ? '' : 's'}
-        </span>
-        {' '}<span>{baseline}</span>
+        {tree ? (
+          <span><span style={{ color: 'var(--ink-0)' }}>{artifacts.length} file{artifacts.length === 1 ? '' : 's'}</span> in the folder as it stands · every run here shares them</span>
+        ) : (
+          <>
+            <span style={{ color: 'var(--ink-0)' }}>
+              {totals.files} changed · <span style={{ color: 'var(--status-good)' }}>+{totals.additions}</span>{' '}
+              <span style={{ color: 'var(--status-critical)' }}>−{totals.deletions}</span> · {artifacts.length} artifact{artifacts.length === 1 ? '' : 's'}
+            </span>
+            {' '}<span>{baseline}</span>
+          </>
+        )}
         {deck.note && <div style={{ color: 'var(--status-serious)' }}>{deck.note}</div>}
       </div>
 
@@ -129,6 +137,7 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
         </section>
       )}
 
+      {!tree && (
       <section>
         <SectionTitle>Changed files</SectionTitle>
         {files.length === 0 && <Empty>Nothing changed in the folder yet.</Empty>}
@@ -151,17 +160,18 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
           ))}
         </div>
       </section>
+      )}
 
       <section>
-        <SectionTitle>Artifacts</SectionTitle>
-        {artifacts.length === 0 && <Empty>No screenshots or work files yet.</Empty>}
+        <SectionTitle>{tree ? 'Files' : 'Artifacts'}</SectionTitle>
+        {artifacts.length === 0 && <Empty>{tree ? 'The folder is empty.' : 'No screenshots or work files yet.'}</Empty>}
         {images.length > 0 && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))', gap: 6, marginBottom: others.length ? 'var(--sp-2)' : 0 }}>
             {images.map((a, i) => (
               <button key={a.path} type="button" onClick={() => imageAt(i)}
                 title={`${a.path} · ${fmtSize(a.size)} · ${fmtAgo(a.mtimeMs, now)}`}
                 style={{ display: 'block', padding: 0, width: '100%', cursor: 'pointer', font: 'inherit', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', overflow: 'hidden', background: 'var(--bg-inset)', color: 'inherit', textAlign: 'left' }}>
-                <img src={artifactUrl(runId, a.path)} alt={a.path} loading="lazy"
+                <img src={artifactUrl(base, a.path)} alt={a.path} loading="lazy"
                   style={{ display: 'block', width: '100%', aspectRatio: '4 / 3', objectFit: 'cover' }} />
                 <div style={{ padding: '2px 5px', fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--ink-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {a.path.split('/').pop()}
@@ -183,8 +193,8 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
 
       {viewing && (
         <ArtifactViewer artifact={viewing}
-          url={viewing.kind === 'diff' && !viewing.binary ? undefined : artifactUrl(runId, viewing.path)}
-          previewUrl={viewing.kind === 'diff' ? undefined : previewUrl(runId, viewing.path)}
+          url={viewing.kind === 'diff' && !viewing.binary ? undefined : artifactUrl(base, viewing.path)}
+          previewUrl={viewing.kind === 'diff' ? undefined : previewUrl(base, viewing.path)}
           onClose={() => setViewingIdx(null)}
           index={viewingIdx} count={items.length} onStep={setViewingIdx} />
       )}

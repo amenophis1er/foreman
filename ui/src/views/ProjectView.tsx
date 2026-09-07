@@ -4,7 +4,7 @@ import {
   type CostBasis, type Entry, type ProjectSummary, type RunSummary,
   type RunView as RunViewState, type TokenUsage, withAttachments,
 } from '../state';
-import { useDeck } from '../deck';
+import { useDeck, useProjectTree } from '../deck';
 import { AppHeader } from '../ds/shell/AppHeader';
 import { Button } from '../ds/core/Button';
 import { Empty } from '../ds/core/Empty';
@@ -27,7 +27,6 @@ import { RunRow } from '../ds/mission/RunRow';
 import { NowStrip, type NowActivity } from '../ds/mission/NowStrip';
 import { DoneWhenList, doneWhenLabel, parseDoneWhen } from '../ds/mission/DoneWhenList';
 import { FilesPanel } from '../ds/mission/FilesPanel';
-import { SettingsGlance } from '../ds/settings/SettingsGlance';
 import { DEFAULT_SETTINGS, type Settings } from '../ds/settings/SettingsModal';
 import { CrewPanel } from '../ds/mission/CrewPanel';
 import type { ModelInfo } from '../ds/forms/ModelSelect';
@@ -240,10 +239,12 @@ function Transcript({ run, filter, jump, order, header }: {
  */
 function PlanPane({
   chat, folder, starting, error, models, modelsLoading, modelsNote, modelsInheritNote, onStart, onCompose, hasRuns, projectId, onSettings,
-  recent = [], onOpenRun, onForkRun, forking = false,
+  recent = [], runsOn, onOpenRun, onForkRun, forking = false,
 }: {
   /** The project's latest runs, newest first, for the empty state's "pick up where you left off". */
   recent?: RunSummary[];
+  /** "missions here run on … · cap $… · Change", under the invitation. */
+  runsOn?: React.ReactNode;
   onOpenRun?: (runId: string) => void;
   /** "Plan the next step" from a finished run: a seeded conversation replaces this empty state. */
   onForkRun?: (runId: string) => void;
@@ -278,6 +279,7 @@ function PlanPane({
   // is a draft to read and edit, not a message sent behind the human's back.
   const [draft, setDraft] = useState('');
   const [draftKey, setDraftKey] = useState(0);
+  const [showAllRuns, setShowAllRuns] = useState(false);
   const useStarter = (q: string) => { setDraft(q); setDraftKey((k) => k + 1); };
   // Files ride along as paths in the project folder; the planner reads them.
   const send = async (text: string, files: File[] = []) => {
@@ -315,7 +317,7 @@ function PlanPane({
               ways on from each run. The full list stays in the rail's Runs tab. */}
           {recent.length > 0 && (
             <div style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-md)', background: 'var(--bg-card)', overflow: 'hidden' }}>
-              {recent.slice(0, 4).map((r, i) => {
+              {(showAllRuns ? recent : recent.slice(0, 4)).map((r, i) => {
                 const finished = r.status !== 'running';
                 const when = new Date(r.createdAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
                 return (
@@ -345,6 +347,13 @@ function PlanPane({
                   </div>
                 );
               })}
+              {recent.length > 4 && (
+                <div style={{ borderTop: '1px solid var(--line)', padding: '4px var(--sp-2)' }}>
+                  <Button variant="ghost" size="sm" onClick={() => setShowAllRuns((v) => !v)}>
+                    {showAllRuns ? 'Show the latest four' : `Show all ${recent.length} runs`}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
           {/* Starters: each is a draft first message, edited before sending.
@@ -371,17 +380,9 @@ function PlanPane({
             onSend={(t, f) => void send(t, f)} onStop={() => void chat.stop()} onChangeModel={onSettings} autoFocus />
           {sendErr && <Banner tone="error" inline>{sendErr}</Banner>}
           <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textAlign: 'center' }}>
-            Planning reads the project and never changes it — a mission does that.
+            Planning reads the project and never changes it — a mission does that. Know what you want already? <b style={{ color: 'var(--ink-1)' }}>New mission</b>, top right.
           </span>
-          <button type="button" onClick={onCompose} style={{
-            display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', width: '100%', boxSizing: 'border-box',
-            background: 'none', border: '1px dashed var(--line-strong)', borderRadius: 'var(--r-sm)',
-            cursor: 'pointer', font: 'inherit', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textAlign: 'left',
-          }}>
-            <Icon name="write" size={12} />
-            Or skip the talk: describe the mission and start it
-            <Icon name="chevronRight" size={12} style={{ marginLeft: 'auto' }} />
-          </button>
+          {runsOn && <div style={{ display: 'flex', justifyContent: 'center' }}>{runsOn}</div>}
         </div>
       </div>
     );
@@ -600,8 +601,17 @@ export function ProjectView({
   const history = useRunHistory(p.id);
   const effectiveSettings = { ...DEFAULT_SETTINGS, ...settings.global, ...(settings.project ?? {}) } as Settings;
   const settingOverrides = Object.keys(settings.project ?? {});
-  const settingsGlance = (
-    <SettingsGlance effective={effectiveSettings} overrides={settingOverrides} onOpen={onSettings} />
+  // What a mission here will run on, in one line. The rail's settings block
+  // said the same in eight rows; the gear is the way to change it.
+  const runsOnLine = (
+    <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+      <span>missions here run on</span>
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-1)' }}>{String(effectiveSettings.directorModel ?? 'opus')} · {String(effectiveSettings.workerModel ?? 'sonnet')}</span>
+      <span>· cap</span>
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-1)' }}>${String(effectiveSettings.budgetCap ?? 6)}</span>
+      {settingOverrides.length > 0 && <span>· {settingOverrides.length} project override{settingOverrides.length === 1 ? '' : 's'}</span>}
+      <Button variant="ghost" size="sm" icon="settings" onClick={onSettings}>Change…</Button>
+    </span>
   );
   const activeRunId = p.activeRun?.id ?? null;
   // The selected run lives in the URL so a refresh restores the same view.
@@ -691,6 +701,8 @@ export function ProjectView({
   const [composeOpen, setComposeOpen] = useState(false);
   const wide = useWide(WIDE_PX);
   const deck = useDeck(selectedRunId, isRunning);
+  // The project's tree, for the planning screen's rail. Read only while idle.
+  const tree = useProjectTree(!activeRunId && selectedRunId === null ? p.id : null);
 
   // The "waiting 12m" ages only move if something re-renders; nothing else
   // does while the run is blocked (that is the whole problem). Tick every 30s
@@ -817,7 +829,6 @@ export function ProjectView({
             liveBasis={run.costBasis} liveUsage={run.usage} liveTurns={selectedRun.turns}
             onChanged={refreshFleet} />
         )} />
-      {settingsGlance}
     </div>
   );
   const filesPane = selectedRunId ? (
@@ -936,6 +947,12 @@ export function ProjectView({
         {!activeRunId && selectedRunId && (
           <Button variant="primary" onClick={() => setSelectedRunId(null)}>New mission</Button>
         )}
+        {/* The same button on the planning screen: someone arriving with a
+            spec written sees the way in before they read anything. */}
+        {!activeRunId && !selectedRunId && !composeOpen && (
+          <Button variant="primary" icon="write" onClick={() => setComposeOpen(true)}
+            title="Skip the talk: describe the mission and start it">New mission</Button>
+        )}
       </AppHeader>
 
       {/* Nothing sits between the header and the asks. The read-only banner
@@ -1017,7 +1034,7 @@ export function ProjectView({
                 modelsNote={modelsNote} modelsInheritNote={modelsInheritNote}
                 onStart={(v) => void startMission(v)}
                 onCompose={() => setComposeOpen(true)} hasRuns={history.length > 0}
-                recent={history} onOpenRun={(id) => setSelectedRunId(id)} onForkRun={(id) => void forkPlan(id)} forking={forking}
+                recent={history} runsOn={runsOnLine} onOpenRun={(id) => setSelectedRunId(id)} onForkRun={(id) => void forkPlan(id)} forking={forking}
                 projectId={p.id} onSettings={onSettings} />
             </>
           )}
@@ -1027,15 +1044,12 @@ export function ProjectView({
             about the next one. */}
         {wide && rail(
           null,
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
-            {settingsGlance}
-            <section>
-              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textTransform: 'uppercase', letterSpacing: 'var(--ls-caps)', padding: '0 0 6px' }}>
-                Runs · {history.length}
-              </div>
-              {history.length > 0 ? runsPane : <Empty>No runs yet — the first mission you start here will be the first.</Empty>}
-            </section>
-          </div>,
+          // The folder as it stands. Every run here shares it, so it belongs
+          // to the project screen, not to any one run's deck.
+          <FilesPanel runId={p.id} tree urlBase={`/projects/${encodeURIComponent(p.id)}`}
+            deck={{ runId: p.id, baseline: { kind: 'none' }, files: [], artifacts: tree.files, totals: { files: 0, additions: 0, deletions: 0 },
+              note: tree.truncated ? 'A large folder: only the first 2000 files are listed.' : undefined }}
+            loading={tree.loading} error={tree.error} />,
         )}
         </div>
       ) : (

@@ -306,7 +306,7 @@ test('handleDeckRoute: matches only its two routes, 404s unknown runs and bad pa
   const runs: Record<string, { folder: string }> = { 'run-1': { folder } };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    const handled = await handleDeckRoute(req, res, url, async (id) => runs[id] ?? null);
+    const handled = await handleDeckRoute(req, res, url, async (_scope, id) => runs[id] ?? null);
     // A status no deck response ever uses, so the test can see "fell through".
     if (!handled) { res.writeHead(418); res.end(); }
   });
@@ -372,7 +372,7 @@ test('preview route: real types inside a CSP sandbox, still jailed', async () =>
   await writeFile(path.join(dir, 'styles.css'), 'body{margin:0}');
   await writeFile(path.join(dir, 'app.js'), 'fetch("data.json")');
   const server = http.createServer((req, res) => {
-    void handleDeckRoute(req, res, new URL(req.url ?? '/', 'http://x'), async (id) => id === 'run-1' ? { folder: dir } : null)
+    void handleDeckRoute(req, res, new URL(req.url ?? '/', 'http://x'), async (_scope, id) => id === 'run-1' ? { folder: dir } : null)
       .then((handled) => { if (!handled) { res.statusCode = 404; res.end(); } });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
