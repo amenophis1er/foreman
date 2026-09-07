@@ -38,6 +38,8 @@ export interface FilesPanelProps {
   services?: Array<{ port: number; label: string; path: string; since: number }>;
   /** Where artifact/preview URLs are served from; defaults to `/runs/{runId}`. */
   urlBase?: string;
+  /** The project's folder as it stands; shown in the browser with the run's artifacts folded in. */
+  tree?: { files: FilesPanelArtifact[]; truncated: boolean; loading: boolean; error: string | null; refresh: () => void };
   style?: CSSProperties;
 }
 

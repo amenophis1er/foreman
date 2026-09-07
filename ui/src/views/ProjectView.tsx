@@ -864,8 +864,9 @@ export function ProjectView({
   const [composeOpen, setComposeOpen] = useState(false);
   const wide = useWide(WIDE_PX);
   const deck = useDeck(selectedRunId, isRunning);
-  // The project's tree, for the planning screen's rail. Read only while idle.
-  const tree = useProjectTree(!activeRunId && selectedRunId === null ? p.id : null);
+  // The project's folder, for the planning screen's rail and the run's Files
+  // tab alike. Re-read when the run changes, since a run is what changes it.
+  const tree = useProjectTree(p.id, selectedRunId);
 
   // The "waiting 12m" ages only move if something re-renders; nothing else
   // does while the run is blocked (that is the whole problem). Tick every 30s
@@ -1001,7 +1002,7 @@ export function ProjectView({
   );
   const filesPane = selectedRunId ? (
     <FilesPanel runId={selectedRunId} deck={deck.deck} loading={deck.loading}
-      error={deck.error} missing={deck.missing} services={run.services} />
+      error={deck.error} missing={deck.missing} services={run.services} tree={tree} />
   ) : null;
   const fileCount = deck.deck ? deck.deck.totals.files + deck.deck.artifacts.length : 0;
   // The rail: one place with tabs. Mission = checklist, doc, crew, run facts;

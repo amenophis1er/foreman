@@ -54,7 +54,7 @@ function Row({ onClick, title, children }) {
  * anything opens it in the viewer, where a diff or a screenshot has the room
  * it needs. The rail lists; the viewer shows.
  */
-export function FilesPanel({ runId, deck, loading, error, missing, services = [], urlBase, style }) {
+export function FilesPanel({ runId, deck, loading, error, missing, services = [], urlBase, tree, style }) {
   // Where the files are served from: a run's deck routes, or a project's.
   const base = urlBase ?? `/runs/${encodeURIComponent(runId)}`;
   const [viewingIdx, setViewingIdx] = useState(null);
@@ -69,9 +69,19 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
   const { files, artifacts, totals } = deck;
   // The changed files are the viewer's list here; the artifacts have their
   // own browser below, with its own viewer over the folder it is in.
-  const items = files.map((f) => ({ ...f, kind: 'diff' }));
+  const images = artifacts.filter((a) => a.kind === 'image');
+  // The viewer's list: edits, then screenshots. Open by position, not by
+  // path: a screenshot is in the list twice — as a binary changed file and as
+  // an artifact — and a path lookup found the diff entry first.
+  const items = [...files.map((f) => ({ ...f, kind: 'diff' })), ...images];
   const fileAt = (i) => setViewingIdx(i);
+  const imageAt = (i) => setViewingIdx(files.length + i);
   const viewing = viewingIdx === null ? null : items[viewingIdx] ?? null;
+  // The folder as it stands, with the run's own work files folded in: the
+  // tree skips .foreman/work (the scratch area), which is exactly where the
+  // artifacts live, so the two lists together are the whole picture.
+  const seen = new Set((tree?.files ?? []).map((f) => f.path));
+  const folderFiles = [...(tree?.files ?? []), ...artifacts.filter((a) => !seen.has(a.path))];
   const baseline = deck.baseline.kind === 'git' && deck.baseline.head
     ? `against ${String(deck.baseline.head).slice(0, 8)}`
     : deck.baseline.kind === 'snapshot' ? 'against a snapshot at run start' : 'no baseline';
@@ -131,19 +141,39 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
         </div>
       </section>
 
+      {images.length > 0 && (
+        <section>
+          <SectionTitle>Screenshots</SectionTitle>
+          {/* The quick look: what the crew saw, at a glance. Click for full size. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))', gap: 6 }}>
+            {images.map((a, i) => (
+              <button key={a.path} type="button" onClick={() => imageAt(i)} title={a.path}
+                style={{ display: 'block', padding: 0, width: '100%', cursor: 'pointer', font: 'inherit', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', overflow: 'hidden', background: 'var(--bg-inset)', color: 'inherit', textAlign: 'left' }}>
+                <img src={artifactUrl(base, a.path)} alt={a.path} loading="lazy"
+                  style={{ display: 'block', width: '100%', aspectRatio: '4 / 3', objectFit: 'cover' }} />
+                <div style={{ padding: '2px 5px', fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--ink-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {a.path.split('/').pop()}
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section>
-        <SectionTitle>Artifacts</SectionTitle>
-        {artifacts.length === 0
-          ? <Empty>No screenshots or work files yet.</Empty>
-          // The same browser as the project's folder, opened where the work
-          // files are — screenshots and logs land under one directory, so the
-          // first view is the files themselves, not the folders above them.
-          : <FolderBrowser key={runId} files={artifacts} urlBase={base} initialDir={commonDir(artifacts)} summary={null} />}
+        <SectionTitle>Folder</SectionTitle>
+        {tree
+          ? <FolderBrowser key={runId} files={folderFiles} truncated={tree.truncated} loading={tree.loading} error={tree.error}
+              onRefresh={tree.refresh} urlBase={base}
+              summary={<><span style={{ color: 'var(--ink-0)' }}>{folderFiles.length} file{folderFiles.length === 1 ? '' : 's'}</span> as the folder stands · the run's work files included</>} />
+          : artifacts.length === 0
+            ? <Empty>No screenshots or work files yet.</Empty>
+            : <FolderBrowser key={runId} files={artifacts} urlBase={base} initialDir={commonDir(artifacts)} summary={null} />}
       </section>
 
       {viewing && (
         <ArtifactViewer artifact={viewing}
-          url={viewing.binary ? artifactUrl(base, viewing.path) : undefined}
+          url={viewing.kind === 'diff' && !viewing.binary ? undefined : artifactUrl(base, viewing.path)}
           previewUrl={undefined}
           onClose={() => setViewingIdx(null)}
           index={viewingIdx} count={items.length} onStep={setViewingIdx} />

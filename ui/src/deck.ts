@@ -96,7 +96,7 @@ export function useDeck(runId: string | null, running: boolean): DeckState {
 }
 
 /** The project's working tree as it stands, from `GET /projects/{id}/tree`. Fetched once per mount; `refresh` re-reads. */
-export function useProjectTree(projectId: string | null): { files: DeckArtifact[]; truncated: boolean; loading: boolean; error: string | null; refresh: () => void } {
+export function useProjectTree(projectId: string | null, refreshKey: string | null = null): { files: DeckArtifact[]; truncated: boolean; loading: boolean; error: string | null; refresh: () => void } {
   const [files, setFiles] = useState<DeckArtifact[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -116,6 +116,6 @@ export function useProjectTree(projectId: string | null): { files: DeckArtifact[
     }).catch(() => { if (!cancelled) setError('Could not reach the server.'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [projectId, tick]);
+  }, [projectId, tick, refreshKey]);
   return { files, truncated, loading, error, refresh };
 }
