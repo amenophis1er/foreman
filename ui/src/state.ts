@@ -876,15 +876,6 @@ function applyChatWire(s: ChatView, e: WireEvent): ChatView {
     }
     case 'mission_proposed':
       return { ...s, proposal: d as MissionProposal };
-    case 'mission_started':
-      return {
-        ...s,
-        proposal: null,
-        entries: [...s.entries, {
-          id: ++seq, ts, agent: 'system', kind: 'system',
-          title: 'mission started', body: d.mission,
-        }],
-      };
     case 'chat_cost':
       return { ...s, costUsd: d.costUsd ?? s.costUsd };
     case 'chat_turn':

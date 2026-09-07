@@ -1349,18 +1349,25 @@ async function driveChatTurn(project: Project, text: string, shown: string = tex
 }
 
 /**
- * A mission has started, so the proposal that led to it is spent. Recording
- * the handoff in the conversation matters as much as clearing it: the chat is
- * the story of how this mission came to exist, and it should not simply stop
- * at the moment the work began.
+ * A mission has started, so the conversation that led to it is finished.
+ *
+ * The handoff is recorded first — the chat is the story of how this mission
+ * came to exist, and it should not simply stop at the moment the work began —
+ * and then the whole conversation is archived, not left as the project's
+ * front page. A project visited after a mission shows its runs and a blank
+ * line, not a spent planning session scrolled to the bottom; the run is the
+ * continuation, and "Plan the next step" forks a new conversation from it.
+ * Open tabs are told, so they reset without a reload.
  */
 async function consumeProposal(projectId: string, runId: string, mission: string): Promise<void> {
   const meta = await store.readChatMeta(projectId).catch(() => null);
   if (!meta) return;
-  makeChatEmitter(projectId)('mission_started', { runId, mission });
-  if (!meta.proposal) return;
-  const { proposal: _spent, ...rest } = meta;
-  await store.writeChatMeta({ ...rest, updatedAt: Date.now() }).catch(() => {});
+  const handoff = { runId, mission };
+  await store.appendChat(projectId, { ts: Date.now(), event: 'mission_started', data: handoff }).catch(() => {});
+  noteFleetEvent(projectId, 'mission_started', handoff);
+  notifyHub.handle({ event: 'mission_started', runId: null, projectId, chat: true, data: handoff, ts: Date.now() });
+  await store.archiveChat(projectId, runId).catch(() => {});
+  broadcastChat(projectId, 'chat_cleared', {});
 }
 
 /**

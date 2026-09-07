@@ -117,3 +117,21 @@ test('projects: concurrent adds do not lose writes', async () => {
   assert.equal((await store.listProjects()).length, 8);
   await rm(root, { recursive: true, force: true });
 });
+
+test('archiveChat retires a conversation: gone from the project, kept on disk, and idempotent', async () => {
+  const { store, root } = await tmpStore();
+  await store.appendChat('p-abc', { ts: 1, event: 'chat_message', data: { text: 'hi' } });
+  await store.writeChatMeta({ projectId: 'p-abc', costUsd: 1, createdAt: 1, updatedAt: 1 });
+  assert.deepEqual(await store.listChatIds(), ['p-abc']);
+
+  await store.archiveChat('p-abc', '1700000000000-deadbeef');
+  assert.deepEqual(await store.listChatIds(), []);
+  assert.equal(await store.readChatMeta('p-abc'), null);
+  assert.deepEqual(await store.readChatEvents('p-abc'), []);
+  const archived = path.join(root, 'chats', '_archive', 'p-abc-1700000000000-deadbeef', 'events.jsonl');
+  assert.ok((await import('node:fs/promises')).readFile(archived, 'utf8'));
+
+  // Nothing to archive is not an error.
+  await store.archiveChat('p-abc', 'again');
+  await rm(root, { recursive: true, force: true });
+});

@@ -37,7 +37,7 @@ export const SSE_EVENTS = [
   // planning conversation
   'chat_message', 'chat_turn', 'chat_cost', 'chat_error', 'chat_cleared', 'chat_proposal_dismissed',
   'chat_question', 'chat_answered', 'chat_question_timeout',
-  'mission_proposed', 'mission_started',
+  'mission_proposed',
   // server
   'models_changed',
   // git: the mission's branch

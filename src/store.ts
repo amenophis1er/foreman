@@ -19,7 +19,7 @@
  *    previous process: it appends a synthetic `run_finished` event and marks
  *    the run interrupted, so replaying a log always terminates cleanly.
  */
-import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -325,6 +325,21 @@ export class RunStore {
    */
   async clearChat(projectId: string): Promise<void> {
     await rm(this.chatDir(projectId), { recursive: true, force: true });
+  }
+
+  /**
+   * Retires a conversation that produced a mission: the log moves under
+   * `chats/_archive/<project>-<run>/`, where `listChatIds` does not look, and
+   * the project starts its next visit with a blank page. Kept rather than
+   * deleted because it is the story of how that mission came to exist; the
+   * run itself is the continuation, and "Plan the next step" forks from it.
+   */
+  async archiveChat(projectId: string, runId: string): Promise<void> {
+    const from = this.chatDir(projectId);
+    if (!(await stat(from).catch(() => null))) return;
+    const archive = path.join(this.chatsDir, '_archive');
+    await mkdir(archive, { recursive: true });
+    await rename(from, path.join(archive, `${projectId}-${runId.replace(/[^A-Za-z0-9_-]/g, '')}`));
   }
 
   /**
