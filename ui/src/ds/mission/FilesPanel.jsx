@@ -3,6 +3,7 @@ import { Icon } from '../core/Icon';
 import { Empty } from '../core/Empty';
 import { SectionTitle } from '../core/SectionTitle';
 import { ArtifactViewer } from './ArtifactViewer';
+import { FolderBrowser, commonDir } from './FolderBrowser';
 
 const STATUS_LABEL = { added: 'added', modified: 'modified', deleted: 'deleted', renamed: 'renamed' };
 const STATUS_COLOR = {
@@ -10,21 +11,6 @@ const STATUS_COLOR = {
   modified: 'var(--ink-1)', renamed: 'var(--ink-1)',
 };
 
-function fmtSize(n) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-function fmtAgo(ms, now) {
-  const s = Math.max(0, Math.round((now - ms) / 1000));
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
-function previewUrl(base, path) {
-  return `${base}/preview/${path.split('/').map(encodeURIComponent).join('/')}`;
-}
 function artifactUrl(base, path) {
   return `${base}/artifact?path=${encodeURIComponent(path)}`;
 }
@@ -69,7 +55,6 @@ function Row({ onClick, title, children }) {
  * it needs. The rail lists; the viewer shows.
  */
 export function FilesPanel({ runId, deck, loading, error, missing, services = [], urlBase, style }) {
-  const now = Date.now();
   // Where the files are served from: a run's deck routes, or a project's.
   const base = urlBase ?? `/runs/${encodeURIComponent(runId)}`;
   const [viewingIdx, setViewingIdx] = useState(null);
@@ -82,20 +67,10 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
   if (!deck) return <div style={wrap}><Empty>Reading the working tree…</Empty></div>;
 
   const { files, artifacts, totals } = deck;
-  const images = artifacts.filter((a) => a.kind === 'image');
-  const others = artifacts.filter((a) => a.kind !== 'image');
-  // One list for the viewer, in reading order: edits, then screenshots, then work files.
-  const items = [
-    ...files.map((f) => ({ ...f, kind: 'diff' })),
-    ...images,
-    ...others,
-  ];
-  // Open by position, not by path: a screenshot is in the list twice — as a
-  // binary changed file and as an artifact — and a path lookup found the
-  // diff entry first, so clicking a thumbnail showed "no diff".
+  // The changed files are the viewer's list here; the artifacts have their
+  // own browser below, with its own viewer over the folder it is in.
+  const items = files.map((f) => ({ ...f, kind: 'diff' }));
   const fileAt = (i) => setViewingIdx(i);
-  const imageAt = (i) => setViewingIdx(files.length + i);
-  const otherAt = (i) => setViewingIdx(files.length + images.length + i);
   const viewing = viewingIdx === null ? null : items[viewingIdx] ?? null;
   const baseline = deck.baseline.kind === 'git' && deck.baseline.head
     ? `against ${String(deck.baseline.head).slice(0, 8)}`
@@ -158,37 +133,18 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
 
       <section>
         <SectionTitle>Artifacts</SectionTitle>
-        {artifacts.length === 0 && <Empty>No screenshots or work files yet.</Empty>}
-        {images.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))', gap: 6, marginBottom: others.length ? 'var(--sp-2)' : 0 }}>
-            {images.map((a, i) => (
-              <button key={a.path} type="button" onClick={() => imageAt(i)}
-                title={`${a.path} · ${fmtSize(a.size)} · ${fmtAgo(a.mtimeMs, now)}`}
-                style={{ display: 'block', padding: 0, width: '100%', cursor: 'pointer', font: 'inherit', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', overflow: 'hidden', background: 'var(--bg-inset)', color: 'inherit', textAlign: 'left' }}>
-                <img src={artifactUrl(base, a.path)} alt={a.path} loading="lazy"
-                  style={{ display: 'block', width: '100%', aspectRatio: '4 / 3', objectFit: 'cover' }} />
-                <div style={{ padding: '2px 5px', fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--ink-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {a.path.split('/').pop()}
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          {others.map((a, i) => (
-            <Row key={a.path} onClick={() => otherAt(i)} title={`${a.path} · ${fmtSize(a.size)} · ${fmtAgo(a.mtimeMs, now)}`}>
-              <Icon name={a.kind === 'text' ? 'transcript' : 'file'} size={12} color="var(--ink-2)" />
-              <PathLabel path={a.path} />
-              <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' }}>{fmtSize(a.size)}</span>
-            </Row>
-          ))}
-        </div>
+        {artifacts.length === 0
+          ? <Empty>No screenshots or work files yet.</Empty>
+          // The same browser as the project's folder, opened where the work
+          // files are — screenshots and logs land under one directory, so the
+          // first view is the files themselves, not the folders above them.
+          : <FolderBrowser key={runId} files={artifacts} urlBase={base} initialDir={commonDir(artifacts)} summary={null} />}
       </section>
 
       {viewing && (
         <ArtifactViewer artifact={viewing}
-          url={viewing.kind === 'diff' && !viewing.binary ? undefined : artifactUrl(base, viewing.path)}
-          previewUrl={viewing.kind === 'diff' ? undefined : previewUrl(base, viewing.path)}
+          url={viewing.binary ? artifactUrl(base, viewing.path) : undefined}
+          previewUrl={undefined}
           onClose={() => setViewingIdx(null)}
           index={viewingIdx} count={items.length} onStep={setViewingIdx} />
       )}

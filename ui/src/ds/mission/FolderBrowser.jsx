@@ -84,6 +84,20 @@ function Row({ onClick, title, children }) {
 const nameStyle = { fontFamily: 'var(--font-mono)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--ink-0)' };
 const metaStyle = { fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', flex: '0 0 auto' };
 
+/** The deepest directory every path shares — where a browser over a run's artifacts should open. */
+export function commonDir(files) {
+  if (!files?.length) return '';
+  let parts = files[0].path.split('/').slice(0, -1);
+  for (const f of files) {
+    const p = f.path.split('/').slice(0, -1);
+    let i = 0;
+    while (i < parts.length && i < p.length && parts[i] === p[i]) i++;
+    parts = parts.slice(0, i);
+    if (!parts.length) break;
+  }
+  return parts.join('/');
+}
+
 /**
  * The project's folder in the rail: one directory at a time, a path bar to
  * climb back up, and one click on a file opens it in the viewer.
@@ -93,8 +107,8 @@ const metaStyle = { fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariant
  * rows before the rail's other content. A folder is browsed, not read; this
  * shows what a directory holds and nothing more.
  */
-export function FolderBrowser({ files, truncated, loading, error, onRefresh, urlBase, style }) {
-  const [dir, setDir] = useState('');
+export function FolderBrowser({ files, truncated, loading, error, onRefresh, urlBase, initialDir = '', summary, style }) {
+  const [dir, setDir] = useState(initialDir);
   const [viewingIdx, setViewingIdx] = useState(null);
   const view = useMemo(() => listing(files ?? [], dir), [files, dir]);
   const wrap = { display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)', ...style };
@@ -108,9 +122,10 @@ export function FolderBrowser({ files, truncated, loading, error, onRefresh, url
 
   return (
     <div style={wrap}>
+      {summary !== null && (
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', lineHeight: 'var(--lh)' }}>
         <span style={{ flex: 1, minWidth: 0 }}>
-          <span style={{ color: 'var(--ink-0)' }}>{total} file{total === 1 ? '' : 's'}</span> in the folder as it stands · every run here shares them
+          {summary ?? <><span style={{ color: 'var(--ink-0)' }}>{total} file{total === 1 ? '' : 's'}</span> in the folder as it stands · every run here shares them</>}
         </span>
         {onRefresh && (
           <button type="button" onClick={onRefresh} title="Read the folder again" disabled={loading}
@@ -119,6 +134,7 @@ export function FolderBrowser({ files, truncated, loading, error, onRefresh, url
           </button>
         )}
       </div>
+      )}
       {truncated && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--status-serious)' }}>A large folder: only the first 2000 files are listed.</div>}
 
       {/* The path bar: where you are, and every level above it is a click. */}
