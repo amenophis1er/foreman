@@ -2258,6 +2258,14 @@ const server = http.createServer(async (req, res) => {
       if (!ok) return json(res, 404, { error: 'no pending question with that id' });
       json(res, 200, { ok: true });
 
+    } else if (req.method === 'GET' && url.pathname === '/projects/clone/where') {
+      // Where a URL would land, before anyone clicks: the dialog shows the
+      // path as you type, and the same check refuses what the clone would.
+      const repo = (url.searchParams.get('url') ?? '').trim();
+      if (!repo) return json(res, 200, { dest: null });
+      const where = await cloneDestination(repo);
+      json(res, 200, where.ok ? { dest: where.dest, name: where.ref.name, host: where.ref.host } : { dest: null, error: where.error });
+
     } else if (req.method === 'POST' && url.pathname === '/projects/clone') {
       // Start a clone under the projects root; the picker polls the job.
       const { url: repo, branch } = await readBody(req);

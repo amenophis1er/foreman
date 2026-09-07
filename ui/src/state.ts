@@ -1188,6 +1188,8 @@ export const api = {
   /** Clone a Git URL under the projects root and link it; returns a job id to poll. */
   cloneProject: (url: string, branch?: string) => post('/projects/clone', { url, branch }),
   cloneStatus: (id: string) => fetch(`/projects/clone/${encodeURIComponent(id)}`),
+  /** Where a URL would be cloned, or why it cannot be. */
+  cloneWhere: (url: string) => fetch(`/projects/clone/where?url=${encodeURIComponent(url)}`),
   instances: () => fetch('/instances'),
   updateProject: (
     projectId: string,

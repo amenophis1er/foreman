@@ -248,6 +248,7 @@ function usePicker(onPick: (path: string) => void, onLinked: (projectId: string)
       onCreate: (name: string) => void create(name),
       onPick: (p: string) => { setOpen(false); setCur(null); onPick(p); },
       onClone: (url: string, branch?: string) => void startClone(url, branch),
+      cloneWhere: (url: string) => api.cloneWhere(url).then((r) => r.json() as Promise<{ dest: string | null; name?: string; host?: string; error?: string }>),
       clone,
     },
   };

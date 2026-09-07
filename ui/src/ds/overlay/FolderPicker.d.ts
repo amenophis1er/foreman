@@ -19,6 +19,8 @@ export interface FolderPickerProps {
   onPick?: (path: string) => void;
   /** Clone a Git URL under the projects root and link it. Present = the dialog offers the URL field. */
   onClone?: (url: string, branch?: string) => void;
+  /** Where a URL would land (or why it cannot), asked as the user types. */
+  cloneWhere?: (url: string) => Promise<{ dest: string | null; name?: string; host?: string; error?: string }>;
   /** The clone in flight or just finished, for the progress line and the error. */
   clone?: { state: 'running' | 'done' | 'error'; progress?: string; error?: string; dest?: string } | null;
   onClose?: () => void;
