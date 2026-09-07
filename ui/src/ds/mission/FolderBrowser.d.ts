@@ -13,6 +13,8 @@ export interface FolderBrowserProps {
   urlBase: string;
   /** The directory to open in; '' is the root. */
   initialDir?: string;
+  /** The strip of the folder's images, newest first, above the path bar (default on). */
+  images?: boolean;
   /** The line above the path bar; `null` hides it, undefined gives the project default. */
   summary?: React.ReactNode | null;
   style?: CSSProperties;

@@ -107,10 +107,22 @@ export function commonDir(files) {
  * rows before the rail's other content. A folder is browsed, not read; this
  * shows what a directory holds and nothing more.
  */
-export function FolderBrowser({ files, truncated, loading, error, onRefresh, urlBase, initialDir = '', summary, style }) {
+/** Thumbnails shown before "show all": a rail-width grid is three across, so three rows. */
+const IMAGE_STRIP = 9;
+
+export function FolderBrowser({ files, truncated, loading, error, onRefresh, urlBase, initialDir = '', summary, images: showImages = true, style }) {
   const [dir, setDir] = useState(initialDir);
   const [viewingIdx, setViewingIdx] = useState(null);
+  const [allImages, setAllImages] = useState(false);
+  const [viewingImage, setViewingImage] = useState(null);
   const view = useMemo(() => listing(files ?? [], dir), [files, dir]);
+  // The quick look: every image anywhere in the folder, newest first — a
+  // screenshot the crew just took is what someone opens this for. Capped, so
+  // a repository full of icons does not push the listing off the screen.
+  const images = useMemo(() => showImages
+    ? (files ?? []).filter((f) => f.kind === 'image').sort((a, b) => (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0))
+    : [], [files, showImages]);
+  const shownImages = allImages ? images : images.slice(0, IMAGE_STRIP);
   const wrap = { display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)', ...style };
 
   if (error) return <div style={wrap}><Empty>Could not list the folder: {error}</Empty></div>;
@@ -136,6 +148,29 @@ export function FolderBrowser({ files, truncated, loading, error, onRefresh, url
       </div>
       )}
       {truncated && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--status-serious)' }}>A large folder: only the first 2000 files are listed.</div>}
+
+      {images.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))', gap: 6 }}>
+            {shownImages.map((a, i) => (
+              <button key={a.path} type="button" onClick={() => setViewingImage(i)} title={`${a.path} · ${fmtSize(a.size)}`}
+                style={{ display: 'block', padding: 0, width: '100%', cursor: 'pointer', font: 'inherit', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', overflow: 'hidden', background: 'var(--bg-inset)', color: 'inherit', textAlign: 'left' }}>
+                <img src={artifactUrl(urlBase, a.path)} alt={a.path} loading="lazy"
+                  style={{ display: 'block', width: '100%', aspectRatio: '4 / 3', objectFit: 'cover' }} />
+                <div style={{ padding: '2px 5px', fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--ink-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {a.path.split('/').pop()}
+                </div>
+              </button>
+            ))}
+          </div>
+          {images.length > IMAGE_STRIP && (
+            <button type="button" onClick={() => setAllImages((v) => !v)}
+              style={{ alignSelf: 'flex-start', background: 'none', border: 'none', padding: '0 2px', cursor: 'pointer', font: 'inherit', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textDecoration: 'underline' }}>
+              {allImages ? 'Fewer images' : `All ${images.length} images`}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* The path bar: where you are, and every level above it is a click. */}
       <div style={{
@@ -187,6 +222,13 @@ export function FolderBrowser({ files, truncated, loading, error, onRefresh, url
         {view.dirs.length === 0 && view.files.length === 0 && <Empty>{dir ? 'Nothing here.' : 'The folder is empty.'}</Empty>}
       </div>
 
+      {viewingImage !== null && shownImages[viewingImage] && (
+        <ArtifactViewer artifact={shownImages[viewingImage]}
+          url={artifactUrl(urlBase, shownImages[viewingImage].path)}
+          previewUrl={previewUrl(urlBase, shownImages[viewingImage].path)}
+          onClose={() => setViewingImage(null)}
+          index={viewingImage} count={shownImages.length} onStep={setViewingImage} />
+      )}
       {viewing && (
         <ArtifactViewer artifact={viewing}
           url={artifactUrl(urlBase, viewing.path)}

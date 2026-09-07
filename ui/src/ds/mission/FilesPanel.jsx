@@ -69,13 +69,10 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
   const { files, artifacts, totals } = deck;
   // The changed files are the viewer's list here; the artifacts have their
   // own browser below, with its own viewer over the folder it is in.
-  const images = artifacts.filter((a) => a.kind === 'image');
-  // The viewer's list: edits, then screenshots. Open by position, not by
-  // path: a screenshot is in the list twice — as a binary changed file and as
-  // an artifact — and a path lookup found the diff entry first.
-  const items = [...files.map((f) => ({ ...f, kind: 'diff' })), ...images];
+  // The viewer's list here is the changed files; images and the folder have
+  // their own viewer inside the browser below.
+  const items = files.map((f) => ({ ...f, kind: 'diff' }));
   const fileAt = (i) => setViewingIdx(i);
-  const imageAt = (i) => setViewingIdx(files.length + i);
   const viewing = viewingIdx === null ? null : items[viewingIdx] ?? null;
   // The folder as it stands, with the run's own work files folded in: the
   // tree skips .foreman/work (the scratch area), which is exactly where the
@@ -140,25 +137,6 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
           ))}
         </div>
       </section>
-
-      {images.length > 0 && (
-        <section>
-          <SectionTitle>Screenshots</SectionTitle>
-          {/* The quick look: what the crew saw, at a glance. Click for full size. */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))', gap: 6 }}>
-            {images.map((a, i) => (
-              <button key={a.path} type="button" onClick={() => imageAt(i)} title={a.path}
-                style={{ display: 'block', padding: 0, width: '100%', cursor: 'pointer', font: 'inherit', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', overflow: 'hidden', background: 'var(--bg-inset)', color: 'inherit', textAlign: 'left' }}>
-                <img src={artifactUrl(base, a.path)} alt={a.path} loading="lazy"
-                  style={{ display: 'block', width: '100%', aspectRatio: '4 / 3', objectFit: 'cover' }} />
-                <div style={{ padding: '2px 5px', fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--ink-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {a.path.split('/').pop()}
-                </div>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
 
       <section>
         <SectionTitle>Folder</SectionTitle>
