@@ -19,6 +19,8 @@ import { BudgetMeter, formatTokens } from '../ds/status/BudgetMeter';
 import { RunTimeline } from '../ds/mission/RunTimeline';
 import { TranscriptEntry } from '../ds/mission/TranscriptEntry';
 import { PlanBoard } from '../ds/mission/PlanBoard';
+import { RichText } from '../ds/core/RichText';
+import { onSse } from '../sse';
 import { Composer } from '../ds/mission/Composer';
 import { ChatBar } from '../ds/mission/ChatBar';
 import { QuestionPicker } from '../ds/mission/QuestionPicker';
@@ -240,6 +242,46 @@ function Transcript({ run, filter, jump, order, header }: {
  * log — and showing them the same way is what makes the handoff read as one
  * continuous story rather than two products bolted together.
  */
+/** The project's memory, re-read whenever a run in this project rewrites it. */
+function useMemory(projectId: string): { text: string; updatedAt?: number; loaded: boolean } {
+  const [m, setM] = useState<{ text: string; updatedAt?: number; loaded: boolean }>({ text: '', loaded: false });
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => api.memory(projectId).then(async (r) => {
+      if (cancelled || !r.ok) return;
+      const d = await r.json() as { text: string; updatedAt?: number };
+      setM({ text: d.text ?? '', updatedAt: d.updatedAt, loaded: true });
+    }).catch(() => {});
+    void load();
+    const unsub = onSse((event, env) => { if (event === 'memory_updated' && env.projectId === projectId) void load(); });
+    return () => { cancelled = true; unsub(); };
+  }, [projectId]);
+  return m;
+}
+
+/**
+ * What the project "believes": .foreman/MEMORY.md, as the crew keeps it.
+ * Read-only here — the file is the human's to edit with any editor, and the
+ * director rewrites it at the end of a mission.
+ */
+function MemoryPanel({ memory }: { memory: { text: string; updatedAt?: number; loaded: boolean } }) {
+  const when = memory.updatedAt ? new Date(memory.updatedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : null;
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 'var(--sp-2)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textTransform: 'uppercase', letterSpacing: 'var(--ls-caps)' }}>
+        Memory{when && <span style={{ textTransform: 'none', letterSpacing: 0, marginLeft: 'auto' }}>{when}</span>}
+      </div>
+      {memory.loaded && !memory.text.trim() ? (
+        <Empty>Nothing yet. The director writes <span style={{ fontFamily: 'var(--font-mono)' }}>.foreman/MEMORY.md</span> at the end of a mission: how to run and test the project, ports and paths, conventions, traps. Every later crew and the planner read it first.</Empty>
+      ) : memory.text.trim() ? (
+        <div title="The project's notes for the next crew — .foreman/MEMORY.md. Edit it with any editor." style={{ padding: 'var(--sp-2) var(--sp-3)', background: 'var(--bg-card)', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', fontSize: 'var(--fs-sm)', maxHeight: '40vh', overflowY: 'auto' }}>
+          <RichText text={memory.text} />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 type PrDraft = {
   title: string; body: string; branch: string; base: string; commits: number | null; remote: string;
   compareUrl: string | null; gh: { present: boolean; authed: boolean }; pr: string | null; onBranch: boolean; dirty: boolean;
@@ -700,6 +742,7 @@ export function ProjectView({
   settings: { global: Settings; project?: Settings };
 }) {
   const history = useRunHistory(p.id);
+  const memory = useMemory(p.id);
   const effectiveSettings = { ...DEFAULT_SETTINGS, ...settings.global, ...(settings.project ?? {}) } as Settings;
   const settingOverrides = Object.keys(settings.project ?? {});
   const branchPerMission = (effectiveSettings as Record<string, unknown>).gitBranchPerMission !== false;
@@ -787,6 +830,7 @@ export function ProjectView({
   const [headerErr, setHeaderErr] = useState('');
   const [forking, setForking] = useState(false);
   const [prOpen, setPrOpen] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   // The pull request's fate, asked of gh when a run with one is opened.
   // A final answer is remembered on the run by the server; open is re-asked.
   const [prState, setPrState] = useState<{ runId: string; state: 'open' | 'merged' | 'closed' | null } | null>(null);
@@ -940,6 +984,11 @@ export function ProjectView({
       <Disclosure label="Mission doc" open={showDoc} onToggle={() => setShowDoc(!showDoc)}>
         <PlanBoard doc={run.missionDoc ?? undefined} />
       </Disclosure>
+      {memory.text.trim() && (
+        <Disclosure label="Project memory" open={showMemory} onToggle={() => setShowMemory(!showMemory)}>
+          <div style={{ fontSize: 'var(--fs-sm)' }}><RichText text={memory.text} /></div>
+        </Disclosure>
+      )}
       <CrewPanel agents={run.agents} filter={filter} onFilter={toggleFilter}
         sessionId={run.directorSessionId}
         details={selectedRun && (
@@ -1189,10 +1238,13 @@ export function ProjectView({
           null,
           // The folder as it stands. Every run here shares it, so it belongs
           // to the project screen, not to any one run's deck.
-          <FilesPanel runId={p.id} tree urlBase={`/projects/${encodeURIComponent(p.id)}`}
-            deck={{ runId: p.id, baseline: { kind: 'none' }, files: [], artifacts: tree.files, totals: { files: 0, additions: 0, deletions: 0 },
-              note: tree.truncated ? 'A large folder: only the first 2000 files are listed.' : undefined }}
-            loading={tree.loading} error={tree.error} />,
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
+            <MemoryPanel memory={memory} />
+            <FilesPanel runId={p.id} tree urlBase={`/projects/${encodeURIComponent(p.id)}`}
+              deck={{ runId: p.id, baseline: { kind: 'none' }, files: [], artifacts: tree.files, totals: { files: 0, additions: 0, deletions: 0 },
+                note: tree.truncated ? 'A large folder: only the first 2000 files are listed.' : undefined }}
+              loading={tree.loading} error={tree.error} />
+          </div>,
         )}
         </div>
       ) : (

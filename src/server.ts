@@ -25,6 +25,7 @@
  *   POST   /permission           Resolve an approval {id, behavior, message?}
  *   POST   /answer               Answer a director question {id, text}
  *   POST   /projects/clone        Clone a Git URL under the projects root and link it {url, branch?} → {id}; GET /projects/clone/{id} polls
+ *   GET    /projects/{id}/memory  The project's memory (.foreman/MEMORY.md): text, updatedAt
  *   GET    /projects/{id}/tree    The project's files as they stand (read-only, jailed); …/artifact and …/preview as for runs
  *   GET    /search?q=            Runs across the fleet matching title, brief, project or folder
  *   POST   /fleet/chat           One turn with the fleet planner {text} → {text, costUsd}
@@ -64,6 +65,7 @@ import {
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { saveAttachments } from './attachments.js';
 import { cloneRepo, looksLikeRepoUrl, parseRepoUrl } from './clone.js';
+import { readMemory } from './memory.js';
 import { closeMissionBranch, compareUrl, createPullRequest, ensureMissionBranch, ghReady, gitInfo, prDraft, pullRequestState, pushBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
@@ -2539,6 +2541,12 @@ const server = http.createServer(async (req, res) => {
       const events = await store.readEvents(runEventsMatch[1]).catch(() => null);
       if (!events) return json(res, 404, { error: 'unknown run' });
       json(res, 200, { events });
+
+    } else if (req.method === 'GET' && /^\/projects\/[^/]+\/memory$/.test(url.pathname)) {
+      // What the project "believes": .foreman/MEMORY.md, read-only here.
+      const project = await store.getProject(url.pathname.split('/')[2]).catch(() => null);
+      if (!project) return json(res, 404, { error: 'unknown project' });
+      json(res, 200, await readMemory(project.folder));
 
     } else if (req.method === 'GET' && url.pathname === '/missiondoc') {
       const runId = url.searchParams.get('run');

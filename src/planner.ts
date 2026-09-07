@@ -29,6 +29,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentEnv } from './provider.js';
 import type { MissionProposal } from './types.js';
+import { memorySection, readMemory } from './memory.js';
 import {
   armAskTimeout, formatAnswers, normaliseQuestions,
   type AskAnswers, type AskQuestion, type PendingAsk,
@@ -407,7 +408,7 @@ export async function runPlanningTurn(turn: PlanningTurn): Promise<PlanningResul
         // thinking about the proposal, not discover it by asking.
         systemPrompt: {
           type: 'preset', preset: 'claude_code',
-          append: PLANNER_CHARTER + modelsSection(turn.models),
+          append: PLANNER_CHARTER + modelsSection(turn.models) + memorySection((await readMemory(turn.folder)).text, 'planner'),
         },
         mcpServers: { foreman: createSdkMcpServer({ name: 'foreman', tools: [proposeMission, askUser] }) },
         canUseTool,

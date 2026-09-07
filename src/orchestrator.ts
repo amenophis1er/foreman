@@ -95,6 +95,7 @@ import { generateRunTitle } from './title.js';
 import { combineBasis, costBasisOf, isPriced, type CostBasis } from './types.js';
 import { priceUsage, type ModelPrice } from './prices.js';
 import { captureBaseline } from './deck.js';
+import { memorySection, readMemory, writeMemory } from './memory.js';
 import type { RunMeta, TokenUsage, WorkerMeta, WorkerProgress } from './types.js';
 
 /** A run's usage before its first `result` message. */
@@ -675,6 +676,12 @@ directing worker agents. Non-negotiable rules, in priority order:
    failure is an escalation, never a self-repair.
 7. When DONE WHEN is verified, update MISSION.md (all boxes ticked, final log
    entry) and end with a short summary of what was built and how you verified it.
+8. LEAVE NOTES FOR THE NEXT CREW. Before you finish, call mcp__foreman__remember
+   with the whole project memory as it should read now: how to run and test
+   the project, ports and paths that matter, conventions and the reasons
+   behind them, traps you fell into. Facts, one line each, a page at most.
+   Rewrite stale lines rather than appending; drop what no longer holds.
+   Never a secret, never anything outside this project.
 `;
 
 export const WORKER_CHARTER = `
@@ -756,6 +763,8 @@ export class MissionRun {
   private readonly askTimers = new Map<string, { cancel(): void }>();
   /** The director's streaming prompt; steering pushes into it. */
   private directorInput?: MessageStream;
+  /** The project's notes as a worker-prompt section, read once per start; empty when there are none. */
+  private memoryForWorkers = '';
   /** Director cost is cumulative per query; track the last figure for deltas. */
   private directorCostSeen = 0;
   private wasInterrupted = false;
@@ -1109,9 +1118,11 @@ export class MissionRun {
         'satisfy their milestone. Update the doc to match reality, then continue ' +
         'the mission to DONE WHEN. ' +
         this.gitLine() +
-        this.budgetNote()
+        this.budgetNote() +
+        memorySection((await readMemory(this.meta.folder)).text, 'director')
       : `MISSION: ${this.meta.mission}\n\n${this.budgetLine()} ` +
-        `Working directory: ${this.meta.folder}. ${this.gitLine()}Begin by writing .foreman/MISSION.md, then execute the plan.`;
+        `Working directory: ${this.meta.folder}. ${this.gitLine()}Begin by writing .foreman/MISSION.md, then execute the plan.` +
+        memorySection((await readMemory(this.meta.folder)).text, 'director');
 
     try {
       // The mission doc directory ignores itself wholesale (`*`, which also
@@ -1136,6 +1147,7 @@ export class MissionRun {
         void captureBaseline(this.meta.folder, this.meta.id).catch(() => {});
       }
       await mkdir(path.join(this.meta.folder, WORK_DIR), { recursive: true }).catch(() => {});
+      this.memoryForWorkers = memorySection((await readMemory(this.meta.folder)).text, 'worker');
       // Covers a .claude/ left by an earlier run; the one this run creates is
       // handled again on the way out.
       await this.ignoreLocalSettings();
@@ -2147,7 +2159,9 @@ export class MissionRun {
     const stop = this.overBudget();
     if (stop) return stop;
     const id = `worker-${++this.workerSeq}`;
-    this.launchWorker(id, task);
+    // The worker gets the project's notes with its brief: what earlier crews
+    // learned is exactly what a fresh session lacks.
+    this.launchWorker(id, this.memoryForWorkers ? `${task}\n${this.memoryForWorkers}` : task);
     return `[${id} started] status: running. It works in the background — use check_workers ` +
       `to watch it, and wait_for_worker when you need its result.`;
   }
@@ -2327,9 +2341,24 @@ export class MissionRun {
           'running while they may want to look, and put the URL in your report.' }] };
       },
     );
+    const remember = tool(
+      'remember',
+      'Rewrite the project memory (.foreman/MEMORY.md): the whole page as it should read now, ' +
+      'for the next crew. Facts about this project — how to run and test it, ports and paths, ' +
+      'conventions and why, traps — one line each, a page at most. Replace stale lines; do not ' +
+      'append forever. Never a secret; anything that looks like one is stripped.',
+      { text: z.string().max(20_000).describe('The complete memory file content, Markdown') },
+      async ({ text: body }) => {
+        const r = await writeMemory(this.meta.folder, body);
+        this.emit('memory_updated', { bytes: r.bytes, redacted: r.redacted, trimmed: r.trimmed,
+          text: `Project memory rewritten (${r.bytes} bytes${r.redacted ? `, ${r.redacted} secret-looking value${r.redacted === 1 ? '' : 's'} stripped` : ''}${r.trimmed ? ', trimmed to the cap' : ''}).` });
+        return { content: [{ type: 'text' as const, text:
+          `Memory written (${r.bytes} bytes).${r.redacted ? ` ${r.redacted} value(s) that looked like secrets were replaced with [redacted]; do not put credentials in memory.` : ''}${r.trimmed ? ' It was longer than the cap and has been cut at the end — prune it to a page.' : ''}` }] };
+      },
+    );
     return createSdkMcpServer({
       name: 'foreman',
-      tools: [spawnWorker, checkWorkers, waitForWorker, messageWorker, askHuman, exposeService],
+      tools: [spawnWorker, checkWorkers, waitForWorker, messageWorker, askHuman, exposeService, remember],
     });
   }
 }

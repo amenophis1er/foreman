@@ -422,6 +422,14 @@ function applyWire(s: RunView, e: WireEvent): RunView {
           title: 'models changed', body: d.text,
         }],
       };
+    case 'memory_updated':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'system',
+          title: 'memory', body: String(d.text ?? 'Project memory rewritten.'),
+        }],
+      };
     case 'pull_request':
       return {
         ...s,
@@ -1217,6 +1225,7 @@ export const api = {
   prDraft: (runId: string) => fetch(`/runs/${encodeURIComponent(runId)}/pr`),
   openPr: (runId: string, title: string, body: string) => post(`/runs/${encodeURIComponent(runId)}/pr`, { title, body }),
   prState: (runId: string) => fetch(`/runs/${encodeURIComponent(runId)}/pr/state`),
+  memory: (projectId: string) => fetch(`/projects/${encodeURIComponent(projectId)}/memory`),
   instances: () => fetch('/instances'),
   updateProject: (
     projectId: string,
