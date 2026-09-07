@@ -24,6 +24,7 @@
  *   POST   /runs/{id}/resume     Resume an interrupted/failed run
  *   POST   /permission           Resolve an approval {id, behavior, message?}
  *   POST   /answer               Answer a director question {id, text}
+ *   POST   /projects/clone        Clone a Git URL under the projects root and link it {url, branch?} → {id}; GET /projects/clone/{id} polls
  *   GET    /projects/{id}/tree    The project's files as they stand (read-only, jailed); …/artifact and …/preview as for runs
  *   GET    /search?q=            Runs across the fleet matching title, brief, project or folder
  *   POST   /fleet/chat           One turn with the fleet planner {text} → {text, costUsd}
@@ -48,7 +49,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import os from 'node:os';
-import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MissionRun } from './orchestrator.js';
@@ -59,6 +60,7 @@ import {
 } from './planner.js';
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { saveAttachments } from './attachments.js';
+import { cloneRepo, looksLikeRepoUrl, parseRepoUrl } from './clone.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
 import { ServiceRegistry, SVC_PREFIX, parseServicePath, portOpen, proxyToService, servicePath } from './services.js';
@@ -738,6 +740,51 @@ async function findProject(ref: string): Promise<Project | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Linking a repository: clone under the projects root, then link the folder
+// ---------------------------------------------------------------------------
+
+interface CloneJob {
+  id: string; url: string; dest: string; startedAt: number;
+  state: 'running' | 'done' | 'error'; progress: string; projectId?: string; error?: string;
+}
+/** Clones in flight or recently finished, for the picker to poll. Memory only; a restart forgets them (the folder stays). */
+const cloneJobs = new Map<string, CloneJob>();
+
+/**
+ * Where a repository lands and whether it may: under the projects root, by
+ * its own name, never over something that is already there. Returns the
+ * destination or the reason it cannot be used.
+ */
+async function cloneDestination(url: string): Promise<{ ok: true; ref: NonNullable<ReturnType<typeof parseRepoUrl>>; dest: string } | { ok: false; error: string }> {
+  const ref = parseRepoUrl(url);
+  if (!ref) return { ok: false, error: `"${url}" is not a Git URL Foreman recognises. Try https://github.com/owner/repo, git@host:owner/repo.git, or owner/repo.` };
+  const settings = await store.readSettings().catch(() => ({ global: {}, projects: {} }));
+  const root = projectsRoot((settings.global as Record<string, unknown>).projectsRoot);
+  const dest = path.join(root, ref.name);
+  if (await stat(dest).catch(() => null)) {
+    const linked = (await store.listProjects()).find((p) => p.folder === dest);
+    return { ok: false, error: linked ? `${ref.name} is already here and linked as ${linked.name}.` : `${dest} already exists. Link that folder instead, or move it aside.` };
+  }
+  await mkdir(root, { recursive: true });
+  return { ok: true, ref, dest };
+}
+
+/** Clone and link, start to finish. Used by the front desk and the phone, which wait; the picker uses the job table instead. */
+async function cloneAndLink(url: string, branch?: string, onProgress?: (line: string) => void): Promise<{ project?: Project; error?: string }> {
+  const where = await cloneDestination(url);
+  if (!where.ok) return { error: where.error };
+  const failed = await cloneRepo({ ref: where.ref, dest: where.dest, branch, onProgress });
+  if (failed) {
+    // A half-clone is worse than none: git leaves the folder on failure.
+    await rm(where.dest, { recursive: true, force: true }).catch(() => {});
+    return { error: failed };
+  }
+  const project = await store.addProject(where.dest);
+  projectsCache.set(project.id, { name: project.name });
+  return { project };
+}
+
+// ---------------------------------------------------------------------------
 // The fleet planner — the front desk
 // ---------------------------------------------------------------------------
 
@@ -890,6 +937,11 @@ const fleetHost: FleetHost = {
   },
 
   async linkProject(folderIn) {
+    if (looksLikeRepoUrl(folderIn)) {
+      const r = await cloneAndLink(folderIn.trim());
+      if (r.error) return r.error;
+      return `Cloned ${r.project!.name} into ${r.project!.folder} and linked it. Its planner can read it now (open_planning).`;
+    }
     const folder = expandHome(folderIn.trim());
     if (!path.isAbsolute(folder)) return `A folder to link must be an absolute path (or ~/…), not "${folderIn}".`;
     const st = await stat(folder).catch(() => null);
@@ -1069,6 +1121,13 @@ async function handlePhoneText(text: string, replyTo?: string): Promise<void> {
           return say(`<b>Running · ${live.length}</b>\n${lines.join('\n')}${planning.length ? `\n\n<b>Planning</b>\n${planning.join('\n')}` : ''}`);
         }
         case 'new': {
+          if (looksLikeRepoUrl(cmd.name)) {
+            say(`Cloning <code>${escTg(cmd.name.trim())}</code>…`);
+            const r = await cloneAndLink(cmd.name.trim());
+            if (r.error) return say(`Could not clone: ${escTg(r.error)}`);
+            lastPhonePlanning = r.project!.id; lastPhonePlanningAt = Date.now();
+            return say(`Cloned <b>${escTg(r.project!.name)}</b> into <code>${escTg(r.project!.folder)}</code> and linked it.\nTell me what it should do next — just type it.`);
+          }
           const settings = await store.readSettings().catch(() => ({ global: {}, projects: {} }));
           const root = projectsRoot((settings.global as Record<string, unknown>).projectsRoot);
           const name = slug(cmd.name);
@@ -2198,6 +2257,34 @@ const server = http.createServer(async (req, res) => {
       const ok = activeRuns().some((r) => r.answerQuestion(id, String(text ?? '')));
       if (!ok) return json(res, 404, { error: 'no pending question with that id' });
       json(res, 200, { ok: true });
+
+    } else if (req.method === 'POST' && url.pathname === '/projects/clone') {
+      // Start a clone under the projects root; the picker polls the job.
+      const { url: repo, branch } = await readBody(req);
+      if (typeof repo !== 'string' || !repo.trim()) return json(res, 400, { error: 'url is required' });
+      const where = await cloneDestination(repo.trim());
+      if (!where.ok) return json(res, 400, { error: where.error });
+      const job: CloneJob = { id: crypto.randomBytes(6).toString('hex'), url: where.ref.url, dest: where.dest, startedAt: Date.now(), state: 'running', progress: 'Starting git…' };
+      cloneJobs.set(job.id, job);
+      void (async () => {
+        const failed = await cloneRepo({ ref: where.ref, dest: where.dest, branch: typeof branch === 'string' && branch.trim() ? branch.trim() : undefined, onProgress: (l) => { job.progress = l; } });
+        if (failed) {
+          await rm(where.dest, { recursive: true, force: true }).catch(() => {});
+          job.state = 'error'; job.error = failed;
+        } else {
+          const project = await store.addProject(where.dest);
+          projectsCache.set(project.id, { name: project.name });
+          job.state = 'done'; job.projectId = project.id; job.progress = 'Done';
+        }
+        // Finished jobs linger long enough to be read, then go.
+        setTimeout(() => cloneJobs.delete(job.id), 10 * 60_000).unref();
+      })();
+      json(res, 202, { id: job.id, dest: job.dest });
+
+    } else if (req.method === 'GET' && /^\/projects\/clone\/[a-f0-9]{12}$/.test(url.pathname)) {
+      const job = cloneJobs.get(url.pathname.split('/').pop()!);
+      if (!job) return json(res, 404, { error: 'no such clone (Foreman may have restarted; check the projects root)' });
+      json(res, 200, { state: job.state, progress: job.progress, projectId: job.projectId, error: job.error, dest: job.dest });
 
     } else if (req.method === 'GET' && url.pathname === '/search') {
       // Every run across the fleet whose title, brief, project or folder

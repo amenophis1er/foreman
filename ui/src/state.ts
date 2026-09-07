@@ -1185,6 +1185,9 @@ const post = (url: string, body: unknown) =>
 export const api = {
   linkProject: (folder: string, name?: string, provider?: ProviderRef) =>
     post('/projects', { folder, name, provider }),
+  /** Clone a Git URL under the projects root and link it; returns a job id to poll. */
+  cloneProject: (url: string, branch?: string) => post('/projects/clone', { url, branch }),
+  cloneStatus: (id: string) => fetch(`/projects/clone/${encodeURIComponent(id)}`),
   instances: () => fetch('/instances'),
   updateProject: (
     projectId: string,

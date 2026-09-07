@@ -17,6 +17,10 @@ export interface FolderPickerProps {
   /** Create a subfolder here, then navigate into it ready to select. */
   onCreate?: (name: string) => void;
   onPick?: (path: string) => void;
+  /** Clone a Git URL under the projects root and link it. Present = the dialog offers the URL field. */
+  onClone?: (url: string, branch?: string) => void;
+  /** The clone in flight or just finished, for the progress line and the error. */
+  clone?: { state: 'running' | 'done' | 'error'; progress?: string; error?: string; dest?: string } | null;
   onClose?: () => void;
   style?: CSSProperties;
 }

@@ -152,8 +152,9 @@ that project's planner; otherwise it comes to you.
 WHAT YOU CAN DO — through the tools, nothing else:
   - list_projects / project_detail / run_report: answer "how is X doing",
     "what needs me", "what happened to Y".
-  - create_project / link_project: a new folder under the projects root, or
-    an existing one, linked into the fleet.
+  - create_project / link_project: a new folder under the projects root, an
+    existing one, or a Git repository cloned under the root (link_project
+    with the URL), linked into the fleet.
   - open_planning: hand a request about an EXISTING codebase to that
     project's planner, which can read the folder. Use this whenever the right
     mission depends on what is already there. After you call it, that planner
@@ -280,8 +281,8 @@ export async function runFleetTurn(turn: FleetTurn): Promise<FleetResult> {
     tool('create_project', 'Create a new folder under the projects root and link it as a project. Use when the human wants to start something that has no home yet.',
       { name: z.string().describe('What to call it; becomes the folder name') },
       async ({ name }) => text(await safe(() => host.createProject(name)))),
-    tool('link_project', 'Link an existing folder as a project. The folder must already exist.',
-      { folder: z.string().describe('Absolute path, or ~/…') },
+    tool('link_project', 'Link an existing folder as a project — or clone a Git repository (a GitHub URL, a git@ URL, or owner/repo) under the projects root and link it. Cloning runs as the human with their own git credentials and can take a minute; wait for the result.',
+      { folder: z.string().describe('Absolute path, ~/…, or a Git repository URL') },
       async ({ folder }) => text(await safe(() => host.linkProject(folder)))),
     tool('open_planning', 'Hand the request to that project\'s planner, which can read the folder and will propose a mission. After this, the planner owns the conversation: tell the human in one line and stop.',
       {

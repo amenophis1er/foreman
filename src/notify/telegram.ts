@@ -94,7 +94,7 @@ export function telegramTransport(token: string, chatId: string, apiBase = TELEG
 export const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   { command: 'projects', description: 'The fleet, with what is running' },
   { command: 'status', description: 'Runs in flight, spend, what needs you' },
-  { command: 'new', description: 'Create a project: /new <name>' },
+  { command: 'new', description: 'Create a project: /new <name>, or clone one: /new <git url>' },
   { command: 'plan', description: 'Talk to a planner: /plan <project> <what you want>' },
   { command: 'run', description: 'Skip the talk: /run <project> <brief>' },
   { command: 'stop', description: 'Stop the planner reply in flight' },

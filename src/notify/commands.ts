@@ -66,7 +66,7 @@ export const HELP_TEXT = [
   '',
   '/projects — the fleet, with what is running',
   '/status — the runs in flight and what they need',
-  '/new &lt;name&gt; — create a project under your projects root and link it',
+  '/new &lt;name&gt; — create a project under your projects root and link it; /new &lt;git url&gt; clones it there first',
   '/plan &lt;project&gt; &lt;what you want&gt; — talk to that project\'s planner',
   '/run &lt;project&gt; &lt;brief&gt; — skip the talk: start a mission at the project\'s default cap',
   '/stop [project] — stop the planner reply in flight',

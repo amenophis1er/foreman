@@ -197,10 +197,33 @@ async function toError(r: Response): Promise<string | null> {
 }
 
 /** Server-driven state for the controlled FolderPicker. */
-function usePicker(onPick: (path: string) => void) {
+type CloneView = { state: 'running' | 'done' | 'error'; progress?: string; error?: string; dest?: string } | null;
+
+function usePicker(onPick: (path: string) => void, onLinked: (projectId: string) => void) {
   const [open, setOpen] = useState(false);
   const [cur, setCur] = useState<Listing | null>(null);
   const [err, setErr] = useState('');
+  const [clone, setClone] = useState<CloneView>(null);
+
+  // Start the clone, then poll the job once a second until it settles. The
+  // folder appears as a project the moment git is done.
+  const startClone = async (url: string, branch?: string) => {
+    setClone({ state: 'running', progress: 'Starting git…' });
+    const r = await api.cloneProject(url, branch);
+    const body = await r.json().catch(() => ({} as { id?: string; dest?: string; error?: string }));
+    if (!r.ok) { setClone({ state: 'error', error: body.error ?? `HTTP ${r.status}` }); return; }
+    const id = body.id!;
+    const poll = async () => {
+      const s = await api.cloneStatus(id).catch(() => null);
+      const d = s && s.ok ? await s.json() as { state: 'running' | 'done' | 'error'; progress?: string; error?: string; projectId?: string; dest?: string } : null;
+      if (!d) { setClone({ state: 'error', error: 'Lost track of the clone. Check the projects root.' }); return; }
+      if (d.state === 'running') { setClone({ state: 'running', progress: d.progress, dest: d.dest }); setTimeout(() => void poll(), 1000); return; }
+      if (d.state === 'error') { setClone({ state: 'error', error: d.error }); return; }
+      setClone(null); setOpen(false); setCur(null);
+      if (d.projectId) onLinked(d.projectId);
+    };
+    void poll();
+  };
 
   const navigate = async (p?: string) => {
     setErr('');
@@ -218,12 +241,14 @@ function usePicker(onPick: (path: string) => void) {
   return {
     open,
     show: () => { setOpen(true); void navigate(); },
-    close: () => { setOpen(false); setCur(null); },
+    close: () => { if (clone?.state === 'running') return; setOpen(false); setCur(null); setClone(null); },
     props: cur && {
       path: cur.path, parent: cur.parent, dirs: cur.dirs, error: err,
       onNavigate: (p: string) => void navigate(p),
       onCreate: (name: string) => void create(name),
       onPick: (p: string) => { setOpen(false); setCur(null); onPick(p); },
+      onClone: (url: string, branch?: string) => void startClone(url, branch),
+      clone,
     },
   };
 }
@@ -264,7 +289,7 @@ export function FleetView({
       onOpen((await r.json()).project.id);
     }
   };
-  const picker = usePicker((p) => void link(p));
+  const picker = usePicker((p) => void link(p), (id) => { refresh(); onOpen(id); });
 
   // Filtering narrows, it never reorders: the server's urgency ordering
   // survives, so a project blocked on you stays first among whatever is left.
