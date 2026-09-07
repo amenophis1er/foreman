@@ -254,11 +254,15 @@ const DEFAULT_MAX_TURNS = 150;
  *
  * A turn cap bounds how many times the director speaks, not how much it says,
  * and those come apart badly on a free or unpriced run: 150 turns over a large
- * context is millions of tokens that nothing here was watching. Sized so that
- * no honest mission reaches it — a long metered run lands well under this —
- * and so a runaway does, well before the four-hour clock.
+ * context is millions of tokens that nothing here was watching. It binds only
+ * where dollars cannot — a priced run already has a real cap, and this one
+ * must never end it first. Sized from the ledger, not from a hunch: cache
+ * reads are most of a director loop's traffic, and finished missions on this
+ * machine have run to 8–16M tokens total (a 5M figure was first proposed and
+ * would have cut several of them short). 20M is clear of every honest run
+ * seen so far and still well inside what a runaway reaches before the clock.
  */
-export const DEFAULT_MAX_TOKENS = 5_000_000;
+export const DEFAULT_MAX_TOKENS = 20_000_000;
 
 /**
  * The token cap as a director should read it: "5M tokens", not "5000000".
@@ -1744,19 +1748,22 @@ export class MissionRun {
     if (elapsed >= maxSeconds) {
       return `TIME CAP REACHED: ${Math.round(elapsed / 60)} minutes.`;
     }
-    // Checked before the priced test, because this is the bound that has to
-    // hold on the runs dollars cannot bound at all — and counting live usage
-    // rather than the persisted total so a gateway's interim tokens count too.
+    // Money only binds where the figure is real. Enforcing it through a
+    // gateway ends working runs over spend that never happened. Where it is
+    // real it is the cap, full stop: a priced run is never ended by tokens,
+    // which would cut a mission the human funded to its dollar figure.
+    if (isPriced(this.meta)) {
+      if (this.meta.costUsd < this.meta.budgetUsd) return null;
+      return `BUDGET CAP REACHED: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)}.`;
+    }
+    // Unpriced or free: tokens are the bound dollars cannot be. Live usage
+    // rather than the persisted total, so a gateway's interim tokens count too.
     const u = this.liveUsage();
     const total = u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWriteTokens;
     if (total >= (this.meta.maxTokens ?? DEFAULT_MAX_TOKENS)) {
       return `TOKEN CAP REACHED: ${(total / 1e6).toFixed(1)}M tokens.`;
     }
-    // Money only binds where the figure is real. Enforcing it through a
-    // gateway ends working runs over spend that never happened.
-    if (!isPriced(this.meta)) return null;
-    if (this.meta.costUsd < this.meta.budgetUsd) return null;
-    return `BUDGET CAP REACHED: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)}.`;
+    return null;
   }
 
   private overBudget(): string | null {

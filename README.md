@@ -131,9 +131,10 @@ itself. A local model is `free`. A cloud model with no published price is
 turns. The one exception is a dated table of OpenAI's list prices, visible in
 `src/openai-prices.ts` with the day it was checked. Budget caps bind on
 dollars where dollars are real and on wall clock always — and, on a run that
-is `free` or `unpriced`, on tokens too: 5M by default across input, output and
+is `free` or `unpriced`, on tokens too: 20M by default across input, output and
 cache, because turns and minutes alone do not notice a director whose turns
-are cheap and enormous.
+are cheap and enormous. A priced run is never ended by tokens; its budget is
+its cap.
 
 Which account pays is printed at startup and shown wherever a mission can be
 started. Pin it with `FOREMAN_CLAUDE_CONFIG_DIR`; assert it with

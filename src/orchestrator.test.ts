@@ -1182,23 +1182,30 @@ test('capReached says nothing while the token total is under the cap', () => {
   assert.equal(run.capReached(), null);
 });
 
-test('capReached counts cache tokens too, and fires at the default 5M', () => {
+test('capReached counts cache tokens too, and fires at the default 20M', () => {
   // Under on input and output alone; over once cache is counted — which is
   // exactly the run the cap exists for, since cache reads are most of the
   // traffic on a long director loop.
   const run = cappedRun({}, {
-    inputTokens: 500_000, outputTokens: 100_000,
-    cacheReadTokens: 4_000_000, cacheWriteTokens: 400_000,
+    inputTokens: 2_000_000, outputTokens: 400_000,
+    cacheReadTokens: 16_000_000, cacheWriteTokens: 1_600_000,
   });
   const cap = run.capReached();
   assert.ok(cap?.startsWith('TOKEN CAP REACHED'), `got ${cap}`);
-  assert.match(cap!, /5\.0M tokens/);
+  assert.match(cap!, /20\.0M tokens/);
+});
+
+test('capReached: the ledger\'s largest finished missions stay under the default', () => {
+  // 15.9M tokens, done, $8.55 — a real Fable run from this machine. A cap
+  // that would have ended it is a cap set wrong.
+  const run = cappedRun({}, { inputTokens: 300_000, outputTokens: 200_000, cacheReadTokens: 15_000_000, cacheWriteTokens: 400_000 });
+  assert.equal(run.capReached(), null);
 });
 
 test('capReached honours an explicit maxTokens over the default', () => {
   const run = cappedRun({ maxTokens: 1_000_000 }, { inputTokens: 1_200_000 });
   assert.ok(run.capReached()?.startsWith('TOKEN CAP REACHED'));
-  const roomy = cappedRun({ maxTokens: 20_000_000 }, { inputTokens: 6_000_000 });
+  const roomy = cappedRun({ maxTokens: 40_000_000 }, { inputTokens: 25_000_000 });
   assert.equal(roomy.capReached(), null);
 });
 
@@ -1208,20 +1215,25 @@ test('the turn cap still wins when turns and tokens are both past their caps', (
   assert.match(run.capReached()!, /^TURN CAP REACHED/);
 });
 
-test('the token cap binds a free run, which has no dollar cap to bind it', () => {
-  // Priced or not, the token bound applies: it is checked before the test that
-  // sends unpriced runs home with nothing.
-  for (const basis of ['free', 'unpriced', 'priced'] as const) {
-    const run = cappedRun({ costBasis: basis }, { inputTokens: 6_000_000 });
+test('the token cap binds free and unpriced runs, and never a priced one', () => {
+  for (const basis of ['free', 'unpriced'] as const) {
+    const run = cappedRun({ costBasis: basis }, { inputTokens: 25_000_000 });
     assert.ok(run.capReached()?.startsWith('TOKEN CAP REACHED'), `basis ${basis}`);
   }
+  // Priced: dollars are the cap. Under budget, tokens alone end nothing;
+  // over budget, it is the budget that speaks.
+  const priced = cappedRun({ costBasis: 'priced', budgetUsd: 5 }, { inputTokens: 25_000_000 });
+  priced.meta.costUsd = 1;
+  assert.equal(priced.capReached(), null);
+  priced.meta.costUsd = 5;
+  assert.match(priced.capReached()!, /^BUDGET CAP REACHED/);
 });
 
 test('budgetLine tells an unmetered director its turn AND token bounds', () => {
   const free = cappedRun({ costBasis: 'free' }).budgetLine();
-  assert.match(free, /150 director turns and 5M tokens/);
+  assert.match(free, /150 director turns and 20M tokens/);
   const unpriced = cappedRun({ costBasis: 'unpriced' }).budgetLine();
-  assert.match(unpriced, /150 director turns and 5M tokens/);
+  assert.match(unpriced, /150 director turns and 20M tokens/);
   // A custom cap is quoted as set, not as the default.
   assert.match(cappedRun({ maxTokens: 2_000_000 }).budgetLine(), /2M tokens/);
   // A priced run still speaks in dollars, and says nothing about tokens.
@@ -1231,6 +1243,7 @@ test('budgetLine tells an unmetered director its turn AND token bounds', () => {
 });
 
 test('tokenCapLabel rounds to a figure a director can hold in mind', () => {
+  assert.equal(tokenCapLabel(20_000_000), '20M tokens');
   assert.equal(tokenCapLabel(5_000_000), '5M tokens');
   assert.equal(tokenCapLabel(1_500_000), '1.5M tokens');
   assert.equal(tokenCapLabel(250_000), '250k tokens');

@@ -213,11 +213,16 @@ async function checkPort(port: number, envVar: 'PORT' | 'FOREMAN_SERVICES_PORT' 
     probe.listen(port, '127.0.0.1');
   });
 
+  // The main port taken is fatal: nothing can be served. The services port
+  // taken is a fact to report — the dashboard still works, and only the
+  // crew's exposed previews are off until the port is freed or moved.
+  // PORT + 1 is a guess, and a second Foreman (a dev server beside the
+  // installed one) is the likeliest thing sitting on it.
   return inUse
     ? {
         name,
-        status: 'error',
-        detail: 'already in use',
+        status: envVar === 'PORT' ? 'error' : 'warn',
+        detail: envVar === 'PORT' ? 'already in use' : 'already in use — exposed dev servers will be unavailable',
         fix: `Another Foreman may be running. Stop it, or: ${envVar}=${port + 1} npm start`,
       }
     : { name, status: 'ok', detail: 'free' };

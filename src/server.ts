@@ -1524,6 +1524,7 @@ async function driveRun(
     // ones something is listening on — an agent cannot reserve a path for a
     // server it has not started.
     exposeService: async (runId, port, label) => {
+      if (servicesDown) return { ok: false, reason: servicesDown };
       if (!(await portOpen(port))) return { ok: false, reason: `nothing is listening on 127.0.0.1:${port} — start the server first` };
       const svc = services.register(runId, port, label);
       return { ok: true, url: `${await servicesBase()}${svc.path}`, path: svc.path };
@@ -2736,6 +2737,17 @@ const servicesServer = http.createServer(servicesHandler({
   registry: services,
   allowed: (req) => requestAllowed(req, { port: SERVICES_PORT, tailnet, bindAll: BIND === 'all' }),
 }));
+/**
+ * Why the services port is not listening, when it is not. A taken port must
+ * not take the dashboard down with it (an unhandled 'error' on a server is a
+ * crash): it is logged, preflight has already warned, and expose_service
+ * tells the crew plainly instead of handing out a URL that answers nothing.
+ */
+let servicesDown: string | null = null;
+servicesServer.on('error', (err: NodeJS.ErrnoException) => {
+  servicesDown = `Foreman's services port ${SERVICES_PORT} is not available (${err.code ?? err.message}); set FOREMAN_SERVICES_PORT to a free port and restart to expose dev servers`;
+  console.warn(`[services] ${servicesDown}`);
+});
 
 // Fail loudly on a misconfigured install before anything else happens.
 if (!reportPreflight(await preflight({ port: PORT, servicesPort: SERVICES_PORT, foremanHome: store.root, distDir: DIST_DIR, tailnet }))) {
