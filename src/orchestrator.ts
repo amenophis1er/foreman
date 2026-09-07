@@ -250,6 +250,32 @@ export async function ensureIgnoreLines(file: string, lines: readonly string[]):
 const DEFAULT_MAX_TURNS = 150;
 
 /**
+ * The same idea counted in tokens, for the same reason the turn cap exists.
+ *
+ * A turn cap bounds how many times the director speaks, not how much it says,
+ * and those come apart badly on a free or unpriced run: 150 turns over a large
+ * context is millions of tokens that nothing here was watching. It binds only
+ * where dollars cannot — a priced run already has a real cap, and this one
+ * must never end it first. Sized from the ledger, not from a hunch: cache
+ * reads are most of a director loop's traffic, and finished missions on this
+ * machine have run to 8–16M tokens total (a 5M figure was first proposed and
+ * would have cut several of them short). 20M is clear of every honest run
+ * seen so far and still well inside what a runaway reaches before the clock.
+ */
+export const DEFAULT_MAX_TOKENS = 20_000_000;
+
+/**
+ * The token cap as a director should read it: "5M tokens", not "5000000".
+ * A budget is only useful if the agent it constrains can hold it in mind, and
+ * a raw seven-digit figure in a prompt is one more thing to misread.
+ */
+export function tokenCapLabel(n: number): string {
+  if (n >= 1e6) return `${Number((n / 1e6).toFixed(1))}M tokens`;
+  if (n >= 1000) return `${Number((n / 1000).toFixed(1))}k tokens`;
+  return `${n} tokens`;
+}
+
+/**
  * How long a worker may say nothing at all before it is treated as stalled.
  *
  * The SDK emits a message for every tool call, every result, every retry — so
@@ -1455,14 +1481,6 @@ export class MissionRun {
 
 
   /**
-   * Fold in the SDK's own dollar figure for a role.
-   *
-   * Ignored outright where Foreman holds that role's real rates: the SDK
-   * prices every response with Anthropic's table, so on a gateway role its
-   * number is fiction — and adding fiction to a figure computed from the
-   * endpoint's own published rates would corrupt the one honest total.
-   */
-  /**
    * `costUsd` from its parts. The upstream's own figure, once it has given
    * one, replaces the rated figure for gateway tokens rather than adding to
    * it — they price the same tokens, and the party that sends the bill wins.
@@ -1488,12 +1506,6 @@ export class MissionRun {
     this.enforceBudget();
   }
 
-  /**
-   * Folds one result message's token usage into the run total and persists
-   * it. Called alongside addCost() from the same two call sites (director
-   * loop, runWorker) so usage and cost are always in step — the honest
-   * counterpart to a dollar figure that is not honest on every provider.
-   */
   /**
    * The one event that carries a run's economics. Emitted whenever either half
    * changes — dollars OR tokens — because through a gateway the SDK often
@@ -1634,6 +1646,15 @@ export class MissionRun {
     }
   }
 
+  /** The mission's branch, when it has one: stay on it, and leave merging and pushing alone. */
+  private gitLine(): string {
+    const g = this.meta.git;
+    if (!g) return '';
+    return `This mission runs on git branch ${g.branch}, created for it from ${g.base}. Stay on it: do not switch branches, ` +
+      'do not merge, do not push, do not rebase or reset. You may commit as you go; Foreman commits whatever ' +
+      'is left uncommitted when the mission ends. ';
+  }
+
   /**
    * What the director is told about its budget, in the units that are true.
    *
@@ -1644,29 +1665,21 @@ export class MissionRun {
    * mixed-provider run, and a resumed session carries the belief in its
    * restored context long after the cap itself is gone.
    */
-  /** The mission's branch, when it has one: stay on it, and leave merging and pushing alone. */
-  private gitLine(): string {
-    const g = this.meta.git;
-    if (!g) return '';
-    return `This mission runs on git branch ${g.branch}, created for it from ${g.base}. Stay on it: do not switch branches, ` +
-      'do not merge, do not push, do not rebase or reset. You may commit as you go; Foreman commits whatever ' +
-      'is left uncommitted when the mission ends. ';
-  }
-
   private budgetLine(): string {
     const turns = this.meta.maxTurns ?? DEFAULT_MAX_TURNS;
+    const tokens = tokenCapLabel(this.meta.maxTokens ?? DEFAULT_MAX_TOKENS);
     switch (costBasisOf(this.meta)) {
       case 'free':
         return `This run costs nothing per token — it is served by hardware the ` +
           `operator already owns — so there is no spend cap. It is bounded by ` +
-          `${turns} director turns.`;
+          `${turns} director turns and ${tokens}.`;
       case 'unpriced':
         // Deliberately still "no spend cap", and deliberately not silent about
         // the spend. A director told only that money is being spent, with no
         // figure and no cap, invents a limit and winds itself down early.
         return `This run does draw on a paid account, but Foreman cannot price it, ` +
           `so there is no dollar cap and no figure to reason about — do not ration ` +
-          `yourself against one. It is bounded by ${turns} director turns.`;
+          `yourself against one. It is bounded by ${turns} director turns and ${tokens}.`;
       case 'priced':
         return `Budget: $${this.meta.budgetUsd.toFixed(2)} total for this run.`;
     }
@@ -1736,10 +1749,21 @@ export class MissionRun {
       return `TIME CAP REACHED: ${Math.round(elapsed / 60)} minutes.`;
     }
     // Money only binds where the figure is real. Enforcing it through a
-    // gateway ends working runs over spend that never happened.
-    if (!isPriced(this.meta)) return null;
-    if (this.meta.costUsd < this.meta.budgetUsd) return null;
-    return `BUDGET CAP REACHED: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)}.`;
+    // gateway ends working runs over spend that never happened. Where it is
+    // real it is the cap, full stop: a priced run is never ended by tokens,
+    // which would cut a mission the human funded to its dollar figure.
+    if (isPriced(this.meta)) {
+      if (this.meta.costUsd < this.meta.budgetUsd) return null;
+      return `BUDGET CAP REACHED: $${this.meta.costUsd.toFixed(2)} of $${this.meta.budgetUsd.toFixed(2)}.`;
+    }
+    // Unpriced or free: tokens are the bound dollars cannot be. Live usage
+    // rather than the persisted total, so a gateway's interim tokens count too.
+    const u = this.liveUsage();
+    const total = u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWriteTokens;
+    if (total >= (this.meta.maxTokens ?? DEFAULT_MAX_TOKENS)) {
+      return `TOKEN CAP REACHED: ${(total / 1e6).toFixed(1)}M tokens.`;
+    }
+    return null;
   }
 
   private overBudget(): string | null {
@@ -1790,22 +1814,6 @@ export class MissionRun {
     );
   }
 
-  /**
-   * Starts a worker and returns at once; the session runs in the background.
-   *
-   * The split between this and {@link runWorker} is the asynchronous design in
-   * one place: everything the director can observe about a worker — the record
-   * in the map, `worker_started`, the `done` promise wait_for_worker races, the
-   * stored report and `worker_finished` at the end — is settled here, around a
-   * runWorker that only drives the SDK session. The promise is kept on the
-   * record rather than dropped, so a worker is never a floating promise, and
-   * the outcome is written onto the record rather than returned once, because
-   * the director now reads it back whenever it asks.
-   *
-   * Synchronous up to the point runWorker takes over: by the time this returns
-   * the record exists and `worker_started` has been emitted, which is exactly
-   * the guarantee spawn_worker's immediate reply relies on.
-   */
   /**
    * Item 6, decided as "ask": a worker on a gateway provider has stalled or
    * looped. Rather than letting the director cope alone or retrying somewhere
@@ -1882,6 +1890,22 @@ export class MissionRun {
     };
   }
 
+  /**
+   * Starts a worker and returns at once; the session runs in the background.
+   *
+   * The split between this and {@link runWorker} is the asynchronous design in
+   * one place: everything the director can observe about a worker — the record
+   * in the map, `worker_started`, the `done` promise wait_for_worker races, the
+   * stored report and `worker_finished` at the end — is settled here, around a
+   * runWorker that only drives the SDK session. The promise is kept on the
+   * record rather than dropped, so a worker is never a floating promise, and
+   * the outcome is written onto the record rather than returned once, because
+   * the director now reads it back whenever it asks.
+   *
+   * Synchronous up to the point runWorker takes over: by the time this returns
+   * the record exists and `worker_started` has been emitted, which is exactly
+   * the guarantee spawn_worker's immediate reply relies on.
+   */
   private launchWorker(workerId: string, prompt: string, resumeSessionId?: string, overrides?: WorkerOverrides): WorkerRuntime {
     const existing = this.workers.get(workerId);
     const w: WorkerRuntime = existing ?? {
@@ -2303,7 +2327,6 @@ export class MissionRun {
           this.pendingQuestions.set(id, resolve);
           this.armAsk(id, (afterMs) => {
             if (!this.pendingQuestions.delete(id)) return;
-        this.askMeta.delete(id);
             this.askMeta.delete(id);
             timedOut = true;
             this.emit('question_timeout', { id, afterMs });

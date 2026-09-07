@@ -14,7 +14,18 @@ export default defineConfig({
         "/answer", "/browse", "/chat", "/events", "/instances", "/interrupt", "/locate",
         "/missiondoc", "/mkdir", "/models", "/permission", "/projects", "/run",
         "/runs", "/settings", "/steer",
-      ].map((p) => [p, { target: api, changeOrigin: true }]),
+      ].map((p) => [p, {
+        target: api, changeOrigin: true,
+        // The API refuses unsafe methods whose Origin is not its own (see
+        // src/guard.ts). In dev the page is on Vite's port, so every POST
+        // would arrive labelled cross-site. The proxy is the same machine
+        // and the same person, so it presents the request the way curl
+        // does: no browser labels at all.
+        configure: (proxy) => proxy.on('proxyReq', (proxyReq) => {
+          proxyReq.removeHeader('origin');
+          proxyReq.removeHeader('sec-fetch-site');
+        }),
+      }]),
     ),
   },
   build: { outDir: "dist" },

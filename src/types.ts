@@ -346,6 +346,17 @@ export interface RunMeta {
   /** Wall-clock cap. Matters most exactly where dollars matter least. */
   maxSeconds?: number;
   /**
+   * Total tokens — input, output and cache alike — before the run winds down.
+   *
+   * The third bound, and the one that was missing: a run that costs nothing
+   * per token, or that Foreman cannot price, has only turns and the clock to
+   * stop it. Neither notices a chatty director whose turns are cheap and
+   * enormous, re-reading a large context a hundred and fifty times inside the
+   * time cap. Tokens are the resource actually being consumed there, so they
+   * are what the cap should count.
+   */
+  maxTokens?: number;
+  /**
    * How long a worker may produce nothing before it is treated as stalled and
    * stopped. Absent means the orchestrator's default. Raise it for slow local
    * models whose first token legitimately takes minutes.

@@ -122,10 +122,12 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
         <section>
           <SectionTitle>Services</SectionTitle>
           {/* Live servers, so a new tab, not the viewer: an app wants a whole
-              window and its own origin behaviour, not a sandboxed frame. */}
+              window and its own origin behaviour, not a sandboxed frame.
+              The absolute url from the event, not the path: these are proxied
+              on their own port, so a relative link would land on Foreman's. */}
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {services.map((s) => (
-              <a key={s.port} href={s.path} target="_blank" rel="noopener noreferrer"
+              <a key={s.port} href={s.url ?? s.path} target="_blank" rel="noopener noreferrer"
                 title={`${s.label} — 127.0.0.1:${s.port} through Foreman`}
                 style={{ ...rowStyle, textDecoration: 'none' }}>
                 <Icon name="provider" size={12} color="var(--status-good)" />

@@ -1,7 +1,13 @@
 /**
  * Services the crew exposes: a dev server it started to test its work, made
- * reachable through Foreman's own address — so the human on the phone can
- * open it over the tailnet without the agent opening a port to the world.
+ * reachable through Foreman's machine — so the human on the phone can open it
+ * over the tailnet without the agent opening a port to the world.
+ *
+ * These pages are served on their own port (FOREMAN_SERVICES_PORT, PORT + 1 by
+ * default), never on the dashboard's. Whatever the crew wrote runs in a
+ * browser, and if it ran on Foreman's origin the same-origin policy would let
+ * it call every Foreman API as the operator. A different port is a different
+ * origin, so it cannot.
  *
  * The proxy is deliberately narrow. Only ports a run declared, only on
  * loopback, only under `/svc/<run>/<port>/`. Nothing is guessed: a request
@@ -10,11 +16,12 @@
  */
 import http from 'node:http';
 import net from 'node:net';
+import type { GuardVerdict } from './guard.js';
 
 export interface ExposedService {
   port: number;
   label: string;
-  /** `/svc/<runId>/<port>/` — the path under Foreman's origin. */
+  /** `/svc/<runId>/<port>/` — the path under the services origin, not Foreman's. */
   path: string;
   since: number;
 }
@@ -99,4 +106,54 @@ export function proxyToService(
     res.end(`Nothing is answering on 127.0.0.1:${port} (${err.message}). The service the crew exposed may have stopped with its run.`);
   });
   req.pipe(up);
+}
+
+/**
+ * The whole of the services port: the guard, the proxy, and nothing else.
+ *
+ * It is a function of its dependencies rather than a closure over the server's
+ * module scope so a test can start one on an ephemeral port with its own
+ * registry — importing server.ts would start listening for real. `allowed` is
+ * passed in for the same reason: the guard has to be told the port it is
+ * defending, which the test only learns after listen().
+ */
+export function servicesHandler(deps: {
+  registry: ServiceRegistry;
+  allowed: (req: http.IncomingMessage) => GuardVerdict;
+}): http.RequestListener {
+  const jsonErr = (res: http.ServerResponse, status: number, error: string) => {
+    const body = JSON.stringify({ error });
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(body);
+  };
+  return (req, res) => {
+    // A DNS-rebound page must not reach the proxy either: it would be talking
+    // to the crew's dev server from an origin of the attacker's choosing.
+    const verdict = deps.allowed(req);
+    if (!verdict.ok) { jsonErr(res, verdict.status, verdict.error); return; }
+    const url = new URL(req.url ?? '/', `http://127.0.0.1`);
+    // Services the crew exposed: /svc/<run>/<port>/… goes to 127.0.0.1:<port>,
+    // but only for a pair a run declared. A page served this way asks for its
+    // absolute-path assets (`/app.js`) against this server's root; those arrive
+    // as sub-resource requests carrying the service page as Referer, and are
+    // routed to the same service. Documents never are — a typed URL is not.
+    const svc = parseServicePath(url.pathname);
+    if (svc) {
+      if (!deps.registry.has(svc.runId, svc.port)) { jsonErr(res, 404, 'no such service'); return; }
+      proxyToService(req, res, svc.port, svc.rest, url.search, servicePath(svc.runId, svc.port));
+      return;
+    }
+    const ref = req.headers.referer;
+    const dest = String(req.headers['sec-fetch-dest'] ?? '');
+    if (ref && dest && dest !== 'document' && dest !== 'empty' && !url.pathname.startsWith(SVC_PREFIX)) {
+      try {
+        const via = parseServicePath(new URL(ref).pathname);
+        if (via && deps.registry.has(via.runId, via.port)) {
+          proxyToService(req, res, via.port, url.pathname, url.search, servicePath(via.runId, via.port));
+          return;
+        }
+      } catch { /* not a URL we can read — fall through to the 404 */ }
+    }
+    jsonErr(res, 404, 'not found');
+  };
 }

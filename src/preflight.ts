@@ -204,7 +204,7 @@ async function checkCodex(): Promise<Check | null> {
   };
 }
 
-async function checkPort(port: number): Promise<Check> {
+async function checkPort(port: number, envVar: 'PORT' | 'FOREMAN_SERVICES_PORT' = 'PORT'): Promise<Check> {
   const name = `Port ${port}`;
   const inUse = await new Promise<boolean>((resolve) => {
     const probe = net.createServer();
@@ -213,12 +213,17 @@ async function checkPort(port: number): Promise<Check> {
     probe.listen(port, '127.0.0.1');
   });
 
+  // The main port taken is fatal: nothing can be served. The services port
+  // taken is a fact to report — the dashboard still works, and only the
+  // crew's exposed previews are off until the port is freed or moved.
+  // PORT + 1 is a guess, and a second Foreman (a dev server beside the
+  // installed one) is the likeliest thing sitting on it.
   return inUse
     ? {
         name,
-        status: 'error',
-        detail: 'already in use',
-        fix: `Another Foreman may be running. Stop it, or: PORT=${port + 1} npm start`,
+        status: envVar === 'PORT' ? 'error' : 'warn',
+        detail: envVar === 'PORT' ? 'already in use' : 'already in use — exposed dev servers will be unavailable',
+        fix: `Another Foreman may be running. Stop it, or: ${envVar}=${port + 1} npm start`,
       }
     : { name, status: 'ok', detail: 'free' };
 }
@@ -309,6 +314,8 @@ async function checkUi(distDir: string): Promise<Check> {
  */
 export async function preflight(opts: {
   port: number;
+  /** The second listener, for the crew's exposed dev servers — see services.ts. */
+  servicesPort: number;
   foremanHome: string;
   distDir: string;
   /** Detected by the server before preflight; null when not on a tailnet. */
@@ -321,6 +328,7 @@ export async function preflight(opts: {
     checkOllama(),
     checkCodex(),
     checkPort(opts.port),
+    checkPort(opts.servicesPort, 'FOREMAN_SERVICES_PORT'),
     checkBrowser(),
     checkHome(opts.foremanHome),
     checkUi(opts.distDir),
