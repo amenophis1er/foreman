@@ -738,7 +738,7 @@ export function ProjectView({
   /** The rail tab lives in the URL, so a Files view can be linked and survives refresh. */
   routeTab: RailTab; onSelectTab: (tab: RailTab) => void;
   onBack: () => void; refreshFleet: () => void;
-  theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
+  theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: (section?: 'provider') => void;
   /** Saved settings, for the rail's glance: global and this project's overlay. */
   settings: { global: Settings; project?: Settings };
 }) {
@@ -1154,6 +1154,16 @@ export function ProjectView({
           onAlways={(id) => void api.permission(id, 'allow_always')}
           onDeny={(id) => void api.permission(id, 'deny')}
           onAnswer={(id, answer) => void api.answer(id, answer)} />
+      )}
+      {/* Nothing here can run until this is fixed, so it is said on the page,
+          not left to the first failed turn. Per project: another project may
+          have a provider of its own that is fine. */}
+      {(p.billingMode ?? auth.mode) === 'none' && (
+        <Banner tone="caution">
+          This project has nothing to run on: Claude Code is not signed in on this machine. Sign in and restart Foreman,
+          or give the project a provider of its own.
+          <Button variant="ghost" size="sm" icon="provider" style={{ marginLeft: 'var(--sp-2)' }} onClick={() => onSettings('provider')}>Settings → Provider</Button>
+        </Banner>
       )}
       {selectedRunId && !viewingLive && (
         <Banner tone="readonly">

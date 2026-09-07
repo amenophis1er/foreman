@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# A first-time user's machine, for looking at the onboarding: plain Node,
+# nobody signed in to anything, no Chrome, no gh. Packs the working tree,
+# installs it globally in a container as an ordinary user, and starts it with
+# the dashboard on http://localhost:4190 (services on 4191).
+#
+#   scripts/fresh-machine.sh           build and start (replaces a running one)
+#   scripts/fresh-machine.sh doctor    just run `foreman doctor` and exit
+#   scripts/fresh-machine.sh stop      remove the container
+#
+# FOREMAN_BIND=all inside, because the container's loopback is not the host's;
+# the port is published on 127.0.0.1 only, so nothing else can reach it.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+NAME=foreman-fresh
+case "${1:-start}" in
+  stop) docker rm -f "$NAME" >/dev/null 2>&1 || true; echo "stopped"; exit 0 ;;
+esac
+BUILD=$(mktemp -d)
+trap 'rm -rf "$BUILD"' EXIT
+cp scripts/fresh-machine/Dockerfile "$BUILD/Dockerfile"
+TGZ=$(npm pack --pack-destination "$BUILD" 2>/dev/null | tail -1)
+mv "$BUILD/$TGZ" "$BUILD/foreman.tgz"
+docker build -q -t "$NAME" "$BUILD" >/dev/null
+case "${1:-start}" in
+  doctor) docker run --rm "$NAME" foreman doctor ;;
+  start)
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+    docker run -d --name "$NAME" -p 127.0.0.1:4190:4177 -p 127.0.0.1:4191:4178 "$NAME" >/dev/null
+    sleep 3; docker logs "$NAME" 2>&1 | tail -20
+    echo; echo "fresh machine: http://localhost:4190  ·  shell: docker exec -it $NAME bash  ·  stop: $0 stop" ;;
+esac

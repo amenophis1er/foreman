@@ -14,6 +14,7 @@ import { NeedsBoard, summaryText, type NeedItem } from '../ds/fleet/NeedsBoard';
 import { FleetRunRow } from '../ds/fleet/FleetRunRow';
 import { OutcomeTile } from '../ds/fleet/OutcomeTile';
 import { LinkProjectCard } from '../ds/fleet/LinkProjectCard';
+import { SetupCard } from '../ds/fleet/SetupCard';
 import { FolderPicker } from '../ds/overlay/FolderPicker';
 import { DropConfirmModal, DropOverlay } from '../ds/overlay/DropConfirmModal';
 import { ConfirmDialog } from '../ds/overlay/ConfirmDialog';
@@ -276,7 +277,7 @@ export function FleetView({
   onOpen: (projectId: string) => void; refresh: () => void;
   /** Open a specific run — where an unfinished one's next act (Resume) lives. */
   onOpenRun?: (projectId: string, runId: string) => void;
-  theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: () => void;
+  theme: 'dark' | 'light'; onToggleTheme: () => void; onSettings: (section?: 'provider') => void;
 }) {
   const [dragging, setDragging] = useState(false);
   const [deskOpen, toggleDesk] = useDeskOpen();
@@ -363,6 +364,15 @@ export function FleetView({
 
       <AppHeader mode="fleet" subtitle="mission control" theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings} search={search}>
         {!connected && <Banner tone="disconnected" inline>disconnected</Banner>}
+        {/* No credentials anywhere on this machine: said on the board, not
+            only on the first-run card, because it stays true after a project
+            is linked and is the reason a mission would not start. */}
+        {connected && auth.mode === 'none' && (
+          <Banner tone="caution" inline>
+            No model credentials on this machine, so missions cannot start. Sign in with Claude Code and restart Foreman,
+            or give a project its own API key or endpoint in Settings → Provider.
+          </Banner>
+        )}
         {/* The page's one status line: what is happening across the fleet —
             including "nothing", said quietly, so the board never reads as
             half-loaded when its first two sections are legitimately empty. */}
@@ -413,6 +423,12 @@ export function FleetView({
             <LinkProjectCard onClick={picker.show} />
           </div>
           <Empty>No projects linked yet — link a folder to give the director a job site.</Empty>
+          {/* The first-run card: what this machine has, and what to do about
+              what it lacks. Gone once there is a project; `foreman doctor`
+              says the same thing in the terminal. */}
+          <div style={{ width: '32rem', maxWidth: '100%', marginTop: 'var(--sp-3)' }}>
+            <SetupCard load={api.doctor} onSettings={() => onSettings('provider')} />
+          </div>
         </div>
       ) : (
         <div style={{

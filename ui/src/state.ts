@@ -1218,6 +1218,7 @@ export const api = {
   prState: (runId: string) => fetch(`/runs/${encodeURIComponent(runId)}/pr/state`),
   memory: (projectId: string) => fetch(`/projects/${encodeURIComponent(projectId)}/memory`),
   instances: () => fetch('/instances'),
+  doctor: () => fetch('/doctor'),
   updateProject: (
     projectId: string,
     patch: {

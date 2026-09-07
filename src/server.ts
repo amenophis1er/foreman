@@ -27,6 +27,7 @@
  *   POST   /projects/clone        Clone a Git URL under the projects root and link it {url, branch?} → {id}; GET /projects/clone/{id} polls
  *   GET    /projects/{id}/memory  The project's memory (.foreman/MEMORY.md): text, updatedAt
  *   GET    /projects/{id}/tree    The project's files as they stand (read-only, jailed); …/artifact and …/preview as for runs
+ *   GET    /doctor                The same checks `foreman doctor` runs, for the first-run card
  *   GET    /search?q=            Runs across the fleet matching title, brief, project or folder
  *   POST   /fleet/chat           One turn with the fleet planner {text} → {text, costUsd}
  *   POST   /fleet/stop           Stop the fleet planner reply in flight
@@ -369,6 +370,26 @@ function providerForRole(meta: RunMeta, roleProviderId?: string): ProviderRef {
   if (roleProviderId === 'ollama-local') return ollamaProvider();
   if (roleProviderId === 'codex-local') return { kind: 'codex', id: 'codex-local' };
   return own;
+}
+
+
+/**
+ * The one provider problem `resolveProvider` cannot see: a Claude Code
+ * provider whose install is not signed in. Resolution only names the config
+ * dir; whether anything is logged into it is a fact about the machine, read
+ * fresh here so a login done a minute ago counts. Said in Foreman's words,
+ * because the SDK's own — "Not logged in · Please run /login" — reads like a
+ * Foreman slash command and names nothing the person can do from here.
+ */
+async function signedInProblem(resolved: ResolvedProvider): Promise<string | null> {
+  if (resolved.kind !== 'claude-code') return null;
+  const signedIn = resolved.ownLogin
+    ? await dirHasCredentials(resolved.configDir)
+    : (await detectAuth()).mode !== 'none';
+  if (signedIn) return null;
+  return 'Claude Code is not signed in on this machine, so nothing can run on it yet. ' +
+    'Sign in — run `claude` in a terminal, then `/login` — and restart Foreman; ' +
+    'or give this project a provider of its own (an Anthropic API key, Codex, or an OpenAI-compatible endpoint) in Settings → Provider.';
 }
 
 /** Whether a project's provider has a key on file. Never the key itself. */
@@ -1052,7 +1073,7 @@ async function driveFleetTurn(text: string, via: 'telegram' | 'http'): Promise<{
   try {
     const resolved = await resolveProvider(providerOf({}), store.root);
     emit('chat_turn', { state: 'thinking', model, provider: resolved.label, costBasis: resolved.costBasis });
-    const problem = providerProblem(resolved);
+    const problem = providerProblem(resolved) ?? await signedInProblem(resolved);
     if (problem) {
       emit('chat_error', { error: `provider unavailable — ${problem}` });
       return { text: '', costUsd: 0, error: `provider unavailable — ${problem}` };
@@ -1286,7 +1307,7 @@ async function driveChatTurn(project: Project, text: string, shown: string = tex
       provider: resolved.label,
       costBasis: resolved.costBasis,
     });
-    const problem = providerProblem(resolved);
+    const problem = providerProblem(resolved) ?? await signedInProblem(resolved);
     if (problem) {
       emit('chat_error', { error: `provider unavailable — ${problem}` });
       return;
@@ -1413,7 +1434,7 @@ async function driveRun(
   // A run that cannot resolve a credential must not start: dispatching anyway
   // would fall back to whatever the environment happens to hold.
   const resolved = await resolveProvider(providerOf(meta), store.root);
-  const problem = providerProblem(resolved);
+  const problem = providerProblem(resolved) ?? await signedInProblem(resolved);
   if (problem) {
     meta.status = 'error';
     meta.endedAt = Date.now();
@@ -1874,6 +1895,14 @@ const server = http.createServer(async (req, res) => {
       res.write(': connected\n\n');
       sseClients.add(res);
       req.on('close', () => sseClients.delete(res));
+
+    } else if (req.method === 'GET' && url.pathname === '/doctor') {
+      // What `foreman doctor` prints, as data, for the dashboard's setup card.
+      // Computed fresh each time — the point is to reflect a login or an
+      // install the person just did. The port and dashboard checks are left
+      // out: whoever is reading this in the dashboard already knows both.
+      const checks = await preflight({ port: PORT, servicesPort: SERVICES_PORT, foremanHome: store.root, distDir: DIST_DIR, tailnet });
+      json(res, 200, { checks: checks.filter((c) => !c.name.startsWith('Port') && c.name !== 'Dashboard') });
 
     } else if (req.method === 'GET' && url.pathname === '/settings') {
       json(res, 200, await store.readSettings());

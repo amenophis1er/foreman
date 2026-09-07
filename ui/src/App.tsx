@@ -251,7 +251,7 @@ export default function App() {
   const shared = {
     theme, onToggleTheme: toggleTheme,
     search,
-    onSettings: () => openSettings(),
+    onSettings: (section?: SettingsSectionId) => openSettings(section),
     // Which account pays. Cross-cutting, so it rides with the other shell props.
     auth,
   };

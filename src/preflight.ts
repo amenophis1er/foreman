@@ -116,12 +116,17 @@ async function checkAuth(): Promise<Check> {
   const name = 'Credentials';
   const { mode, source, account } = await detectAuth();
 
+  // Missing credentials are a warning, not a refusal to start. The dashboard
+  // is where a first-time user reads what to do and where a project gets an
+  // API key or an endpoint of its own; a server that will not come up until
+  // something is logged in leaves them with a terminal line and no next step.
+  // Missions cannot start meanwhile — dispatch checks the provider itself.
   if (mode === 'none') {
     return {
       name,
-      status: 'error',
-      detail: 'none found — no missions can run',
-      fix: 'Log in with Claude Code, or: export ANTHROPIC_API_KEY=sk-ant-...',
+      status: 'warn',
+      detail: 'none found — missions cannot start until a provider is set up',
+      fix: 'Sign in with Claude Code on this machine (claude, then /login) and restart · or export ANTHROPIC_API_KEY · or give a project an API key or endpoint in Settings → Provider',
     };
   }
 
@@ -142,8 +147,12 @@ async function checkAuth(): Promise<Check> {
   return { name, status: 'ok', detail: `${MODE_LABEL[mode]} — ${who}` };
 }
 
-function checkInstance(): Check {
-  return { name: 'Claude Code', status: 'ok', detail: describeInstance(defaultInstance()) };
+async function checkInstance(): Promise<Check> {
+  const detail = describeInstance(defaultInstance());
+  // A tick beside an install nobody is signed into contradicts the line
+  // above it; say so here too, and leave the fix to the Credentials row.
+  if ((await detectAuth()).mode === 'none') return { name: 'Claude Code', status: 'warn', detail: `${detail} · not signed in` };
+  return { name: 'Claude Code', status: 'ok', detail };
 }
 
 /**
