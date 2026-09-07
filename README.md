@@ -230,7 +230,7 @@ result.
 ```sh
 npm ci && npm run setup      # dependencies, then the dashboard build
 npm start                    # serves http://localhost:4177
-npm test                     # 358 tests, node:test
+npm test                     # 360 tests, node:test
 npm run typecheck            # server and dashboard
 npm run dev                  # API + Vite together
 scripts/dev-restart.sh       # restarts the server only when nothing would be lost
