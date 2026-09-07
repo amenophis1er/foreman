@@ -27,7 +27,7 @@ function FolderPill({ folder }) {
 import { Logo, LogoMark } from '../brand/Logo';
 
 /** The app's one header bar. Fleet mode wears the full logo; project mode wears the mark (a way home) and the job site. */
-export function AppHeader({ mode = 'fleet', title, subtitle = 'mission control', folder, onBack, theme, onToggleTheme, onSettings, version, search, children, style }) {
+export function AppHeader({ mode = 'fleet', title, subtitle = 'mission control', folder, branch, onBack, theme, onToggleTheme, onSettings, version, search, children, style }) {
   const fleet = mode === 'fleet';
   return (
     <header style={{
@@ -51,6 +51,18 @@ export function AppHeader({ mode = 'fleet', title, subtitle = 'mission control',
           <Icon name="chevronRight" size={14} color="var(--ink-3, var(--ink-2))" />
           <span style={{ fontWeight: 'var(--fw-semibold)', whiteSpace: 'nowrap' }}>{title}</span>
           {folder && <FolderPill folder={folder} />}
+          {/* Which branch the folder is on: a run's own, or the project's
+              current one, with a dot when the tree is dirty. */}
+          {branch && (
+            <span title={branch.hint ?? `On branch ${branch.name}${branch.dirty ? ' · uncommitted changes' : ''}`} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 8px', borderRadius: 999,
+              border: '1px solid var(--line)', fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--ink-1)', whiteSpace: 'nowrap', maxWidth: 260,
+            }}>
+              <span aria-hidden style={{ color: 'var(--ink-2)' }}>⎇</span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{branch.name}</span>
+              {branch.dirty && <span aria-label="uncommitted changes" style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--status-warning)', flex: '0 0 auto' }} />}
+            </span>
+          )}
         </nav>
       )}
       {/* The finder, centred between the name and the controls: the same

@@ -120,6 +120,8 @@ export type RunSummary = {
   budgetUsd: number; status: Status; costUsd: number;
   createdAt: number; endedAt?: number;
   directorModel?: string; workerModel?: string; resumes?: number;
+  /** The branch this mission ran on, when Foreman gave it one. */
+  git?: { branch: string; base: string; baseHead: string | null; commits?: number; commit?: string };
   browserTools?: boolean;
   directorSessionId?: string;
   /** What this run's spend is — see src/types.ts. Absent on older runs. */
@@ -135,6 +137,8 @@ export type ProjectSummary = {
   provider?: ProviderRef;
   /** What this project will actually bill; can differ from the server's mode. */
   billingMode?: AuthMode;
+  /** What git says about the folder: branch, dirty, remote. `repo: false` for a plain folder. */
+  git?: { repo: boolean; branch?: string; dirty?: boolean; head?: string | null; remote?: string };
   defaultBudgetUsd: number;
   activeRun: RunSummary | null;
   lastRun: {
@@ -416,6 +420,17 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         entries: [...s.entries, {
           id: ++seq, ts, agent: 'system', kind: 'system',
           title: 'models changed', body: d.text,
+        }],
+      };
+    case 'git_branch':
+    case 'git_note':
+    case 'git_committed':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: (e.event === 'git_committed' && d.error) || e.event === 'git_note' ? 'error' : 'system',
+          title: e.event === 'git_branch' ? `branch · ${String(d.branch ?? '')}` : e.event === 'git_committed' ? 'branch closed' : 'git',
+          body: String(d.text ?? ''),
         }],
       };
     case 'budget_alert':

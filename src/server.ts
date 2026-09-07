@@ -61,6 +61,7 @@ import {
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { saveAttachments } from './attachments.js';
 import { cloneRepo, looksLikeRepoUrl, parseRepoUrl } from './clone.js';
+import { closeMissionBranch, ensureMissionBranch, gitInfo, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
 import { ServiceRegistry, SVC_PREFIX, parseServicePath, portOpen, proxyToService, servicePath } from './services.js';
@@ -1469,6 +1470,23 @@ async function driveRun(
     // However the run ended, it no longer needs its gateways.
     releaseGateways(meta.id);
     if (activeByProject.get(projectId) === run) activeByProject.delete(projectId);
+    // A finished mission on its own branch closes with a commit of whatever
+    // the crew left uncommitted. Done only: an interrupted run resumes on
+    // the same branch and its tree, and an error is not a result to record.
+    if (meta.git && meta.status === 'done') {
+      const label = meta.title || meta.mission.split('\n').find((l) => l.trim())?.trim().slice(0, 72) || meta.id;
+      const closed = await closeMissionBranch(meta.folder, meta.git, `foreman: ${label}`);
+      meta.git = { branch: closed.branch, base: closed.base, baseHead: closed.baseHead, commits: closed.commits, commit: closed.commit ?? meta.git.commit };
+      await store.writeMeta(meta).catch(() => {});
+      gitInfoCache.delete(meta.folder);
+      const ahead = closed.commits ?? 0;
+      emit('git_committed', {
+        branch: closed.branch, base: closed.base, commits: ahead, commit: closed.commit, committed: closed.committed, error: closed.error,
+        text: closed.error
+          ? `Could not commit the mission's work on ${closed.branch}: ${closed.error}`
+          : `${closed.committed ? `Committed the mission's work as ${closed.commit}` : 'Nothing left to commit'} — ${closed.branch} is ${ahead} commit${ahead === 1 ? '' : 's'} ahead of ${closed.base}. Merge or open a pull request when you are ready; Foreman does neither.`,
+      });
+    }
   }
 }
 
@@ -1478,6 +1496,8 @@ async function effectiveSettings(projectId: string): Promise<{
   directorModel: ModelChoice; workerModel: ModelChoice; plannerModel: ModelChoice;
   /** Provider serving each role, when Settings pinned one with the model. */
   directorProviderId?: string; workerProviderId?: string;
+  /** In a repository, each mission runs on a branch of its own (default on). */
+  gitBranchPerMission: boolean;
 }> {
   const s = await store.readSettings()
     .catch(() => ({ global: {}, projects: {} as Record<string, object> }));
@@ -1498,7 +1518,18 @@ async function effectiveSettings(projectId: string): Promise<{
     plannerModel: modelChoice(p.plannerModel ?? g.plannerModel),
     directorProviderId: str(p.directorProviderId ?? g.directorProviderId),
     workerProviderId: str(p.workerProviderId ?? g.workerProviderId),
+    gitBranchPerMission: (p.gitBranchPerMission ?? g.gitBranchPerMission) !== false,
   };
+}
+
+/** Git facts per folder, for the fleet poll — asked at most every few seconds per project. */
+const gitInfoCache = new Map<string, { at: number; value: GitInfo }>();
+async function gitInfoCached(folder: string): Promise<GitInfo> {
+  const hit = gitInfoCache.get(folder);
+  if (hit && Date.now() - hit.at < 5_000) return hit.value;
+  const value = await gitInfo(folder);
+  gitInfoCache.set(folder, { at: Date.now(), value });
+  return value;
 }
 
 async function startRun(
@@ -1537,6 +1568,21 @@ async function startRun(
     return;
   }
   await consumeProposal(projectId, meta.id, mission).catch(() => {});
+  // In a repository, the mission gets a branch of its own before the crew
+  // touches anything — so the deck's baseline, taken at the director's first
+  // turn, is the branch point, and the diff is exactly the mission.
+  if (settings.gitBranchPerMission) {
+    const g = await startMissionBranch(folder, mission, meta.id);
+    const emit = makeEmitter(meta.id, projectId);
+    if ('error' in g) {
+      if (g.error !== 'not a git repository') emit('git_note', { text: `Could not give this mission its own branch (${g.error}); running on the current branch.` });
+    } else {
+      meta.git = g;
+      await store.writeMeta(meta).catch(() => {});
+      gitInfoCache.delete(folder);
+      emit('git_branch', { branch: g.branch, base: g.base, text: `On branch ${g.branch}, made from ${g.base}. Foreman commits the mission's work here when it ends; merging and pushing stay yours.` });
+    }
+  }
   await driveRun(projectId, meta);
 }
 
@@ -1574,6 +1620,11 @@ async function resumeRun(projectId: string, meta: RunMeta, pick: {
   meta.status = 'running';
   meta.endedAt = undefined;
   meta.resumes = (meta.resumes ?? 0) + 1;
+  if (meta.git) {
+    const back = await ensureMissionBranch(meta.folder, meta.git.branch);
+    if (back) makeEmitter(meta.id, projectId)('git_note', { text: `Could not return to ${meta.git.branch} (${back}); the resumed mission runs on whatever is checked out.` });
+    gitInfoCache.delete(meta.folder);
+  }
   await store.writeMeta(meta).catch((err) => {
     console.error(`failed to persist resume of ${meta.id}:`, err);
   });
@@ -1745,6 +1796,9 @@ const server = http.createServer(async (req, res) => {
           // Whether a key is on file, never the key. Settings renders
           // "stored / not stored" from this and nothing more.
           providerHasKey: await providerHasKeyOf(p),
+          // Which branch the folder is on, and whether it is dirty — the
+          // header's pill, and what "a branch per mission" starts from.
+          git: await gitInfoCached(p.folder),
           activeRun: run ? { ...run.meta } : null,
           lastRun: lastRun && {
             id: lastRun.id,

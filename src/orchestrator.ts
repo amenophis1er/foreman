@@ -1108,9 +1108,10 @@ export class MissionRun {
         'actually complete. Keep completed work; do not rewrite files that already ' +
         'satisfy their milestone. Update the doc to match reality, then continue ' +
         'the mission to DONE WHEN. ' +
+        this.gitLine() +
         this.budgetNote()
       : `MISSION: ${this.meta.mission}\n\n${this.budgetLine()} ` +
-        `Working directory: ${this.meta.folder}. Begin by writing .foreman/MISSION.md, then execute the plan.`;
+        `Working directory: ${this.meta.folder}. ${this.gitLine()}Begin by writing .foreman/MISSION.md, then execute the plan.`;
 
     try {
       // The mission doc directory ignores itself wholesale (`*`, which also
@@ -1631,6 +1632,15 @@ export class MissionRun {
    * mixed-provider run, and a resumed session carries the belief in its
    * restored context long after the cap itself is gone.
    */
+  /** The mission's branch, when it has one: stay on it, and leave merging and pushing alone. */
+  private gitLine(): string {
+    const g = this.meta.git;
+    if (!g) return '';
+    return `This mission runs on git branch ${g.branch}, created for it from ${g.base}. Stay on it: do not switch branches, ` +
+      'do not merge, do not push, do not rebase or reset. You may commit as you go; Foreman commits whatever ' +
+      'is left uncommitted when the mission ends. ';
+  }
+
   private budgetLine(): string {
     const turns = this.meta.maxTurns ?? DEFAULT_MAX_TURNS;
     switch (costBasisOf(this.meta)) {

@@ -40,6 +40,8 @@ export const SSE_EVENTS = [
   'mission_proposed', 'mission_started',
   // server
   'models_changed',
+  // git: the mission's branch
+  'git_branch', 'git_note', 'git_committed',
 ] as const;
 
 const listeners = new Set<SseListener>();

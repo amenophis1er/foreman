@@ -298,6 +298,12 @@ export interface RunMeta {
   claudeInstance?: ClaudeInstanceRef;
   /** Number of times this run was resumed after an interruption. */
   resumes?: number;
+  /**
+   * The branch this mission runs on, when the folder is a repository and the
+   * project runs missions on branches of their own. Foreman made it from
+   * `base` at start and commits on it at the end; it never merges or pushes.
+   */
+  git?: { branch: string; base: string; baseHead: string | null; commits?: number; commit?: string };
   /** Tools the human granted "always allow" for this run (survives resume). */
   allowedTools?: string[];
   /**

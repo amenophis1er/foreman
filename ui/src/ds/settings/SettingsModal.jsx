@@ -33,6 +33,7 @@ export const DEFAULT_SETTINGS = {
   toolPolicy: { Bash: 'allow', Write: 'allow', Edit: 'allow', WebFetch: 'allow', spawn_worker: 'allow' },
   theme: 'light', textSize: 'default', density: 'comfortable', showTimestamps: true,
   notifyNeedsYou: true, notifyDone: true, notifyBudget: true, sound: false,
+  gitBranchPerMission: true,
   projectsRoot: '~/Projects', missionDir: '.foreman', showHidden: false,
 };
 
@@ -181,6 +182,7 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
     projects: <>
       {!isProject && row('projectsRoot', 'Projects root', 'Where the folder picker opens.', <TextInput mono width={260} value={get('projectsRoot')} onChange={(v) => set('projectsRoot', v)} />)}
       {row('missionDir', 'Mission folder', 'Relative to the project. Holds MISSION.md and run history.', <TextInput mono width={160} value={get('missionDir')} onChange={(v) => set('missionDir', v)} />)}
+      {row('gitBranchPerMission', 'Each mission on its own branch', 'In a git repository: Foreman creates foreman/<mission> from what is checked out, commits the work on it at the end, and never merges or pushes. Off: missions edit the current branch.', <Switch checked={get('gitBranchPerMission') !== false} onChange={(v) => set('gitBranchPerMission', v)} />)}
       {!isProject && row('showHidden', 'Show hidden folders in picker', null, <Switch checked={get('showHidden')} onChange={(v) => set('showHidden', v)} />)}
       {isProject && (
         <Row label="Unlink this project" hint="Removes it from the fleet. Files on disk are untouched." danger>
@@ -226,7 +228,7 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
 const SECTION_KEYS = {
   models: ['directorModel', 'workerModel', 'plannerModel', 'fleetPlannerModel', 'directorProviderId', 'workerProviderId'], budget: ['budgetCap', 'budgetWarnAt', 'budgetHardStop'],
   approvals: ['autoAllowReadOnly', 'alwaysSurvivesResume', 'toolPolicy'], appearance: ['theme', 'density', 'showTimestamps'],
-  notifications: ['notifyNeedsYou', 'notifyDone', 'notifyBudget', 'sound'], projects: ['missionDir'],
+  notifications: ['notifyNeedsYou', 'notifyDone', 'notifyBudget', 'sound'], projects: ['missionDir', 'gitBranchPerMission'],
 };
 function sectionHasOverride(id, p) { return (SECTION_KEYS[id] || []).some((k) => k in p); }
 

@@ -10,6 +10,8 @@ export interface AppHeaderProps {
   subtitle?: string;
   /** Project mode only: absolute folder path, mono, under the name. */
   folder?: string;
+  /** Project mode: the git branch pill after the folder. */
+  branch?: { name: string; dirty?: boolean; hint?: string } | null;
   onBack?: () => void;
   /** Current theme; with `onToggleTheme`, renders the sun/moon IconButton at the far right. */
   theme?: 'dark' | 'light';

@@ -601,6 +601,7 @@ export function ProjectView({
   const history = useRunHistory(p.id);
   const effectiveSettings = { ...DEFAULT_SETTINGS, ...settings.global, ...(settings.project ?? {}) } as Settings;
   const settingOverrides = Object.keys(settings.project ?? {});
+  const branchPerMission = (effectiveSettings as Record<string, unknown>).gitBranchPerMission !== false;
   // What a mission here will run on, in one line. The rail's settings block
   // said the same in eight rows; the gear is the way to change it.
   const runsOnLine = (
@@ -609,6 +610,7 @@ export function ProjectView({
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-1)' }}>{String(effectiveSettings.directorModel ?? 'opus')} · {String(effectiveSettings.workerModel ?? 'sonnet')}</span>
       <span>· cap</span>
       <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-1)' }}>${String(effectiveSettings.budgetCap ?? 6)}</span>
+      {p.git?.repo && <span>· {branchPerMission ? 'each on its own branch' : `on ${p.git.branch} directly`}</span>}
       {settingOverrides.length > 0 && <span>· {settingOverrides.length} project override{settingOverrides.length === 1 ? '' : 's'}</span>}
       <Button variant="ghost" size="sm" icon="settings" onClick={onSettings}>Change…</Button>
     </span>
@@ -905,6 +907,9 @@ export function ProjectView({
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <AppHeader mode="project" title={p.name} folder={p.folder} onBack={onBack}
+        branch={selectedRun?.git
+          ? { name: selectedRun.git.branch, hint: `This mission runs on ${selectedRun.git.branch}, made from ${selectedRun.git.base}${selectedRun.git.commits !== undefined ? ` · ${selectedRun.git.commits} commit${selectedRun.git.commits === 1 ? '' : 's'} ahead` : ''}` }
+          : p.git?.repo && p.git.branch ? { name: p.git.branch, dirty: p.git.dirty } : null}
         theme={theme} onToggleTheme={onToggleTheme} onSettings={onSettings} search={search}>
         {headerErr && <Banner tone="error" inline>{headerErr}</Banner>}
         {selectedRunId && (
@@ -1024,6 +1029,11 @@ export function ProjectView({
                   <span style={{ fontFamily: 'var(--font-mono)' }}>
                     runs on {providerHome(p.provider) ?? 'the server default instance'}
                   </span>
+                  {p.git?.repo && (
+                    <span title={branchPerMission ? 'Foreman creates the branch from what is checked out, commits the mission\'s work on it at the end, and never merges or pushes. Settings → Projects turns this off.' : 'The mission edits the current branch. Settings → Projects can give each mission a branch of its own.'}>
+                      · {branchPerMission ? <>on its own branch from <span style={{ fontFamily: 'var(--font-mono)' }}>{p.git.branch}</span></> : <>on <span style={{ fontFamily: 'var(--font-mono)' }}>{p.git.branch}</span> directly</>}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

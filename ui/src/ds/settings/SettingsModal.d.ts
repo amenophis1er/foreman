@@ -22,6 +22,8 @@ export interface Settings {
   density?: 'comfortable' | 'compact'; showTimestamps?: boolean;
   notifyNeedsYou?: boolean; notifyDone?: boolean; notifyBudget?: boolean; sound?: boolean;
   projectsRoot?: string; missionDir?: string; showHidden?: boolean;
+  /** In a repository, each mission runs on a branch of its own (default true). */
+  gitBranchPerMission?: boolean;
 }
 
 /**
