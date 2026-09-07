@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FLEET_CHAT_ID, api, basisOf, useChat, type ProjectSummary } from '../state';
+import { FLEET_CHAT_ID, api, basisOf, useBrowserInstall, useChat, type ProjectSummary } from '../state';
 import { ChatBar } from '../ds/mission/ChatBar';
 import { TranscriptEntry } from '../ds/mission/TranscriptEntry';
 import { AppHeader } from '../ds/shell/AppHeader';
@@ -291,6 +291,7 @@ export function FleetView({
       onOpen((await r.json()).project.id);
     }
   };
+  const browserInstall = useBrowserInstall();
   const picker = usePicker((p) => void link(p), (id) => { refresh(); onOpen(id); });
 
   // Filtering narrows, it never reorders: the server's urgency ordering
@@ -427,7 +428,7 @@ export function FleetView({
               what it lacks. Gone once there is a project; `foreman doctor`
               says the same thing in the terminal. */}
           <div style={{ width: '32rem', maxWidth: '100%', marginTop: 'var(--sp-3)' }}>
-            <SetupCard load={api.doctor} onSettings={() => onSettings('provider')} />
+            <SetupCard load={api.doctor} onSettings={() => onSettings('provider')} onInstallBrowser={browserInstall.start} install={browserInstall.job} />
           </div>
         </div>
       ) : (

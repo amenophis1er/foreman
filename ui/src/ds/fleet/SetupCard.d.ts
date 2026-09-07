@@ -5,6 +5,9 @@ export interface SetupCardProps {
   load: () => Promise<Response>;
   /** Opens Settings (the Provider section, ideally). */
   onSettings: () => void;
+  /** Starts the Playwright Chromium install; the row shows `install` while it runs. */
+  onInstallBrowser?: () => void;
+  install?: { state: 'running' | 'done' | 'error'; progress: string; error?: string } | null;
   style?: CSSProperties;
 }
 

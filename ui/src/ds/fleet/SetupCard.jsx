@@ -18,7 +18,7 @@ const GLYPH = {
  * `load` fetches `/doctor`; the card re-asks when told to, so a login done in
  * another terminal shows up without a restart.
  */
-export function SetupCard({ load, onSettings, style }) {
+export function SetupCard({ load, onSettings, onInstallBrowser, install, style }) {
   const [checks, setChecks] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -65,6 +65,14 @@ export function SetupCard({ load, onSettings, style }) {
                   </div>
                   {c.fix && c.status !== 'ok' && (
                     <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-1)', marginTop: 2, overflowWrap: 'anywhere' }}>{c.fix}</div>
+                  )}
+                  {c.name === 'Browser' && c.status !== 'ok' && !/install-deps/.test(c.fix || '') && onInstallBrowser && (
+                    <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+                      <Button size="sm" icon={install?.state === 'running' ? 'loading' : 'add'} disabled={install?.state === 'running'} onClick={onInstallBrowser}>
+                        {install?.state === 'running' ? 'Installing…' : 'Install Playwright Chromium'}
+                      </Button>
+                      {install && <span style={{ fontSize: 'var(--fs-xs)', color: install.state === 'error' ? 'var(--status-critical)' : 'var(--ink-2)', fontFamily: 'var(--font-mono)' }}>{install.state === 'error' ? install.error : install.progress}</span>}
+                    </div>
                   )}
                 </div>
               </div>

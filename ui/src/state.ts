@@ -1226,6 +1226,8 @@ export const api = {
   instances: () => fetch('/instances'),
   doctor: () => fetch('/doctor'),
   setupDone: () => post('/setup/done', {}),
+  installBrowser: () => post('/setup/browser', {}),
+  browserInstall: (id: string) => fetch(`/setup/browser/${encodeURIComponent(id)}`),
   updateProject: (
     projectId: string,
     patch: {
@@ -1316,4 +1318,33 @@ export async function withAttachments(projectId: string, text: string, files: Fi
   if (!r.ok) throw new Error(body.error || 'could not save the attachments');
   const paths = (body.files ?? []).map((f: { path: string }) => f.path);
   return `${text}\n\nAttached files (in the project folder — read them):\n${paths.map((q: string) => `- ${q}`).join('\n')}`;
+}
+
+
+/**
+ * Installing Playwright's Chromium from the dashboard: start, then poll the
+ * job until it ends. `onDone` fires once on success so the caller can re-run
+ * the machine checks and show the row turn green.
+ */
+export function useBrowserInstall(onDone?: () => void): { start: () => void; job: { state: 'running' | 'done' | 'error'; progress: string; error?: string } | null } {
+  const [job, setJob] = useState<{ id: string; state: 'running' | 'done' | 'error'; progress: string; error?: string } | null>(null);
+  const start = useCallback(() => {
+    void api.installBrowser().then(async (r) => {
+      if (!r.ok) { setJob({ id: '', state: 'error', progress: '', error: `HTTP ${r.status}` }); return; }
+      const { id } = await r.json() as { id: string };
+      setJob({ id, state: 'running', progress: 'Starting…' });
+    });
+  }, []);
+  useEffect(() => {
+    if (!job || job.state !== 'running' || !job.id) return;
+    const t = setInterval(async () => {
+      const r = await api.browserInstall(job.id).catch(() => null);
+      if (!r?.ok) return;
+      const j = await r.json() as { state: 'running' | 'done' | 'error'; progress: string; error?: string };
+      setJob({ id: job.id, ...j });
+      if (j.state !== 'running') { clearInterval(t); if (j.state === 'done') onDone?.(); }
+    }, 1000);
+    return () => clearInterval(t);
+  }, [job?.id, job?.state]); // eslint-disable-line react-hooks/exhaustive-deps
+  return { start, job: job ? { state: job.state, progress: job.progress, error: job.error } : null };
 }

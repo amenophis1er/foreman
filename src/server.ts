@@ -71,6 +71,7 @@ import { cloneRepo, looksLikeRepoUrl, parseRepoUrl } from './clone.js';
 import { readMemory } from './memory.js';
 import { budgetAnchor, modelRecords, projectRecord, recordLine } from './track-record.js';
 import { reconcileRole } from './role-provider.js';
+import { detectBrowser, installChromium } from './browser.js';
 import { closeMissionBranch, compareUrl, createPullRequest, ensureMissionBranch, ghReady, gitInfo, prDraft, pullRequestState, pushBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
@@ -818,6 +819,10 @@ interface CloneJob {
 /** Clones in flight or recently finished, for the picker to poll. Memory only; a restart forgets them (the folder stays). */
 const cloneJobs = new Map<string, CloneJob>();
 
+interface InstallJob { id: string; what: 'chromium'; startedAt: number; state: 'running' | 'done' | 'error'; progress: string; error?: string }
+/** Browser installs started from the setup page; one at a time, polled like a clone. */
+const installJobs = new Map<string, InstallJob>();
+
 /**
  * Where a repository lands and whether it may: under the projects root, by
  * its own name, never over something that is already there. Returns the
@@ -1551,6 +1556,9 @@ async function driveRun(
     // A dev server behind Foreman's address. Declared ports only, and only
     // ones something is listening on — an agent cannot reserve a path for a
     // server it has not started.
+    // Detected per dispatch, so a browser installed from the setup page
+    // serves the very next mission without a restart.
+    browserChannel: (await detectBrowser())?.channel,
     exposeService: async (runId, port, label) => {
       if (servicesDown) return { ok: false, reason: servicesDown };
       if (!(await portOpen(port))) return { ok: false, reason: `nothing is listening on 127.0.0.1:${port} — start the server first` };
@@ -1920,6 +1928,25 @@ const server = http.createServer(async (req, res) => {
         browser: checks.find((c) => c.name === 'Browser') ?? null,
         version: currentVersion(),
       });
+
+    } else if (req.method === 'POST' && url.pathname === '/setup/browser') {
+      // Install Playwright's Chromium, as the user, into Playwright's cache.
+      // The one install action the setup page has: no root, no system
+      // packages, and the crew's browser tool can drive the result.
+      const running = [...installJobs.values()].find((j) => j.state === 'running');
+      if (running) return json(res, 202, { id: running.id });
+      const job: InstallJob = { id: crypto.randomBytes(6).toString('hex'), what: 'chromium', startedAt: Date.now(), state: 'running', progress: 'Starting…' };
+      installJobs.set(job.id, job);
+      void installChromium((l) => { job.progress = l; }).then((failed) => {
+        if (failed) { job.state = 'error'; job.error = failed; } else { job.state = 'done'; job.progress = 'Installed'; }
+        setTimeout(() => installJobs.delete(job.id), 10 * 60_000).unref();
+      });
+      json(res, 202, { id: job.id });
+
+    } else if (req.method === 'GET' && url.pathname.startsWith('/setup/browser/')) {
+      const job = installJobs.get(url.pathname.split('/').pop()!);
+      if (!job) return json(res, 404, { error: 'no such install' });
+      json(res, 200, job);
 
     } else if (req.method === 'POST' && url.pathname === '/setup/done') {
       // The first-run pages were seen through (or skipped). Remembered in

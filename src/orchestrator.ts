@@ -90,6 +90,7 @@ class MessageStream implements AsyncIterable<SDKUserMessage> {
   }
 }
 import { WORK_DIR, makePolicy, type PendingPermission } from './policy.js';
+import { PLAYWRIGHT_MCP_CLI } from './browser.js';
 import type { AgentEnv } from './provider.js';
 import { generateRunTitle } from './title.js';
 import { combineBasis, costBasisOf, isPriced, type CostBasis } from './types.js';
@@ -730,9 +731,6 @@ When finished, end with a concise report of what you did and how you checked it.
 `;
 
 /** Foreman's bundled Playwright MCP server, resolved from this repo. */
-const PLAYWRIGHT_MCP_CLI = fileURLToPath(
-  new URL('../node_modules/@playwright/mcp/cli.js', import.meta.url),
-);
 
 /** Claude subscription/quota exhaustion — an external pause, not a failure. */
 const USAGE_LIMIT_RE = /out of usage credits|usage limit reached|upgrade to increase your usage/i;
@@ -869,6 +867,8 @@ export class MissionRun {
      */
     private readonly host: {
       exposeService?: (runId: string, port: number, label: string) => Promise<{ ok: true; url: string; path: string } | { ok: false; reason: string }>;
+      /** The browser channel detected at dispatch (src/browser.ts); Chrome when the host says nothing. */
+      browserChannel?: string;
     } = {},
   ) {
     this.meta = meta;
@@ -1399,9 +1399,9 @@ export class MissionRun {
         // Absolute path: the server runs with the mission folder as cwd,
         // where npx cannot resolve Foreman's own dependency.
         command: process.execPath,
-        // Chrome channel by default (the machine's own Chrome, no download);
-        // FOREMAN_BROWSER picks another channel or Playwright's Chromium.
-        args: [PLAYWRIGHT_MCP_CLI, '--headless', '--isolated', '--browser', process.env.FOREMAN_BROWSER || 'chrome'],
+        // The channel the server detected for this machine: FOREMAN_BROWSER,
+        // else its Chrome, else Playwright's own Chromium (src/browser.ts).
+        args: [PLAYWRIGHT_MCP_CLI, '--headless', '--isolated', '--browser', this.host.browserChannel ?? process.env.FOREMAN_BROWSER ?? 'chrome'],
       },
     };
   }

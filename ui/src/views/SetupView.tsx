@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { api } from '../state';
+import { api, useBrowserInstall } from '../state';
 import { Button } from '../ds/core/Button';
 import { Icon } from '../ds/core/Icon';
 
@@ -78,6 +78,7 @@ export function SetupView({ onDone, onSettings }: {
   useEffect(() => { void load(); }, []);
   // Re-ask when a page is entered: a login or a link done meanwhile shows.
   useEffect(() => { if (step > 0) void load(); }, [step]);
+  const install = useBrowserInstall(() => void load());
 
   const noProvider = doc ? doc.auth.mode === 'none' && !doc.ollama && !doc.codex : false;
   const last = step === STEPS.length - 1;
@@ -196,8 +197,21 @@ export function SetupView({ onDone, onSettings }: {
             )}
             {b && (
               <Fact tone={b.status === 'ok' ? 'ok' : 'warn'} title={b.status === 'ok' ? 'A browser for missions' : 'No browser for missions'}>
-                {b.detail}{b.fix && b.status !== 'ok' ? <><br />{b.fix}</> : null}
-                {b.status !== 'ok' && <><br />Missions that do not need a browser are unaffected.</>}
+                {b.detail}
+                {b.status !== 'ok' && b.fix && /install-deps/.test(b.fix) && <><br />{b.fix}</>}
+                {b.status !== 'ok' && !/install-deps/.test(b.fix ?? '') && (
+                  <>
+                    <br />Missions that do not need a browser are unaffected. Foreman can install Playwright's own Chromium
+                    for you — about 150 MB, into your home directory, no administrator rights.
+                    <div style={{ marginTop: 'var(--sp-2)', display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+                      <Button variant="primary" size="sm" icon={install.job?.state === 'running' ? 'loading' : 'add'}
+                        disabled={install.job?.state === 'running'} onClick={install.start}>
+                        {install.job?.state === 'running' ? 'Installing…' : 'Install Playwright Chromium'}
+                      </Button>
+                      {install.job && <span style={{ fontSize: 'var(--fs-xs)', color: install.job.state === 'error' ? 'var(--status-critical)' : 'var(--ink-2)', fontFamily: 'var(--font-mono)' }}>{install.job.state === 'error' ? install.job.error : install.job.progress}</span>}
+                    </div>
+                  </>
+                )}
               </Fact>
             )}
           </div>
