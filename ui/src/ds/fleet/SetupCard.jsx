@@ -47,6 +47,7 @@ export function SetupCard({ load, onSettings, style }) {
           </span>
         )}
         <Button variant="ghost" size="sm" icon={busy ? 'loading' : 'resume'} onClick={run} disabled={busy}>Check again</Button>
+        <Button variant="ghost" size="sm" onClick={() => { window.location.hash = '#/setup'; }}>Walk-through</Button>
       </header>
       {error && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--status-critical)' }}>Could not run the checks: {error}</div>}
       {!checks && !error && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>Checking…</div>}

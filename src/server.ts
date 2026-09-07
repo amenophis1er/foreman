@@ -1901,8 +1901,32 @@ const server = http.createServer(async (req, res) => {
       // Computed fresh each time — the point is to reflect a login or an
       // install the person just did. The port and dashboard checks are left
       // out: whoever is reading this in the dashboard already knows both.
-      const checks = await preflight({ port: PORT, servicesPort: SERVICES_PORT, foremanHome: store.root, distDir: DIST_DIR, tailnet });
-      json(res, 200, { checks: checks.filter((c) => !c.name.startsWith('Port') && c.name !== 'Dashboard') });
+      const [checks, auth, ollama, codexAuth, notify] = await Promise.all([
+        preflight({ port: PORT, servicesPort: SERVICES_PORT, foremanHome: store.root, distDir: DIST_DIR, tailnet }),
+        detectAuth(),
+        discoverOllama(1200),
+        readCodexAuth(codexHome()).catch(() => null),
+        notifySettings().catch(() => null),
+      ]);
+      const codexCount = codexAuth ? (await codexModels(codexHome()).catch(() => [])).length : 0;
+      json(res, 200, {
+        checks: checks.filter((c) => !c.name.startsWith('Port') && c.name !== 'Dashboard'),
+        // The same facts, shaped for the first-run pages: one object per step.
+        auth: { mode: auth.mode, source: auth.source, account: auth.account ?? null },
+        ollama: ollama ? { host: ollamaHost(), models: ollama.length, local: ollama.filter((m) => !m.remote).length } : null,
+        codex: codexAuth ? { models: codexCount } : null,
+        tailnet: tailnet ? { dnsName: tailnet.dnsName ?? null, ip: tailnet.ip, url: tailnetUrl(tailnet, PORT), https: Boolean(tailnet.httpsPort) } : null,
+        phone: notify?.telegramChatId ? { label: notify.telegramChatLabel ?? 'linked', bot: notify.telegramBot ?? null } : notify?.telegramBot ? { label: null, bot: notify.telegramBot } : null,
+        browser: checks.find((c) => c.name === 'Browser') ?? null,
+        version: currentVersion(),
+      });
+
+    } else if (req.method === 'POST' && url.pathname === '/setup/done') {
+      // The first-run pages were seen through (or skipped). Remembered in
+      // settings so they do not come back; `#/setup` reopens them on purpose.
+      const current = await store.readSettings();
+      await store.writeSettings({ ...current, global: { ...current.global, setupDoneAt: Date.now() } });
+      json(res, 200, { ok: true });
 
     } else if (req.method === 'GET' && url.pathname === '/settings') {
       json(res, 200, await store.readSettings());
@@ -1937,9 +1961,14 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, await availableModels(project));
 
     } else if (req.method === 'GET' && url.pathname === '/projects') {
-      const [projects, allRuns, auth] = await Promise.all([
+      const [projects, allRuns, auth, settingsFile] = await Promise.all([
         store.listProjects(), store.listRuns(), authPromise,
+        store.readSettings().catch(() => ({ global: {} as Record<string, unknown>, projects: {} })),
       ]);
+      // A first run: nothing linked, nothing ever run, the setup pages not
+      // yet seen. An install upgraded from before the pages existed has
+      // projects, so it never sees them uninvited.
+      const firstRun = !projects.length && !allRuns.length && !(settingsFile.global as Record<string, unknown>).setupDoneAt;
       const cards = await Promise.all(projects.map(async (p) => {
         const run = activeByProject.get(p.id);
         const plannerAsk = pendingChatQuestion(p.id);
@@ -1995,6 +2024,7 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, {
         // Billing mode travels with every fleet poll so the UI can state it
         // plainly wherever money is about to be spent.
+        firstRun,
         authMode: auth.mode,
         authSource: auth.source,
         authAccount: auth.account ?? null,

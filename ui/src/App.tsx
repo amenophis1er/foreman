@@ -3,6 +3,7 @@ import { api, useFleet, useRoute, useNotify, useRunSearch } from './state';
 import { SearchBox } from './ds/shell/SearchBox';
 import { StatusBar } from './ds/shell/StatusBar';
 import { FleetView } from './views/FleetView';
+import { SetupView } from './views/SetupView';
 import { ProjectView } from './views/ProjectView';
 import { SettingsModal, type Settings, type SettingsSectionId } from './ds/settings/SettingsModal';
 import type {
@@ -144,8 +145,8 @@ function useProviderChoices(open: boolean) {
 }
 
 export default function App() {
-  const { projects, connected, auth, refresh, activity, update, version } = useFleet();
-  const { projectId, runId, tab, go, goRun } = useRoute();
+  const { projects, connected, auth, refresh, activity, update, version, firstRun } = useFleet();
+  const { setup: setupRoute, projectId, runId, tab, go, goRun } = useRoute();
   const [theme, toggleTheme, applyTheme] = useTheme();
   const applyTextSize = useTextSize();
   // Settings can be opened over a project, so both surfaces want the same
@@ -261,7 +262,13 @@ export default function App() {
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ flex: 1, minHeight: 0 }}>
-      {project ? (
+      {/* The first-run pages: on an install with nothing yet, and at #/setup on
+          purpose. Ahead of the fleet, because that is the page a new person
+          would otherwise be staring at with no idea what it wants. */}
+      {(setupRoute || (firstRun === true && !project)) ? (
+        <SetupView onDone={() => { void api.setupDone().then(() => refresh()); if (setupRoute) go(null); }}
+          onSettings={(section) => openSettings(section)} />
+      ) : project ? (
         <ProjectView p={project} models={models.models} modelsLoading={models.loading}
           modelsNote={models.note} modelsInheritNote={models.inheritNote} routeRunId={runId}
           onSelectRun={(id) => goRun(project.id, id)}

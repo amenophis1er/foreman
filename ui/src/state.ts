@@ -713,6 +713,8 @@ export function useFleet() {
   const [activity, setActivity] = useState<Record<string, string>>({});
   const [update, setUpdate] = useState<{ latest: string; current: string } | null>(null);
   const [version, setVersion] = useState<string>('');
+  /** Nothing linked, nothing run, setup pages not yet seen; null until the first answer. */
+  const [firstRun, setFirstRun] = useState<boolean | null>(null);
 
   const refresh = useCallback(async () => {
     const r = await fetch('/projects').catch(() => null);
@@ -722,6 +724,7 @@ export function useFleet() {
     setAuth({ mode: data.authMode ?? 'none', source: data.authSource ?? '', account: data.authAccount ?? undefined });
     setUpdate(data.update?.latest ? { latest: String(data.update.latest), current: String(data.version ?? '') } : null);
     setVersion(String(data.version ?? ''));
+    setFirstRun(Boolean(data.firstRun));
   }, []);
 
   useEffect(() => {
@@ -757,7 +760,7 @@ export function useFleet() {
     };
   }, [refresh]);
 
-  return { projects, connected, auth, refresh, activity, update, version };
+  return { projects, connected, auth, refresh, activity, update, version , firstRun};
 }
 
 /** Persisted run history for one project, newest first. */
@@ -1163,6 +1166,8 @@ export type RailTab = 'mission' | 'files' | 'runs';
  *  '…/runs' → its Files / Runs tab (Mission is the default, no suffix). All survive
  *  refresh and can be sent as links. */
 export function useRoute(): {
+  /** `#/setup`: the first-run pages, opened on purpose. */
+  setup: boolean;
   projectId: string | null;
   runId: string | null;
   tab: RailTab;
@@ -1172,6 +1177,7 @@ export function useRoute(): {
   const parse = () => {
     const m = window.location.hash.match(/^#\/p\/([^/]+)(?:\/r\/([^/]+)(?:\/(files|runs))?)?/);
     return {
+      setup: /^#\/setup\b/.test(window.location.hash),
       projectId: m ? decodeURIComponent(m[1]) : null,
       runId: m?.[2] ? decodeURIComponent(m[2]) : null,
       tab: (m?.[3] === 'files' || m?.[3] === 'runs' ? m[3] : 'mission') as RailTab,
@@ -1219,6 +1225,7 @@ export const api = {
   memory: (projectId: string) => fetch(`/projects/${encodeURIComponent(projectId)}/memory`),
   instances: () => fetch('/instances'),
   doctor: () => fetch('/doctor'),
+  setupDone: () => post('/setup/done', {}),
   updateProject: (
     projectId: string,
     patch: {
