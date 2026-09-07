@@ -32,6 +32,7 @@ import { RunRow } from '../ds/mission/RunRow';
 import { NowStrip, type NowActivity } from '../ds/mission/NowStrip';
 import { DoneWhenList, doneWhenLabel, parseDoneWhen } from '../ds/mission/DoneWhenList';
 import { FilesPanel } from '../ds/mission/FilesPanel';
+import { FolderBrowser } from '../ds/mission/FolderBrowser';
 import { DEFAULT_SETTINGS, type Settings } from '../ds/settings/SettingsModal';
 import { CrewPanel } from '../ds/mission/CrewPanel';
 import type { ModelInfo } from '../ds/forms/ModelSelect';
@@ -1240,10 +1241,8 @@ export function ProjectView({
           // to the project screen, not to any one run's deck.
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
             <MemoryPanel memory={memory} />
-            <FilesPanel runId={p.id} tree urlBase={`/projects/${encodeURIComponent(p.id)}`}
-              deck={{ runId: p.id, baseline: { kind: 'none' }, files: [], artifacts: tree.files, totals: { files: 0, additions: 0, deletions: 0 },
-                note: tree.truncated ? 'A large folder: only the first 2000 files are listed.' : undefined }}
-              loading={tree.loading} error={tree.error} />
+            <FolderBrowser key={p.id} files={tree.files} truncated={tree.truncated} loading={tree.loading}
+              error={tree.error} onRefresh={tree.refresh} urlBase={`/projects/${encodeURIComponent(p.id)}`} />
           </div>,
         )}
         </div>

@@ -68,7 +68,7 @@ function Row({ onClick, title, children }) {
  * anything opens it in the viewer, where a diff or a screenshot has the room
  * it needs. The rail lists; the viewer shows.
  */
-export function FilesPanel({ runId, deck, loading, error, missing, services = [], tree = false, urlBase, style }) {
+export function FilesPanel({ runId, deck, loading, error, missing, services = [], urlBase, style }) {
   const now = Date.now();
   // Where the files are served from: a run's deck routes, or a project's.
   const base = urlBase ?? `/runs/${encodeURIComponent(runId)}`;
@@ -77,7 +77,7 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
 
   if (error) return <div style={wrap}><Empty>Could not read the working tree: {error}</Empty></div>;
   if (missing || (!deck && !loading)) {
-    return <div style={wrap}><Empty>{tree ? 'Could not list the folder.' : 'No file record for this run — the server has no baseline for it.'}</Empty></div>;
+    return <div style={wrap}><Empty>No file record for this run — the server has no baseline for it.</Empty></div>;
   }
   if (!deck) return <div style={wrap}><Empty>Reading the working tree…</Empty></div>;
 
@@ -104,17 +104,11 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
   return (
     <div style={wrap}>
       <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums', lineHeight: 'var(--lh)' }}>
-        {tree ? (
-          <span><span style={{ color: 'var(--ink-0)' }}>{artifacts.length} file{artifacts.length === 1 ? '' : 's'}</span> in the folder as it stands · every run here shares them</span>
-        ) : (
-          <>
-            <span style={{ color: 'var(--ink-0)' }}>
-              {totals.files} changed · <span style={{ color: 'var(--status-good)' }}>+{totals.additions}</span>{' '}
-              <span style={{ color: 'var(--status-critical)' }}>−{totals.deletions}</span> · {artifacts.length} artifact{artifacts.length === 1 ? '' : 's'}
-            </span>
-            {' '}<span>{baseline}</span>
-          </>
-        )}
+        <span style={{ color: 'var(--ink-0)' }}>
+          {totals.files} changed · <span style={{ color: 'var(--status-good)' }}>+{totals.additions}</span>{' '}
+          <span style={{ color: 'var(--status-critical)' }}>−{totals.deletions}</span> · {artifacts.length} artifact{artifacts.length === 1 ? '' : 's'}
+        </span>
+        {' '}<span>{baseline}</span>
         {deck.note && <div style={{ color: 'var(--status-serious)' }}>{deck.note}</div>}
       </div>
 
@@ -139,7 +133,6 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
         </section>
       )}
 
-      {!tree && (
       <section>
         <SectionTitle>Changed files</SectionTitle>
         {files.length === 0 && <Empty>Nothing changed in the folder yet.</Empty>}
@@ -162,11 +155,10 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
           ))}
         </div>
       </section>
-      )}
 
       <section>
-        <SectionTitle>{tree ? 'Files' : 'Artifacts'}</SectionTitle>
-        {artifacts.length === 0 && <Empty>{tree ? 'The folder is empty.' : 'No screenshots or work files yet.'}</Empty>}
+        <SectionTitle>Artifacts</SectionTitle>
+        {artifacts.length === 0 && <Empty>No screenshots or work files yet.</Empty>}
         {images.length > 0 && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))', gap: 6, marginBottom: others.length ? 'var(--sp-2)' : 0 }}>
             {images.map((a, i) => (
