@@ -79,6 +79,7 @@ export function SetupView({ onDone, onSettings }: {
   // Re-ask when a page is entered: a login or a link done meanwhile shows.
   useEffect(() => { if (step > 0) void load(); }, [step]);
   const install = useBrowserInstall(() => void load());
+  const installing = install.job?.state === 'running';
 
   const noProvider = doc ? doc.auth.mode === 'none' && !doc.ollama && !doc.codex : false;
   const last = step === STEPS.length - 1;
@@ -196,9 +197,16 @@ export function SetupView({ onDone, onSettings }: {
               </Fact>
             )}
             {b && (
-              <Fact tone={b.status === 'ok' ? 'ok' : 'warn'} title={b.status === 'ok' ? 'A browser for missions' : 'No browser for missions'}>
+              <Fact tone={b.status === 'ok' ? 'ok' : 'warn'}
+                title={b.status === 'ok' ? 'A browser for missions' : /install-deps/.test(b.fix ?? '') ? 'A browser is installed, but it cannot start here' : 'No browser for missions'}>
                 {b.detail}
-                {b.status !== 'ok' && b.fix && /install-deps/.test(b.fix) && <><br />{b.fix}</>}
+                {b.status !== 'ok' && b.fix && /install-deps/.test(b.fix) && (
+                  <>
+                    <br />{b.fix}
+                    <br />That is the one step Foreman will not do for you: it never runs anything as root. Once the libraries are
+                    in, press <em>Check again</em>. Missions that do not need a browser are unaffected.
+                  </>
+                )}
                 {b.status !== 'ok' && !/install-deps/.test(b.fix ?? '') && (
                   <>
                     <br />Missions that do not need a browser are unaffected. Foreman can install Playwright's own Chromium
@@ -247,7 +255,7 @@ export function SetupView({ onDone, onSettings }: {
           <span style={{ fontWeight: 'var(--fw-semibold)' }}>Foreman</span>
           <span style={{ color: 'var(--ink-2)', fontSize: 'var(--fs-sm)' }}>first run{doc?.version ? ` · v${doc.version}` : ''}</span>
           <span style={{ flex: 1 }} />
-          <Button variant="ghost" size="sm" onClick={onDone}>Skip to the fleet</Button>
+          <Button variant="ghost" size="sm" disabled={installing} onClick={onDone}>Skip to the fleet</Button>
         </header>
 
         {/* The steps: numbered because they are a sequence, and the number is
@@ -282,12 +290,13 @@ export function SetupView({ onDone, onSettings }: {
         </section>
 
         <footer style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
-          {step > 0 && <Button variant="ghost" icon="back" onClick={() => setStep(step - 1)}>Back</Button>}
+          {step > 0 && <Button variant="ghost" icon="back" disabled={installing} onClick={() => setStep(step - 1)}>Back</Button>}
           <span style={{ flex: 1 }} />
-          {step > 0 && <Button variant="ghost" icon={busy ? 'loading' : 'resume'} disabled={busy} onClick={() => void load()}>Check again</Button>}
+          {installing && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>Installing — stay on this page</span>}
+          {step > 0 && <Button variant="ghost" icon={busy ? 'loading' : 'resume'} disabled={busy || installing} onClick={() => void load()}>Check again</Button>}
           {last
-            ? <Button variant="primary" icon="add" onClick={onDone}>Go link a project</Button>
-            : <Button variant="primary" onClick={() => setStep(step + 1)}>{step === 0 ? 'Show me' : step === 1 && noProvider ? 'Continue without a provider' : 'Continue'}</Button>}
+            ? <Button variant="primary" icon="add" disabled={installing} onClick={onDone}>Go link a project</Button>
+            : <Button variant="primary" disabled={installing} onClick={() => setStep(step + 1)}>{step === 0 ? 'Show me' : step === 1 && noProvider ? 'Continue without a provider' : 'Continue'}</Button>}
         </footer>
       </div>
     </div>

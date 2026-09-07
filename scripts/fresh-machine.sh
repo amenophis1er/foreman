@@ -8,6 +8,8 @@
 #   scripts/fresh-machine.sh doctor    just run `foreman doctor` and exit
 #   scripts/fresh-machine.sh stop      remove the container
 #   ANTHROPIC_API_KEY=sk-ant-… scripts/fresh-machine.sh   the signed-in (API key) path
+#   FRESH_BROWSER_DEPS=1 scripts/fresh-machine.sh          with Chromium's system libraries, so a
+#                                                          browser installed from the setup page runs
 #
 # FOREMAN_BIND=all inside, because the container's loopback is not the host's;
 # the port is published on 127.0.0.1 only, so nothing else can reach it.
@@ -22,7 +24,7 @@ trap 'rm -rf "$BUILD"' EXIT
 cp scripts/fresh-machine/Dockerfile "$BUILD/Dockerfile"
 TGZ=$(npm pack --pack-destination "$BUILD" 2>/dev/null | tail -1)
 mv "$BUILD/$TGZ" "$BUILD/foreman.tgz"
-docker build -q -t "$NAME" "$BUILD" >/dev/null
+docker build -q --build-arg "BROWSER_DEPS=${FRESH_BROWSER_DEPS:-0}" -t "$NAME" "$BUILD" >/dev/null
 case "${1:-start}" in
   doctor) docker run --rm "$NAME" foreman doctor ;;
   start)
