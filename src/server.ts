@@ -67,6 +67,7 @@ import { saveAttachments } from './attachments.js';
 import { cloneRepo, looksLikeRepoUrl, parseRepoUrl } from './clone.js';
 import { readMemory } from './memory.js';
 import { budgetAnchor, modelRecords, projectRecord, recordLine } from './track-record.js';
+import { reconcileRole } from './role-provider.js';
 import { closeMissionBranch, compareUrl, createPullRequest, ensureMissionBranch, ghReady, gitInfo, prDraft, pullRequestState, pushBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
@@ -1369,6 +1370,29 @@ async function driveRun(
     emit('run_finished', { status: 'error', costUsd: meta.costUsd });
     activeByProject.delete(projectId);
     return;
+  }
+  // Each role's provider, checked against its model before anything is
+  // resolved. Model and provider are picked together but stored apart, and
+  // a stale pair — `fable` pinned to Codex by an older settings file — fails
+  // on the first turn with an upstream 400 nobody chose. The model list is
+  // the authority; a corrected role is written back and said in the
+  // transcript, so the run reads the way it actually ran.
+  {
+    const project = await store.getProject(projectId).catch(() => null);
+    const { models } = await availableModels(project).catch(() => ({ models: [] as ModelOption[] }));
+    const known = models.map((m) => ({ id: m.id, providerId: m.providerId }));
+    const director = reconcileRole('director', meta.directorModel, meta.directorProviderId, known);
+    const worker = reconcileRole('workers', meta.workerModel, meta.workerProviderId, known);
+    const notes = [director.note, worker.note].filter((n): n is string => Boolean(n));
+    if (notes.length) {
+      meta.directorProviderId = director.providerId;
+      meta.workerProviderId = worker.providerId;
+      await store.writeMeta(meta).catch(() => {});
+      emit('models_changed', {
+        text: `Provider corrected before dispatch — ${notes.join(' ')}`,
+        directorModel: meta.directorModel, workerModel: meta.workerModel,
+      });
+    }
   }
   let agentEnv;
   let roleBasis = resolved.costBasis;
