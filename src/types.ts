@@ -303,7 +303,7 @@ export interface RunMeta {
    * project runs missions on branches of their own. Foreman made it from
    * `base` at start and commits on it at the end; it never merges or pushes.
    */
-  git?: { branch: string; base: string; baseHead: string | null; commits?: number; commit?: string };
+  git?: { branch: string; base: string; baseHead: string | null; commits?: number; commit?: string; /** The pull request the human opened from this run, once they did. */ pr?: string };
   /** Tools the human granted "always allow" for this run (survives resume). */
   allowedTools?: string[];
   /**

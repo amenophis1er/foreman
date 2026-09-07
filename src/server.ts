@@ -30,6 +30,8 @@
  *   POST   /fleet/chat           One turn with the fleet planner {text} → {text, costUsd}
  *   POST   /fleet/stop           Stop the fleet planner reply in flight
  *   DELETE /fleet/chat           Forget the fleet conversation
+ *   GET    /runs/{id}/pr         The pull request Foreman would draft for a finished run on its own branch
+ *   POST   /runs/{id}/pr         Push that branch and open the PR (gh) or hand back the compare URL {title, body}
  *   POST   /steer                Send an operator note to a running director {runId, text}
  *   POST   /interrupt            Interrupt a run {runId}
  *   GET    /runs?projectId=      Persisted run summaries, newest first
@@ -61,7 +63,7 @@ import {
 import { DEFAULT_TOOL_POLICY } from './policy.js';
 import { saveAttachments } from './attachments.js';
 import { cloneRepo, looksLikeRepoUrl, parseRepoUrl } from './clone.js';
-import { closeMissionBranch, ensureMissionBranch, gitInfo, startMissionBranch, type GitInfo } from './gitwork.js';
+import { closeMissionBranch, compareUrl, createPullRequest, ensureMissionBranch, ghReady, gitInfo, prDraft, pushBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
 import { ServiceRegistry, SVC_PREFIX, parseServicePath, portOpen, proxyToService, servicePath } from './services.js';
@@ -1726,6 +1728,7 @@ const server = http.createServer(async (req, res) => {
     return m ? { folder: m.folder } : null;
   })) return;
   const runResumeMatch = url.pathname.match(/^\/runs\/([^/]+)\/resume$/);
+  const prMatch = url.pathname.match(/^\/runs\/([^/]+)\/pr$/);
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
   const providerKeyMatch = url.pathname.match(/^\/providers\/([A-Za-z0-9_-]{1,64})\/key$/);
 
@@ -2388,6 +2391,59 @@ const server = http.createServer(async (req, res) => {
       await store.clearChat(FLEET_CHAT_ID).catch(() => {});
       broadcastChat(FLEET_CHAT_ID, 'chat_cleared', {});
       json(res, 200, { ok: true });
+
+    } else if (prMatch && req.method === 'GET') {
+      // The pull request as Foreman would draft it, for the sheet to edit.
+      const meta = await store.readMeta(prMatch[1]).catch(() => null);
+      if (!meta) return json(res, 404, { error: 'unknown run' });
+      if (!meta.git) return json(res, 409, { error: 'this run had no branch of its own' });
+      const info = await gitInfo(meta.folder);
+      if (!info.remote) return json(res, 409, { error: 'the repository has no origin remote to push to' });
+      const doc = await readFile(path.join(meta.folder, '.foreman', 'MISSION.md'), 'utf8').catch(() => null);
+      const gh = await ghReady();
+      json(res, 200, {
+        ...prDraft(meta, doc), branch: meta.git.branch, base: meta.git.base, commits: meta.git.commits ?? null,
+        remote: info.remote, compareUrl: compareUrl(info.remote, meta.git.base, meta.git.branch),
+        gh, pr: meta.git.pr ?? null, onBranch: info.branch === meta.git.branch, dirty: Boolean(info.dirty),
+      });
+
+    } else if (prMatch && req.method === 'POST') {
+      // The one outward-facing act: push the mission's branch and open the
+      // pull request — as the user, with their git and gh, on their click.
+      // Never from an agent, never from the phone.
+      const meta = await store.readMeta(prMatch[1]).catch(() => null);
+      if (!meta) return json(res, 404, { error: 'unknown run' });
+      if (!meta.git) return json(res, 409, { error: 'this run had no branch of its own' });
+      if (meta.status === 'running') return json(res, 409, { error: 'the mission is still running' });
+      const { title, body } = await readBody(req);
+      const t = typeof title === 'string' && title.trim() ? title.trim().slice(0, 200) : null;
+      if (!t) return json(res, 400, { error: 'a title is required' });
+      const b = typeof body === 'string' ? body : '';
+      const info = await gitInfo(meta.folder);
+      if (!info.remote) return json(res, 409, { error: 'the repository has no origin remote to push to' });
+      const emit = makeEmitter(meta.id, meta.projectId ?? prMatch[1]);
+      const pushed = await pushBranch(meta.folder, meta.git.branch);
+      if (pushed) {
+        emit('pull_request', { branch: meta.git.branch, error: pushed, text: `Push of ${meta.git.branch} failed: ${pushed}` });
+        return json(res, 502, { error: pushed });
+      }
+      const gh = await ghReady();
+      let url: string | undefined;
+      let method: 'gh' | 'compare' = 'compare';
+      let note: string | undefined;
+      if (gh.present && gh.authed && /github\.com/.test(info.remote)) {
+        const r = await createPullRequest(meta.folder, { base: meta.git.base, branch: meta.git.branch, title: t, body: b });
+        if (r.url) { url = r.url; method = 'gh'; } else note = r.error;
+      }
+      if (!url) url = compareUrl(info.remote, meta.git.base, meta.git.branch) ?? undefined;
+      meta.git = { ...meta.git, pr: method === 'gh' ? url : meta.git.pr };
+      await store.writeMeta(meta).catch(() => {});
+      gitInfoCache.delete(meta.folder);
+      const text = method === 'gh'
+        ? `Pushed ${meta.git.branch} and opened a pull request: ${url}`
+        : `Pushed ${meta.git.branch}.${note ? ` ${note}.` : ''} Finish the pull request in the browser: ${url ?? 'open the repository'}`;
+      emit('pull_request', { branch: meta.git.branch, base: meta.git.base, url, method, text });
+      json(res, 200, { ok: true, url, method, pushed: true, note });
 
     } else if (req.method === 'POST' && url.pathname === '/steer') {
       const { runId, text } = await readBody(req);

@@ -72,3 +72,24 @@ test('startMissionBranch on a plain folder says so instead of throwing', async (
   const plain = await mkdtemp(path.join(os.tmpdir(), 'gitwork-plain2-'));
   assert.deepEqual(await startMissionBranch(plain, 'x', 'r'), { error: 'not a git repository' });
 });
+
+test('remoteWebUrl and compareUrl: the three hosts people use, and a plain page elsewhere', async () => {
+  const { remoteWebUrl, compareUrl } = await import('./gitwork.js');
+  assert.deepEqual(remoteWebUrl('git@github.com:acme/widget.git'), { host: 'github.com', path: 'acme/widget', web: 'https://github.com/acme/widget' });
+  assert.deepEqual(remoteWebUrl('https://gitlab.com/group/sub/widget.git'), { host: 'gitlab.com', path: 'group/sub/widget', web: 'https://gitlab.com/group/sub/widget' });
+  assert.equal(remoteWebUrl(undefined), null);
+  assert.equal(compareUrl('git@github.com:acme/widget.git', 'main', 'foreman/x-1'), 'https://github.com/acme/widget/compare/main...foreman%2Fx-1?expand=1');
+  assert.match(compareUrl('https://gitlab.com/g/w.git', 'main', 'foreman/x') ?? '', /merge_requests\/new\?merge_request%5Bsource_branch%5D=foreman%2Fx/);
+  assert.match(compareUrl('git@bitbucket.org:t/w.git', 'main', 'foreman/x') ?? '', /pull-requests\/new\?source=foreman%2Fx&dest=main/);
+  assert.equal(compareUrl('https://git.example.com/a/b', 'main', 'x'), 'https://git.example.com/a/b');
+});
+
+test('prDraft: the run title, the brief, the boxes as the mission left them, and a footer', async () => {
+  const { prDraft } = await import('./gitwork.js');
+  const d = prDraft({ title: 'Add a footer', mission: 'Add a footer to the page.\nKeep it small.', costUsd: 0.42, costBasis: 'priced', git: { branch: 'foreman/add-a-footer-ab12', base: 'main', baseHead: null } },
+    '# Mission\n- [x] footer.html exists\n- [ ] linked from index\n');
+  assert.equal(d.title, 'Add a footer');
+  assert.match(d.body, /## Mission\n\nAdd a footer to the page\.\nKeep it small\./);
+  assert.match(d.body, /## Done when\n\n- \[x\] footer\.html exists\n- \[ \] linked from index/);
+  assert.match(d.body, /branch `foreman\/add-a-footer-ab12` from `main` · spend \$0\.42/);
+});

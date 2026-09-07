@@ -241,6 +241,11 @@ export function shape(env: Envelope, ctx: NotifyContext): Shaped | null {
     case 'mission_incomplete':
       return { key: `incomplete:${env.runId}`, gate: 'done',
         text: `${head('Not done')}${runLine}\n${esc(clip(d.text))}${foot}` };
+    case 'pull_request': {
+      if (d.error || !d.url) return null;
+      return { key: `pr:${env.runId}`, gate: 'done',
+        text: `${head(d.method === 'gh' ? 'Pull request opened' : 'Branch pushed')}${runLine}\n<a href="${esc(String(d.url))}">${esc(String(d.url))}</a>` };
+    }
     case 'service_exposed': {
       // Informational, and worth a tap: the crew put something on the air.
       const url = String(d.url ?? '');

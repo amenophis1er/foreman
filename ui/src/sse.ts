@@ -41,7 +41,7 @@ export const SSE_EVENTS = [
   // server
   'models_changed',
   // git: the mission's branch
-  'git_branch', 'git_note', 'git_committed',
+  'git_branch', 'git_note', 'git_committed', 'pull_request',
 ] as const;
 
 const listeners = new Set<SseListener>();

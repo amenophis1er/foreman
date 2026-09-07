@@ -5,7 +5,8 @@
  * A mission is a unit of work; in a repository, a branch makes it one in
  * git too — isolation, a diff that is exactly the mission, an easy revert,
  * a pull request if there is a remote. Foreman creates the branch and
- * commits on it. It never merges and never pushes: those stay the human's.
+ * commits on it. It never merges, and it pushes only when the human presses
+ * the button that says so — once, for that branch, to open the pull request.
  */
 import { execFile } from 'node:child_process';
 
@@ -135,4 +136,88 @@ export async function closeMissionBranch(folder: string, g: MissionGit, message:
     out.error = err instanceof Error ? err.message : String(err);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// The pull request: the one outward-facing act, and only ever on a button
+// ---------------------------------------------------------------------------
+
+/** `git@github.com:o/r.git` or `https://host/o/r(.git)` → the repository's web page. Null for anything else. */
+export function remoteWebUrl(remote: string | undefined): { host: string; web: string; path: string } | null {
+  if (!remote) return null;
+  let m = /^git@([^:]+):(.+?)(?:\.git)?\/?$/.exec(remote.trim());
+  if (m) return { host: m[1].toLowerCase(), path: m[2], web: `https://${m[1]}/${m[2]}` };
+  m = /^ssh:\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+?)(?:\.git)?\/?$/.exec(remote.trim());
+  if (m) return { host: m[1].toLowerCase(), path: m[2], web: `https://${m[1]}/${m[2]}` };
+  m = /^https?:\/\/(?:[^@/]+@)?([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(remote.trim());
+  if (m) return { host: m[1].toLowerCase(), path: m[2], web: `https://${m[1]}/${m[2]}` };
+  return null;
+}
+
+/** Where a human finishes the pull request in a browser when `gh` is not around: GitHub, GitLab and Bitbucket forms; null elsewhere. */
+export function compareUrl(remote: string | undefined, base: string, branch: string): string | null {
+  const r = remoteWebUrl(remote);
+  if (!r) return null;
+  const enc = encodeURIComponent;
+  if (r.host === 'github.com' || r.host.endsWith('.github.com')) return `${r.web}/compare/${enc(base)}...${enc(branch)}?expand=1`;
+  if (r.host.includes('gitlab')) return `${r.web}/-/merge_requests/new?merge_request%5Bsource_branch%5D=${enc(branch)}&merge_request%5Btarget_branch%5D=${enc(base)}`;
+  if (r.host.includes('bitbucket')) return `${r.web}/pull-requests/new?source=${enc(branch)}&dest=${enc(base)}`;
+  return `${r.web}`;
+}
+
+/** The pull request as Foreman drafts it: the run's title, and a body a reviewer can read without opening Foreman. */
+export function prDraft(run: { title?: string; mission: string; costUsd: number; costBasis?: string; git?: MissionGit }, missionDoc: string | null): { title: string; body: string } {
+  const first = run.mission.split('\n').find((l) => l.trim())?.trim() ?? 'Mission';
+  const title = (run.title || first).slice(0, 120);
+  const boxes = (missionDoc ?? '').split('\n').filter((l) => /^\s*[-*] \[[ xX]\]/.test(l)).map((l) => l.trim());
+  const spend = run.costBasis === 'priced' || run.costBasis === undefined ? `$${run.costUsd.toFixed(2)}` : run.costBasis;
+  const parts = [
+    '## Mission', '', run.mission.trim(), '',
+  ];
+  if (boxes.length) parts.push('## Done when', '', ...boxes, '');
+  parts.push('---', `Run by [Foreman](https://github.com/amenophis1er/foreman) on branch \`${run.git?.branch ?? ''}\` from \`${run.git?.base ?? ''}\` · spend ${spend}.`);
+  return { title, body: parts.join('\n') };
+}
+
+/** `git push -u origin <branch>`, as the user. Null on success, git's reason otherwise. */
+export async function pushBranch(folder: string, branch: string): Promise<string | null> {
+  try {
+    await git(['push', '-u', 'origin', branch], folder, 5 * 60_000);
+    return null;
+  } catch (err) {
+    const t = err instanceof Error ? err.message : String(err);
+    if (/could not read Username|Authentication failed|Permission denied|terminal prompts disabled/i.test(t)) {
+      return 'Git could not authenticate to the remote. Set up a credential helper or gh auth, or use an SSH remote with a key this machine has.';
+    }
+    return t.replace(/^git push:\s*/, 'git push failed: ');
+  }
+}
+
+/** Is GitHub's CLI here and signed in? Best effort, a few seconds at most. */
+export async function ghReady(): Promise<{ present: boolean; authed: boolean }> {
+  return new Promise((resolve) => {
+    execFile('gh', ['auth', 'status'], { timeout: 8_000 }, (err) => {
+      if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') return resolve({ present: false, authed: false });
+      resolve({ present: true, authed: !err });
+    });
+  });
+}
+
+/** `gh pr create`, as the user. Resolves to the PR's URL, or to why not. */
+export function createPullRequest(folder: string, opts: { base: string; branch: string; title: string; body: string }): Promise<{ url?: string; error?: string }> {
+  return new Promise((resolve) => {
+    execFile('gh', ['pr', 'create', '--base', opts.base, '--head', opts.branch, '--title', opts.title, '--body', opts.body], {
+      cwd: folder, timeout: 60_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' },
+    }, (err, stdout, stderr) => {
+      if (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return resolve({ error: 'gh is not installed' });
+        const t = String(stderr || err.message).trim();
+        const existing = /already exists:\s*(https?:\S+)/.exec(t);
+        if (existing) return resolve({ url: existing[1] });
+        return resolve({ error: `gh pr create: ${t.split('\n').filter(Boolean).pop() ?? t}` });
+      }
+      const url = String(stdout).split('\n').map((l) => l.trim()).find((l) => /^https?:\/\//.test(l));
+      resolve(url ? { url } : { error: 'gh did not return a pull request URL' });
+    });
+  });
 }

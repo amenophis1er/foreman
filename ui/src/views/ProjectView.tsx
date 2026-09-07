@@ -7,6 +7,9 @@ import {
 import { useDeck, useProjectTree } from '../deck';
 import { AppHeader } from '../ds/shell/AppHeader';
 import { Button } from '../ds/core/Button';
+import { Modal, ModalFooter } from '../ds/overlay/Modal';
+import { TextInput } from '../ds/forms/TextInput';
+import { Textarea } from '../ds/forms/Textarea';
 import { Empty } from '../ds/core/Empty';
 import { Icon } from '../ds/core/Icon';
 import { Banner } from '../ds/status/Banner';
@@ -237,6 +240,104 @@ function Transcript({ run, filter, jump, order, header }: {
  * log — and showing them the same way is what makes the handoff read as one
  * continuous story rather than two products bolted together.
  */
+type PrDraft = {
+  title: string; body: string; branch: string; base: string; commits: number | null; remote: string;
+  compareUrl: string | null; gh: { present: boolean; authed: boolean }; pr: string | null; onBranch: boolean; dirty: boolean;
+};
+
+/**
+ * The pull request sheet: the one outward-facing act, behind a button and a
+ * look at what will be sent. Foreman drafts title and body from the run;
+ * the human edits and presses Create. Push and PR run as the user, with
+ * their git and gh; without gh (or off GitHub) it pushes and hands back the
+ * compare link to finish in the browser.
+ */
+function PullRequestSheet({ runId, onClose, onDone }: { runId: string; onClose: () => void; onDone: (url?: string) => void }) {
+  const [draft, setDraft] = useState<PrDraft | null>(null);
+  const [err, setErr] = useState('');
+  const [title, setTitle] = useState('');
+  const [body, setBody] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ url?: string; method?: string; note?: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.prDraft(runId).then(async (r) => {
+      const d = await r.json().catch(() => ({}));
+      if (cancelled) return;
+      if (!r.ok) { setErr(d.error ?? `HTTP ${r.status}`); return; }
+      setDraft(d as PrDraft); setTitle(d.title); setBody(d.body);
+    }).catch(() => { if (!cancelled) setErr('Could not reach the server.'); });
+    return () => { cancelled = true; };
+  }, [runId]);
+
+  const create = async () => {
+    setBusy(true); setErr('');
+    try {
+      const r = await api.openPr(runId, title, body);
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setErr(d.error ?? `HTTP ${r.status}`); return; }
+      setResult(d);
+      onDone(d.url);
+    } finally { setBusy(false); }
+  };
+
+  const viaGh = draft?.gh.present && draft.gh.authed && /github\.com/.test(draft.remote);
+  return (
+    <Modal width={640} onClose={busy ? undefined : onClose}>
+      <div style={{ padding: 'var(--sp-3)', borderBottom: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <span style={{ fontWeight: 'var(--fw-semibold)' }}>Open a pull request</span>
+        {draft && (
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontFamily: 'var(--font-mono)' }}>
+            {draft.branch} → {draft.base}{draft.commits !== null ? ` · ${draft.commits} commit${draft.commits === 1 ? '' : 's'}` : ''} · {draft.remote}
+          </span>
+        )}
+      </div>
+      <div style={{ padding: 'var(--sp-3)', display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)', overflowY: 'auto', minHeight: 0 }}>
+        {!draft && !err && <Empty>Reading the branch…</Empty>}
+        {draft && !result && (
+          <>
+            {draft.pr && <Banner tone="readonly" inline>A pull request already exists for this branch: <a href={draft.pr} target="_blank" rel="noopener noreferrer">{draft.pr}</a></Banner>}
+            {!draft.onBranch && <Banner tone="caution" inline>The folder is currently on another branch. The push sends {draft.branch} as it is in git, which is fine; just know what you are looking at locally.</Banner>}
+            {draft.dirty && draft.onBranch && <Banner tone="caution" inline>There are uncommitted changes in the folder. They are not part of this pull request.</Banner>}
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+              Title
+              <TextInput value={title} onChange={setTitle} />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+              Body
+              <Textarea size="mission" value={body} onChange={setBody} />
+            </label>
+            <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+              Create pushes <span style={{ fontFamily: 'var(--font-mono)' }}>{draft.branch}</span> to origin as you, with your own git credentials
+              {viaGh ? <>, then opens the pull request with <span style={{ fontFamily: 'var(--font-mono)' }}>gh</span>.</>
+                : <>, then gives you the link to finish the pull request in the browser{draft.gh.present ? '' : ' (gh is not installed)'}.</>}
+              {' '}Nothing is merged.
+            </span>
+          </>
+        )}
+        {result && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
+            <span>{result.method === 'gh' ? 'Pull request opened.' : 'Branch pushed. Finish the pull request in the browser:'}</span>
+            {result.url && <a href={result.url} target="_blank" rel="noopener noreferrer" style={{ fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>{result.url}</a>}
+            {result.note && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>{result.note}</span>}
+          </div>
+        )}
+        {err && <Banner tone="error" inline>{err}</Banner>}
+      </div>
+      <ModalFooter>
+        <span style={{ flex: 1 }} />
+        <Button onClick={onClose} disabled={busy}>{result ? 'Close' : 'Cancel'}</Button>
+        {draft && !result && (
+          <Button variant="primary" disabled={busy || !title.trim()} onClick={() => void create()}>
+            {busy ? 'Pushing…' : viaGh ? 'Push & create pull request' : 'Push & get the link'}
+          </Button>
+        )}
+      </ModalFooter>
+    </Modal>
+  );
+}
+
 function PlanPane({
   chat, folder, starting, error, models, modelsLoading, modelsNote, modelsInheritNote, onStart, onCompose, hasRuns, projectId, onSettings,
   recent = [], runsOn, onOpenRun, onForkRun, forking = false,
@@ -685,6 +786,7 @@ export function ProjectView({
   const [showRunsNarrow, setShowRunsNarrow] = useState(false);
   const [headerErr, setHeaderErr] = useState('');
   const [forking, setForking] = useState(false);
+  const [prOpen, setPrOpen] = useState(false);
   const forkPlan = async (runId: string) => {
     setHeaderErr('');
     setForking(true);
@@ -949,6 +1051,14 @@ export function ProjectView({
             {forking ? 'Opening…' : 'Plan the next step'}
           </Button>
         )}
+        {/* The one outward-facing act, behind a button and a sheet: a
+            finished mission on its own branch, in a repository with a
+            remote. Never from an agent, never from the phone. */}
+        {!activeRunId && selectedRunId && selectedRun?.git && selectedRun.status !== 'running' && p.git?.remote && (
+          selectedRun.git.pr
+            ? <Button icon="preview" onClick={() => window.open(selectedRun.git!.pr, '_blank', 'noopener')} title={selectedRun.git.pr}>Pull request ↗</Button>
+            : <Button icon="steer" onClick={() => setPrOpen(true)} title={`Push ${selectedRun.git.branch} and open a pull request against ${selectedRun.git.base}`}>Open pull request…</Button>
+        )}
         {!activeRunId && selectedRunId && (
           <Button variant="primary" onClick={() => setSelectedRunId(null)}>New mission</Button>
         )}
@@ -959,6 +1069,11 @@ export function ProjectView({
             title="Skip the talk: describe the mission and start it">New mission</Button>
         )}
       </AppHeader>
+
+      {prOpen && selectedRunId && (
+        <PullRequestSheet runId={selectedRunId} onClose={() => setPrOpen(false)}
+          onDone={() => refreshFleet()} />
+      )}
 
       {/* Nothing sits between the header and the asks. The read-only banner
           follows the strip: a past run has no asks, so the order only

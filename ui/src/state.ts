@@ -120,8 +120,8 @@ export type RunSummary = {
   budgetUsd: number; status: Status; costUsd: number;
   createdAt: number; endedAt?: number;
   directorModel?: string; workerModel?: string; resumes?: number;
-  /** The branch this mission ran on, when Foreman gave it one. */
-  git?: { branch: string; base: string; baseHead: string | null; commits?: number; commit?: string };
+  /** The branch this mission ran on, when Foreman gave it one; `pr` once the human opened one from it. */
+  git?: { branch: string; base: string; baseHead: string | null; commits?: number; commit?: string; pr?: string };
   browserTools?: boolean;
   directorSessionId?: string;
   /** What this run's spend is — see src/types.ts. Absent on older runs. */
@@ -420,6 +420,14 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         entries: [...s.entries, {
           id: ++seq, ts, agent: 'system', kind: 'system',
           title: 'models changed', body: d.text,
+        }],
+      };
+    case 'pull_request':
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: d.error ? 'error' : 'system',
+          title: d.method === 'gh' ? 'pull request' : 'branch pushed', body: String(d.text ?? ''),
         }],
       };
     case 'git_branch':
@@ -754,7 +762,7 @@ export function useRunHistory(projectId: string) {
   useEffect(() => {
     void refresh();
     const unsub = onSse((event, env) => {
-      if (env.projectId === projectId && (event === 'run_started' || event === 'run_resumed' || event === 'run_finished')) {
+      if (env.projectId === projectId && (event === 'run_started' || event === 'run_resumed' || event === 'run_finished' || event === 'git_committed' || event === 'pull_request')) {
         void refresh();
       }
     });
@@ -1205,6 +1213,9 @@ export const api = {
   cloneStatus: (id: string) => fetch(`/projects/clone/${encodeURIComponent(id)}`),
   /** Where a URL would be cloned, or why it cannot be. */
   cloneWhere: (url: string) => fetch(`/projects/clone/where?url=${encodeURIComponent(url)}`),
+  /** The pull request Foreman would draft for a finished run; and the act itself. */
+  prDraft: (runId: string) => fetch(`/runs/${encodeURIComponent(runId)}/pr`),
+  openPr: (runId: string, title: string, body: string) => post(`/runs/${encodeURIComponent(runId)}/pr`, { title, body }),
   instances: () => fetch('/instances'),
   updateProject: (
     projectId: string,
