@@ -644,6 +644,14 @@ export type Emitter = (event: string, data: unknown) => void;
 /** Persists updated run metadata (fire-and-forget from the run's viewpoint). */
 export type MetaSink = (meta: RunMeta) => void;
 
+/**
+ * Turns a worker gets before the SDK stops it. Raised from 60: five workers
+ * in four missions hit the cap mid-task on legitimate, brief-sized work
+ * (a hundred TypeScript errors in one package; a test-suite port), and each
+ * time the director paid to respawn one that re-read the same files.
+ */
+const WORKER_MAX_TURNS = 100;
+
 export const DIRECTOR_CHARTER = `
 You are the FOREMAN DIRECTOR. You run a mission autonomously inside one folder by
 directing worker agents. Non-negotiable rules, in priority order:
@@ -725,6 +733,11 @@ directing worker agents. Non-negotiable rules, in priority order:
    for the human, and name in your report any you left up and on which port.
    A process that outlives the mission holds its port until somebody hunts it
    down by hand.
+   SIZE THE TASK TO THE WORKER: a worker is stopped after ${WORKER_MAX_TURNS}
+   turns of its own. It gets one continuation to finish what it was doing, and
+   after that the task comes back to you half-done. So give a worker a task it
+   can finish in that many steps — split the big ones — rather than one brief
+   that has to be rescued twice.
 4. REPORT WHAT YOU SEE. Judge the work as a competent professional would, not
    only against the letter of the acceptance criteria. If you observe a defect
    the criteria did not name — tap targets too small to use, unreadable
@@ -778,13 +791,6 @@ const USAGE_LIMIT_RE = /out of usage credits|usage limit reached|upgrade to incr
 /** One worker's outcome, as runWorker hands it back. */
 interface WorkerOutcome { report: string; isError: boolean }
 
-/**
- * Turns a worker gets before the SDK stops it. Raised from 60: five workers
- * in four missions hit the cap mid-task on legitimate, brief-sized work
- * (a hundred TypeScript errors in one package; a test-suite port), and each
- * time the director paid to respawn one that re-read the same files.
- */
-const WORKER_MAX_TURNS = 100;
 /** What a worker stopped by the cap is told when its session is picked back up. */
 const WORKER_CONTINUE_PROMPT =
   'You were stopped by the turn cap, not by a failure. Your session and your files are as you left them; ' +

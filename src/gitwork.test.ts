@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, writeFile } from 'node:fs/promises';
-import { closeMissionBranch, ensureMissionBranch, gitInfo, missionBranchName, startMissionBranch, renameMissionBranch, dirtyPaths,
+import { closeMissionBranch, defaultBranch, ensureMissionBranch, gitInfo, missionBranchName, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
 } from './gitwork.js';
 
 const sh = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).toString();
@@ -123,4 +123,26 @@ test('dirtyPaths names the uncommitted work a mission branch would carry', async
   assert.equal((await dirtyPaths(dir, 1)).length, 1);
   // Not a repository at all: nothing to report, and no throw.
   assert.deepEqual(await dirtyPaths(os.tmpdir()), []);
+});
+
+test('a pull request targets the default branch when the mission was branched from a local-only branch', async () => {
+  const dir = await repo();
+  // A bare origin, the way a real clone has one.
+  const origin = await mkdtemp(path.join(os.tmpdir(), 'gitwork-origin-'));
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin], { stdio: 'pipe' });
+  sh(dir, 'remote', 'add', 'origin', origin);
+  sh(dir, 'push', '-q', '-u', 'origin', 'main');
+
+  assert.equal(await defaultBranch(dir), 'main');
+  assert.equal(await remoteHasBranch(dir, 'main'), true);
+  assert.equal(await remoteHasBranch(dir, 'foreman/earlier-1234'), false);
+
+  // Branched from main: the base is real and is left alone.
+  assert.deepEqual(await resolvePrBase(dir, 'main'), { base: 'main', fellBack: false });
+
+  // The case from the field: the checkout was left on the previous mission's
+  // branch, so this mission recorded that as its base and it exists nowhere
+  // but here. gh would fail on it; the default branch is the honest target.
+  sh(dir, 'checkout', '-q', '-b', 'foreman/earlier-1234');
+  assert.deepEqual(await resolvePrBase(dir, 'foreman/earlier-1234'), { base: 'main', fellBack: true });
 });

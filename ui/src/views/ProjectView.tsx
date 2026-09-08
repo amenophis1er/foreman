@@ -343,6 +343,8 @@ function MemoryPanel({ memory }: { memory: { text: string; updatedAt?: number; l
 
 type PrDraft = {
   title: string; body: string; branch: string; base: string; commits: number | null; remote: string;
+  /** Where the mission was branched from, when that is not where the request can go. */
+  branchedFrom?: string; baseFellBack?: boolean;
   compareUrl: string | null; gh: { present: boolean; authed: boolean }; pr: string | null; onBranch: boolean; dirty: boolean;
 };
 
@@ -399,6 +401,14 @@ function PullRequestSheet({ runId, onClose, onDone }: { runId: string; onClose: 
         {draft && !result && (
           <>
             {draft.pr && <Banner tone="readonly" inline>A pull request already exists for this branch: <a href={draft.pr} target="_blank" rel="noopener noreferrer">{draft.pr}</a></Banner>}
+            {draft.baseFellBack && (
+              <Banner tone="caution" inline>
+                This mission was branched from <span style={{ fontFamily: 'var(--font-mono)' }}>{draft.branchedFrom}</span>,
+                which is not on the remote — a previous mission's branch, most likely. The request targets{' '}
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{draft.base}</span> instead, so it carries that
+                mission's commits too until its own branch is merged.
+              </Banner>
+            )}
             {!draft.onBranch && <Banner tone="caution" inline>The folder is currently on another branch. The push sends {draft.branch} as it is in git, which is fine; just know what you are looking at locally.</Banner>}
             {draft.dirty && draft.onBranch && <Banner tone="caution" inline>There are uncommitted changes in the folder. They are not part of this pull request.</Banner>}
             <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>

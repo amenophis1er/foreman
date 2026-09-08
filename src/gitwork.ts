@@ -261,6 +261,56 @@ export function pullRequestState(folder: string, url: string): Promise<{ state: 
   });
 }
 
+/**
+ * The repository's default branch as origin sees it, from the remote HEAD git
+ * recorded at clone time, then from the usual names, and `main` as the last
+ * word. Local only: no network, so it works offline and cannot hang.
+ */
+export async function defaultBranch(folder: string): Promise<string> {
+  try {
+    const ref = (await git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], folder)).trim();
+    const name = ref.replace(/^origin\//, '');
+    if (name) return name;
+  } catch { /* no remote HEAD recorded */ }
+  for (const name of ['main', 'master']) {
+    try {
+      await git(['rev-parse', '--verify', `refs/remotes/origin/${name}`], folder);
+      return name;
+    } catch { /* not this one */ }
+  }
+  return 'main';
+}
+
+/** Does origin have this branch? Asks the remote, and says no if it cannot ask. */
+export async function remoteHasBranch(folder: string, branch: string): Promise<boolean> {
+  try {
+    const out = await git(['ls-remote', '--heads', 'origin', branch], folder, 10_000);
+    return out.trim().length > 0;
+  } catch {
+    // Offline or unauthenticated: fall back to what the last fetch recorded.
+    try {
+      await git(['rev-parse', '--verify', `refs/remotes/origin/${branch}`], folder);
+      return true;
+    } catch { return false; }
+  }
+}
+
+/**
+ * What a pull request from this mission should actually target.
+ *
+ * A finished mission leaves the checkout on its own branch, so the next
+ * mission is branched from *that* — and records it as its base. That base
+ * lives only on this machine, so `gh pr create --base foreman/…` fails and a
+ * compare URL built from it 404s. When the recorded base is not on the
+ * remote, the default branch is the honest target, and the caller says so
+ * rather than quietly retargeting the request.
+ */
+export async function resolvePrBase(folder: string, recorded: string): Promise<{ base: string; fellBack: boolean }> {
+  if (recorded && await remoteHasBranch(folder, recorded)) return { base: recorded, fellBack: false };
+  const base = await defaultBranch(folder);
+  return { base, fellBack: base !== recorded };
+}
+
 /** `gh pr create`, as the user. Resolves to the PR's URL, or to why not. */
 export function createPullRequest(folder: string, opts: { base: string; branch: string; title: string; body: string }): Promise<{ url?: string; error?: string }> {
   return new Promise((resolve) => {

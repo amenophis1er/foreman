@@ -73,7 +73,7 @@ import { budgetAnchor, modelRecords, projectRecord, recordLine } from './track-r
 import { reconcileRole } from './role-provider.js';
 import { detectBrowser, installChromium } from './browser.js';
 import { frozenDeck, frozenMissionDoc, parkMissionDoc, restoreMissionDoc, snapshotRun } from './snapshot.js';
-import { closeMissionBranch, compareUrl, createPullRequest, dirtyPaths, ensureMissionBranch, ghReady, gitInfo, missionBranchName, prDraft, pullRequestState, pushBranch, renameMissionBranch, startMissionBranch, type GitInfo } from './gitwork.js';
+import { closeMissionBranch, compareUrl, createPullRequest, dirtyPaths, ensureMissionBranch, ghReady, gitInfo, resolvePrBase, missionBranchName, prDraft, pullRequestState, pushBranch, renameMissionBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
 import { ServiceRegistry, listeningPid, portOpen, servicesHandler, stopService } from './services.js';
@@ -2759,9 +2759,13 @@ const server = http.createServer(async (req, res) => {
       if (!info.remote) return json(res, 409, { error: 'the repository has no origin remote to push to' });
       const doc = await readFile(path.join(meta.folder, '.foreman', 'MISSION.md'), 'utf8').catch(() => null);
       const gh = await ghReady();
+      // Where the request can actually go, which is not always where the
+      // mission was branched from — see resolvePrBase.
+      const target = await resolvePrBase(meta.folder, meta.git.base);
       json(res, 200, {
-        ...prDraft(meta, doc), branch: meta.git.branch, base: meta.git.base, commits: meta.git.commits ?? null,
-        remote: info.remote, compareUrl: compareUrl(info.remote, meta.git.base, meta.git.branch),
+        ...prDraft(meta, doc), branch: meta.git.branch, base: target.base, commits: meta.git.commits ?? null,
+        branchedFrom: meta.git.base, baseFellBack: target.fellBack,
+        remote: info.remote, compareUrl: compareUrl(info.remote, target.base, meta.git.branch),
         gh, pr: meta.git.pr ?? null, onBranch: info.branch === meta.git.branch, dirty: Boolean(info.dirty),
       });
 
@@ -2789,18 +2793,24 @@ const server = http.createServer(async (req, res) => {
       let url: string | undefined;
       let method: 'gh' | 'compare' = 'compare';
       let note: string | undefined;
+      const target = await resolvePrBase(meta.folder, meta.git.base);
       if (gh.present && gh.authed && /github\.com/.test(info.remote)) {
-        const r = await createPullRequest(meta.folder, { base: meta.git.base, branch: meta.git.branch, title: t, body: b });
+        const r = await createPullRequest(meta.folder, { base: target.base, branch: meta.git.branch, title: t, body: b });
         if (r.url) { url = r.url; method = 'gh'; } else note = r.error;
       }
-      if (!url) url = compareUrl(info.remote, meta.git.base, meta.git.branch) ?? undefined;
+      if (!url) url = compareUrl(info.remote, target.base, meta.git.branch) ?? undefined;
       meta.git = { ...meta.git, pr: method === 'gh' ? url : meta.git.pr };
       await store.writeMeta(meta).catch(() => {});
       gitInfoCache.delete(meta.folder);
       const text = method === 'gh'
         ? `Pushed ${meta.git.branch} and opened a pull request: ${url}`
         : `Pushed ${meta.git.branch}.${note ? ` ${note}.` : ''} Finish the pull request in the browser: ${url ?? 'open the repository'}`;
-      emit('pull_request', { branch: meta.git.branch, base: meta.git.base, url, method, text });
+      emit('pull_request', {
+        branch: meta.git.branch, base: target.base, url, method,
+        text: target.fellBack
+          ? `${text} (targeting ${target.base}: this mission was branched from ${meta.git.base}, which is not on the remote)`
+          : text,
+      });
       json(res, 200, { ok: true, url, method, pushed: true, note });
 
     } else if (req.method === 'POST' && url.pathname === '/steer') {
