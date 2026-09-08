@@ -266,6 +266,31 @@ const DEFAULT_MAX_TURNS = 150;
 export const DEFAULT_MAX_TOKENS = 20_000_000;
 
 /** The cap behind a capReached() sentence, as the run record stores it. */
+/**
+ * Is it time to tell the director to start winding down? True once spend
+ * crosses the warn threshold and while it is still under the cap — past the
+ * cap the wind-down order takes over, and a warning then would be noise.
+ */
+export function budgetWarnDue(costUsd: number, budgetUsd: number, warnAt: number | undefined): boolean {
+  if (!Number.isFinite(warnAt as number) || (warnAt as number) <= 0 || (warnAt as number) >= 100) return false;
+  if (!(budgetUsd > 0)) return false;
+  return costUsd >= budgetUsd * ((warnAt as number) / 100) && costUsd < budgetUsd;
+}
+
+/**
+ * A run the budget stopped, whose own DONE WHEN criteria are all ticked, is
+ * done: it reached its criteria and then reached its limit, in that order.
+ * Only for the budget — a human interrupt or a usage limit says nothing
+ * about the work — and only when the doc actually had criteria to tick.
+ */
+export function doneAtCap(
+  flags: { budgetStopped: boolean; wasInterrupted: boolean; usageLimited: boolean },
+  unmet: string[] | null,
+): boolean {
+  if (!flags.budgetStopped || flags.wasInterrupted || flags.usageLimited) return false;
+  return Array.isArray(unmet) && unmet.length === 0;
+}
+
 export function stopReasonOf(cap: string): 'budget' | 'turns' | 'time' | 'tokens' {
   if (cap.startsWith('TURN')) return 'turns';
   if (cap.startsWith('TIME')) return 'time';
@@ -1080,6 +1105,7 @@ export class MissionRun {
         // overrun quiet.
         this.budgetNoticeSent = false;
         this.budgetKillSent = false;
+        this.budgetWarnSent = false;
         this.budgetStopped = false;
       }
     }
@@ -1332,6 +1358,23 @@ export class MissionRun {
       // the one lie a mission runner cannot afford. Downgrading to
       // 'interrupted' is also the useful answer: it is what makes the run
       // resumable rather than closed.
+      // A mission whose own record says every criterion is verified is done,
+      // even if the cap ended the turn it was writing its report in. Calling
+      // that 'interrupted' told the fleet a finished mission had failed, and
+      // invited a resume that spent more to rewrite a report already on disk.
+      // The stop reason stays on the record, so nothing is hidden.
+      if (this.meta.status === 'interrupted' && this.budgetStopped
+          && !this.wasInterrupted && !this.usageLimited) {
+        const unmet = await this.unmetCriteria();
+        if (doneAtCap({ budgetStopped: this.budgetStopped, wasInterrupted: this.wasInterrupted, usageLimited: this.usageLimited }, unmet)) {
+          this.meta.status = 'done';
+          this.emit('mission_done_at_cap', {
+            costUsd: this.meta.costUsd, budgetUsd: this.meta.budgetUsd, reason: this.meta.stopReason,
+            text: 'Every DONE WHEN criterion was verified before the cap ended the run, so this mission is done. ' +
+              'It stopped at its limit rather than finishing under it — the report may be shorter than usual.',
+          });
+        }
+      }
       if (this.meta.status === 'done') {
         const unmet = await this.unmetCriteria();
         if (unmet?.length) {
@@ -1482,6 +1525,7 @@ export class MissionRun {
 
   private budgetNoticeSent = false;
   private budgetKillSent = false;
+  private budgetWarnSent = false;
 
   /**
    * Keeps an "always allow" grant out of `git status`.
@@ -1651,6 +1695,26 @@ export class MissionRun {
       });
       void this.interrupt();
       return;
+    }
+    // Before the fence, a nudge. A director that only learns of the cap when
+    // it hits it does its verification and its report inside the one turn it
+    // has left — which is how two missions that had finished their work were
+    // cut mid-report and read as failures. Warn while there is still room to
+    // wind down deliberately.
+    if (!this.budgetWarnSent && budgetWarnDue(costUsd, budgetUsd, this.meta.budgetWarnAt)) {
+      this.budgetWarnSent = true;
+      const pct = Math.round((costUsd / budgetUsd) * 100);
+      this.emit('budget_alert', {
+        level: 'warn', costUsd, budgetUsd,
+        text: `${pct}% of the budget spent ($${costUsd.toFixed(2)} of $${budgetUsd.toFixed(2)}) — director told to start verifying.`,
+      });
+      this.directorInput?.push(
+        '[BUDGET — automated notice]\n' +
+        `You have spent $${costUsd.toFixed(2)} of the $${budgetUsd.toFixed(2)} cap (${pct}%). ` +
+        'Start winding down now: finish or stop the work in flight, do not begin anything you ' +
+        'cannot complete and verify within what is left, and get your verification and MISSION.md ' +
+        'up to date. At the cap you get one final turn, and at 125% the run is interrupted.',
+      );
     }
     if (!this.budgetNoticeSent && costUsd >= budgetUsd) {
       this.budgetNoticeSent = true;

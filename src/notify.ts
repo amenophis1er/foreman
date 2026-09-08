@@ -234,10 +234,14 @@ export function shape(env: Envelope, ctx: NotifyContext): Shaped | null {
     // --- money and completion -----------------------------------------
     case 'budget_alert':
       return { key: `budget:${env.runId}:${d.level}`, gate: 'budget',
-        text: `${head(d.level === 'exceeded' ? 'Budget exceeded — run interrupted' : 'Budget cap reached')}${runLine}\n${esc(clip(d.text))}${foot}` };
+        text: `${head(d.level === 'exceeded' ? 'Budget exceeded — run interrupted'
+          : d.level === 'warn' ? 'Budget warning — winding down' : 'Budget cap reached')}${runLine}\n${esc(clip(d.text))}${foot}` };
     case 'budget_stop':
       return { key: `stop:${env.runId}`, gate: 'budget',
         text: `${head('Run winding down')}${runLine}\n${esc(clip(d.reason))}${foot}` };
+    case 'mission_done_at_cap':
+      return { key: `donecap:${env.runId}`, gate: 'done',
+        text: `${head('Done, at the cap')}${runLine}\n${esc(clip(d.text))}${foot}` };
     case 'mission_incomplete':
       return { key: `incomplete:${env.runId}`, gate: 'done',
         text: `${head('Not done')}${runLine}\n${esc(clip(d.text))}${foot}` };

@@ -1648,6 +1648,8 @@ async function effectiveSettings(projectId: string): Promise<{
   directorProviderId?: string; workerProviderId?: string;
   /** In a repository, each mission runs on a branch of its own (default on). */
   gitBranchPerMission: boolean;
+  /** Percent of the cap at which the director is told to start verifying (default 80). */
+  budgetWarnAt: number;
 }> {
   const s = await store.readSettings()
     .catch(() => ({ global: {}, projects: {} as Record<string, object> }));
@@ -1669,6 +1671,10 @@ async function effectiveSettings(projectId: string): Promise<{
     directorProviderId: str(p.directorProviderId ?? g.directorProviderId),
     workerProviderId: str(p.workerProviderId ?? g.workerProviderId),
     gitBranchPerMission: (p.gitBranchPerMission ?? g.gitBranchPerMission) !== false,
+    budgetWarnAt: (() => {
+      const raw = Number(p.budgetWarnAt ?? g.budgetWarnAt);
+      return Number.isFinite(raw) && raw > 0 && raw < 100 ? raw : 80;
+    })(),
   };
 }
 
@@ -1708,6 +1714,7 @@ async function startRun(
     workerProviderId: roleProviders.worker ?? settings.workerProviderId,
     ownerPid: process.pid,
     browserTools: browserTools || undefined,
+    budgetWarnAt: settings.budgetWarnAt,
     toolPolicy: settings.toolPolicy,
     autoAllowReadOnly: settings.autoAllowReadOnly,
     // Frozen at dispatch: a later change to the project or the server default

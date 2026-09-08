@@ -9,7 +9,7 @@ import {
   stalledWorkerReport, workerStatusBlock,
   watchRepeats, watchSilence, REPEAT_EXEMPT, observeToolUse,
   DEFAULT_ASK_TIMEOUT_MS, armAskTimeout, unattendedAnswer, unattendedDenyMessage,
-  tokenCapLabel, stopReasonOf,
+  tokenCapLabel, stopReasonOf, budgetWarnDue, doneAtCap,
 } from './orchestrator.js';
 import { makePolicy, type PendingPermission } from './policy.js';
 import type { AgentEnv } from './provider.js';
@@ -1255,4 +1255,28 @@ test('stopReasonOf names the cap behind a capReached sentence', () => {
   assert.equal(stopReasonOf('TURN CAP REACHED: 150 director turns.'), 'turns');
   assert.equal(stopReasonOf('TIME CAP REACHED: 240 minutes.'), 'time');
   assert.equal(stopReasonOf('TOKEN CAP REACHED: 20.1M tokens.'), 'tokens');
+});
+
+test('budgetWarnDue: once past the threshold, and only while still under the cap', () => {
+  assert.equal(budgetWarnDue(7.9, 10, 80), false);
+  assert.equal(budgetWarnDue(8, 10, 80), true);
+  assert.equal(budgetWarnDue(9.99, 10, 80), true);
+  // At and past the cap the wind-down order speaks instead.
+  assert.equal(budgetWarnDue(10, 10, 80), false);
+  assert.equal(budgetWarnDue(12, 10, 80), false);
+  // No threshold, a nonsensical one, or no cap: nothing to warn about.
+  assert.equal(budgetWarnDue(9, 10, undefined), false);
+  assert.equal(budgetWarnDue(9, 10, 0), false);
+  assert.equal(budgetWarnDue(9, 10, 100), false);
+  assert.equal(budgetWarnDue(9, 0, 80), false);
+});
+
+test('doneAtCap: budget-stopped with every criterion ticked is done, and nothing else is', () => {
+  const budget = { budgetStopped: true, wasInterrupted: false, usageLimited: false };
+  assert.equal(doneAtCap(budget, []), true);
+  assert.equal(doneAtCap(budget, ['screenshots saved']), false, 'an unticked box is not done');
+  assert.equal(doneAtCap(budget, null), false, 'no DONE WHEN section says nothing either way');
+  assert.equal(doneAtCap({ ...budget, wasInterrupted: true }, []), false, 'a human stop is not a finish');
+  assert.equal(doneAtCap({ ...budget, usageLimited: true }, []), false, 'a usage limit is not a finish');
+  assert.equal(doneAtCap({ ...budget, budgetStopped: false }, []), false);
 });

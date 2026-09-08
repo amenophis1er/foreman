@@ -323,6 +323,16 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         agents: s.agents.map((ag) =>
           ag.id === 'director' ? { ...ag, status: (d.status as Status) || 'done' } : ag),
       };
+    case 'mission_done_at_cap':
+      // Why a run reads done although its meter is at the cap: the mission's
+      // own criteria were all verified before the budget ended the turn.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'system',
+          title: 'done, at the cap', body: String(d.text ?? ''),
+        }],
+      };
     case 'mission_incomplete':
       // Sits in the transcript as the reason the run says interrupted rather
       // than done — otherwise the status looks arbitrary next to a director

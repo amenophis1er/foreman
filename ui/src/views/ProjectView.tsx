@@ -1089,6 +1089,12 @@ export function ProjectView({
               </span>
             : <StatusBadge status={run.runStatus} />
         )}
+        {/* A run that finished its criteria and stopped at its limit reads
+            'done'; this says which, so the meter at 100% is not a puzzle. */}
+        {selectedRunId && selectedRun?.status === 'done' && selectedRun?.stopReason === 'budget' && (
+          <span title="Every DONE WHEN criterion was verified; the run stopped at its cap rather than finishing under it."
+            style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', whiteSpace: 'nowrap' }}>at the cap</span>
+        )}
         {selectedRunId && (
           <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} detail
             costBasis={run.costBasis} usage={run.usage} turns={selectedRun?.turns}

@@ -330,6 +330,11 @@ export interface RunMeta {
    * to offer the one action that helps — raise the budget and resume — and
    * a resume clears it. Absent when the run ended for any other reason.
    */
+  /**
+   * Percent of the cap at which the director is told to start winding down,
+   * frozen at dispatch like the cap itself. Absent means the default.
+   */
+  budgetWarnAt?: number;
   stopReason?: 'budget' | 'turns' | 'time' | 'tokens';
   /** When the run's record was frozen (MISSION.md and deck copied beside it); absent on older runs. */
   snapshotAt?: number;
