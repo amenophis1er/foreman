@@ -371,7 +371,7 @@ test('agents do not inherit the server\'s own environment: PORT and FOREMAN_* ar
   process.env.PORT = '4177'; process.env.FOREMAN_HOME = '/tmp/fh'; process.env.FOREMAN_BIND = 'all';
   try {
     const p = await resolveProvider({ kind: 'claude-code' }, '/tmp/foreman-test-root');
-    const { env } = providerEnv(p);
+    const env = providerEnv(p).env ?? {};
     assert.equal(env.PORT, undefined, 'a dev server a worker starts must not bind the dashboard port');
     assert.equal(env.FOREMAN_HOME, undefined);
     assert.equal(env.FOREMAN_BIND, undefined);
