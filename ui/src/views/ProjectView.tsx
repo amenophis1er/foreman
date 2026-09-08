@@ -28,6 +28,7 @@ import { ProposalCard } from '../ds/mission/ProposalCard';
 import { Tabs } from '../ds/core/Tabs';
 import { SteerBar } from '../ds/mission/SteerBar';
 import { CrewStrip } from '../ds/mission/CrewStrip';
+import { LanesView } from '../ds/mission/LanesView';
 import { RunRow } from '../ds/mission/RunRow';
 import { NowStrip, type NowActivity } from '../ds/mission/NowStrip';
 import { DoneWhenList, doneWhenLabel, parseDoneWhen } from '../ds/mission/DoneWhenList';
@@ -128,6 +129,22 @@ export type TranscriptOrder = 'newest' | 'oldest';
 
 const ORDER_KEY = 'foreman.transcriptOrder';
 const TIMELINE_KEY = 'foreman.timeline';
+const VIEW_KEY = 'foreman.transcriptView';
+type TranscriptView = 'unified' | 'lanes';
+
+/**
+ * Which agents start as lanes: the director, every worker still running, and
+ * the most recent finished workers up to four lanes in all. The rest wait in
+ * the Done dropdown. Recomputed only when the run changes; the reader's
+ * own picks hold after that.
+ */
+function defaultLanes(agents: Array<{ id: string; status: string }>): string[] {
+  const live = agents.filter((a) => a.status === 'running').map((a) => a.id);
+  const picked = ['director', ...live.filter((id) => id !== 'director')];
+  const finished = agents.filter((a) => a.status !== 'running' && a.id !== 'director').map((a) => a.id).reverse();
+  for (const id of finished) { if (picked.length >= 4) break; picked.push(id); }
+  return picked.filter((id, i, all) => all.indexOf(id) === i && agents.some((a) => a.id === id));
+}
 
 /** `Sep 3` — the calendar day of a timestamp, for dividers. */
 const dayOf = (ts: number) => new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
@@ -777,6 +794,13 @@ export function ProjectView({
   const isRunning = viewingLive && run.runStatus === 'running';
   const [filter, setFilter] = useState<string | null>(null);
   const [jump, setJump] = useState<{ id: number; n: number } | null>(null);
+  // Unified (one column, in time order) or lanes (one column per agent).
+  // Remembered like the order: a reader who prefers lanes prefers them.
+  const [view, setViewState] = useState<TranscriptView>(() => {
+    try { return localStorage.getItem(VIEW_KEY) === 'lanes' ? 'lanes' : 'unified'; } catch { return 'unified'; }
+  });
+  const setView = (v: TranscriptView) => { setViewState(v); try { localStorage.setItem(VIEW_KEY, v); } catch { /* ignore */ } };
+  const [lanes, setLanes] = useState<string[] | null>(null);
   const railTab = routeTab;
   const setRailTab = onSelectTab;
   // The rail's width is the reader's, dragged from its left edge and kept in
@@ -1015,6 +1039,34 @@ export function ProjectView({
     ]} />
   );
 
+  // The lanes shown: the reader's picks, else the default for this crew. A
+  // new run starts over; a worker appearing on a live run joins as a lane.
+  const laneIds = lanes ?? defaultLanes(run.agents);
+  useEffect(() => { setLanes(null); }, [selectedRunId]);
+  useEffect(() => {
+    if (!lanes) return;
+    const fresh = run.agents.filter((a) => a.status === 'running' && !lanes.includes(a.id)).map((a) => a.id);
+    if (fresh.length) setLanes([...lanes, ...fresh]);
+  }, [run.agents, lanes]);
+
+  // The block above the entries: how to read them. View on the left, order
+  // on the right — the order sorts what is below, so it lives below the
+  // timeline, not beside it.
+  const transcriptBar = run.entries.length > 0 ? (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px var(--sp-3) 0', flex: '0 0 auto' }}>
+      <Tabs size="sm" value={view} onChange={(v) => setView(v as TranscriptView)} tabs={[
+        { value: 'unified', label: 'Unified' },
+        { value: 'lanes', label: 'Lanes', count: view === 'lanes' ? laneIds.length : undefined },
+      ]} />
+      <span style={{ flex: 1 }} />
+      <Button variant="ghost" size="sm" icon="sort"
+        title={order === 'newest' ? 'Newest first — click to read oldest first' : 'Oldest first — click to read newest first'}
+        onClick={() => setOrder(order === 'newest' ? 'oldest' : 'newest')}>
+        {order === 'newest' ? 'Newest first' : 'Oldest first'}
+      </Button>
+    </div>
+  ) : null;
+
   const transcriptTools = (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 8, flex: '0 0 auto', flexWrap: 'wrap',
@@ -1025,20 +1077,11 @@ export function ProjectView({
       )}
       <span style={{ flex: 1 }} />
       {run.entries.length > 0 && (
-        <>
-          <Button variant="ghost" size="sm" icon="timeline"
-            title={showTimeline ? 'Hide the timeline' : 'Show the swimlane timeline — click a tick to jump to its entry'}
-            onClick={() => setShowTimeline(!showTimeline)}>
-            Timeline
-          </Button>
-          <Button variant="ghost" size="sm" icon="sort"
-            title={order === 'newest'
-              ? 'Newest first — click to read oldest first'
-              : 'Oldest first — click to read newest first'}
-            onClick={() => setOrder(order === 'newest' ? 'oldest' : 'newest')}>
-            {order === 'newest' ? 'Newest first' : 'Oldest first'}
-          </Button>
-        </>
+        <Button variant="ghost" size="sm" icon="timeline"
+          title={showTimeline ? 'Hide the timeline' : 'Show the swimlane timeline — click a tick to jump to its entry'}
+          onClick={() => setShowTimeline(!showTimeline)}>
+          Timeline
+        </Button>
       )}
     </div>
   );
@@ -1067,7 +1110,11 @@ export function ProjectView({
           </Disclosure>
         </div>
       )}
-      <Transcript run={run} filter={filter} jump={jump} order={order} />
+      {transcriptBar}
+      {view === 'lanes' && run.entries.length > 0
+        ? <LanesView agents={run.agents} entries={run.entries} workers={selectedRun?.workers ?? []}
+            lanes={laneIds} onLanes={setLanes} order={order} live={isRunning} />
+        : <Transcript run={run} filter={filter} jump={jump} order={order} />}
     </div>
   );
 

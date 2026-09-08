@@ -120,6 +120,8 @@ export type RunSummary = {
   budgetUsd: number; status: Status; costUsd: number;
   createdAt: number; endedAt?: number;
   directorModel?: string; workerModel?: string; resumes?: number;
+  /** The crew as recorded on the run: id, state, spend, the task's first line. */
+  workers?: Array<{ id: string; status: string; costUsd: number; task?: string }>;
   /** Which cap ended the last attempt, when one did; cleared by a resume. */
   stopReason?: 'budget' | 'turns' | 'time' | 'tokens';
   /** The branch this mission ran on, when Foreman gave it one; `pr` once the human opened one from it. */
