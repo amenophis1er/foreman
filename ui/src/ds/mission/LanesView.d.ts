@@ -12,6 +12,8 @@ export interface LanesViewProps {
   onLanes: (lanes: string[]) => void;
   order?: TranscriptOrder;
   live?: boolean;
+  /** An entry to scroll to and flash (from a timeline click); `n` re-fires on repeat. */
+  jump?: { id: number; n: number } | null;
   style?: CSSProperties;
 }
 

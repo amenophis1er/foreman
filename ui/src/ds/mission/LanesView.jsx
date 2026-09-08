@@ -157,11 +157,12 @@ function Parked({ agents, workers, onPick }) {
  * ten-screen result would push every other lane's next hour off the page.
  * The unified view still shows entries whole.
  */
-function Clamped({ id, long, children }) {
+function Clamped({ id, long, flash, children }) {
   const [open, setOpen] = useState(false);
-  if (!long) return <div id={id}>{children}</div>;
+  const ring = flash ? { outline: '2px solid var(--brand)', borderRadius: 'var(--r-sm)' } : undefined;
+  if (!long) return <div id={id} style={ring}>{children}</div>;
   return (
-    <div id={id} style={{ position: 'relative' }}>
+    <div id={id} style={{ position: 'relative', ...ring }}>
       <div style={open ? undefined : { maxHeight: 180, overflow: 'hidden', maskImage: 'linear-gradient(to bottom, black 70%, transparent)', WebkitMaskImage: 'linear-gradient(to bottom, black 70%, transparent)' }}>
         {children}
       </div>
@@ -193,8 +194,9 @@ export function foldTools(entries) {
   return out.map((item) => (item.burst && item.entries.length === 1 ? { entry: item.entries[0] } : item));
 }
 
-function ToolBurst({ entries }) {
+function ToolBurst({ entries, forceOpen }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => { if (forceOpen) setOpen(true); }, [forceOpen]);
   const calls = entries.filter((e) => e.kind === 'tool');
   const counts = new Map();
   for (const c of calls) { const name = c.title.split(/\s|·/)[0] || c.title; counts.set(name, (counts.get(name) ?? 0) + 1); }
@@ -224,11 +226,44 @@ function ToolBurst({ entries }) {
   );
 }
 
-export function LanesView({ agents = [], entries = [], workers = [], lanes, onLanes, order = 'oldest', live = false, style }) {
-  const shownAgents = lanes.map((id) => agents.find((a) => a.id === id)).filter(Boolean);
-  const parked = agents.filter((a) => !lanes.includes(a.id));
+export function LanesView({ agents = [], entries = [], workers = [], lanes, onLanes, order = 'oldest', live = false, jump, style }) {
   const span = entries.length ? (live ? Date.now() : entries[entries.length - 1].ts) - entries[0].ts : 0;
   const bucketMs = bucketMsFor(span);
+  // A jump from the timeline: the entry's lane is opened if it was parked,
+  // the burst holding it is unfolded, and its row scrolls into view.
+  const [wanted, setWanted] = useState(null);
+  const scroller = useRef(null);
+  useEffect(() => {
+    if (!jump) return;
+    const e = entries.find((x) => x.id === jump.id);
+    if (!e) return;
+    if (!lanes.includes(e.agent)) onLanes([...lanes, e.agent]);
+    setWanted({ id: e.id, n: jump.n });
+    // The lane may be new and its burst still folding open: scroll on the
+    // next frames, once the target exists. The row is the bucket's start.
+    const bucket = Math.floor(e.ts / bucketMs) * bucketMs;
+    let tries = 0;
+    const go = () => {
+      const el = document.getElementById(`lane-entry-${e.id}`) ?? document.getElementById(`lane-row-${bucket}`);
+      const box = scroller.current;
+      if (el && box) {
+        // Scrolled by hand: scrollIntoView left this grid where it was (the
+        // sticky ruler and headers confuse it), so the arithmetic is done here
+        // — centre the entry vertically, bring its lane into view horizontally.
+        const r = el.getBoundingClientRect(); const b = box.getBoundingClientRect();
+        box.scrollTo({
+          top: box.scrollTop + (r.top - b.top) - (box.clientHeight - r.height) / 2,
+          left: r.left < b.left + RULER_W || r.right > b.right ? box.scrollLeft + (r.left - b.left) - RULER_W - 8 : box.scrollLeft,
+          behavior: 'smooth',
+        });
+      } else if (tries++ < 10) setTimeout(go, 60);
+    };
+    const t0 = setTimeout(go, 30);
+    const t = setTimeout(() => setWanted(null), 2000);
+    return () => { clearTimeout(t0); clearTimeout(t); };
+  }, [jump]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shownAgents = lanes.map((id) => agents.find((a) => a.id === id)).filter(Boolean);
+  const parked = agents.filter((a) => !lanes.includes(a.id));
   const rows = useMemo(() => bucketRows(entries, lanes, bucketMs, live ? Date.now() : undefined), [entries, lanes, bucketMs, live]);
   const ordered = order === 'newest' ? [...rows].reverse() : rows;
   const factsByAgent = useMemo(() => Object.fromEntries(shownAgents.map((a) => [a.id, laneFacts(a.id, entries, workers.find((w) => w.id === a.id))])), [shownAgents, entries, workers]);
@@ -244,7 +279,7 @@ export function LanesView({ agents = [], entries = [], workers = [], lanes, onLa
         <span>{shownAgents.length} lane{shownAgents.length === 1 ? '' : 's'} · rows of {mins(bucketMs)}</span>
         <Parked agents={parked} workers={workers} onPick={(id) => onLanes([...lanes, id])} />
       </div>
-      <div style={{ overflow: 'auto', minHeight: 0, flex: 1, padding: '0 var(--sp-3) var(--sp-3)' }}>
+      <div ref={scroller} style={{ overflow: 'auto', minHeight: 0, flex: 1, padding: '0 var(--sp-3) var(--sp-3)' }}>
         <div style={{ display: 'inline-grid', gridTemplateColumns: cols, minWidth: '100%', background: 'var(--bg-panel)', border: '1px solid var(--line)', borderRadius: 'var(--r-sm)' }}>
           {/* Header row: the ruler's corner says the bucket; each lane its agent. */}
           <div style={{ position: 'sticky', top: 0, left: 0, zIndex: 3, background: 'var(--bg-panel)', borderBottom: '1px solid var(--line)', padding: '6px 8px', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
@@ -263,13 +298,13 @@ export function LanesView({ agents = [], entries = [], workers = [], lanes, onLa
             </React.Fragment>
           ) : (
             <React.Fragment key={row.t0}>
-              <div style={{ position: 'sticky', left: 0, zIndex: 1, background: 'var(--bg-panel)', borderBottom: '1px solid var(--line)', padding: '6px 8px', fontSize: 'var(--fs-xs)', color: 'var(--ink-1)', fontVariantNumeric: 'tabular-nums' }}>{hhmm(row.t0)}</div>
+              <div id={`lane-row-${row.t0}`} style={{ position: 'sticky', left: 0, zIndex: 1, background: 'var(--bg-panel)', borderBottom: '1px solid var(--line)', padding: '6px 8px', fontSize: 'var(--fs-xs)', color: 'var(--ink-1)', fontVariantNumeric: 'tabular-nums' }}>{hhmm(row.t0)}</div>
               {shownAgents.map((a) => (
                 <div key={a.id} style={cell}>
                   {foldTools(row.cells.get(a.id) ?? []).map((item) => item.burst ? (
-                    <ToolBurst key={`b${item.entries[0].id}`} entries={item.entries} />
+                    <ToolBurst key={`b${item.entries[0].id}`} entries={item.entries} forceOpen={wanted ? item.entries.some((e) => e.id === wanted.id) : false} />
                   ) : (
-                    <Clamped key={item.entry.id} id={`lane-entry-${item.entry.id}`} long={item.entry.body.length > 600}>
+                    <Clamped key={item.entry.id} id={`lane-entry-${item.entry.id}`} long={item.entry.body.length > 600} flash={wanted?.id === item.entry.id}>
                       <TranscriptEntry agent={item.entry.agent} title={item.entry.title} dense kind={item.entry.kind} body={item.entry.body} ts={item.entry.ts} to={item.entry.to} timing={item.entry.timing} />
                     </Clamped>
                   ))}

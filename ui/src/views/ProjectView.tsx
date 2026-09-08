@@ -1113,7 +1113,7 @@ export function ProjectView({
       {transcriptBar}
       {view === 'lanes' && run.entries.length > 0
         ? <LanesView agents={run.agents} entries={run.entries} workers={selectedRun?.workers ?? []}
-            lanes={laneIds} onLanes={setLanes} order={order} live={isRunning} />
+            lanes={laneIds} onLanes={setLanes} order={order} live={isRunning} jump={jump} />
         : <Transcript run={run} filter={filter} jump={jump} order={order} />}
     </div>
   );
