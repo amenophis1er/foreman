@@ -17,6 +17,8 @@ export type Command =
   | { cmd: 'plan'; project: string; text: string }
   | { cmd: 'run'; project: string; text: string }
   | { cmd: 'stop'; project?: string }
+  /** Read-only: what stands, for one project or the whole fleet. */
+  | { cmd: 'schedules'; project?: string }
   | { cmd: 'fleet'; text: string };
 
 /** `/plan@ForemanBot test-4 add a footer` → { cmd: 'plan', project: 'test-4', text: 'add a footer' }. */
@@ -37,6 +39,9 @@ export function parseCommand(text: string): Command | null {
     case 'plan': { const [project, t] = split(); return project && t ? { cmd: 'plan', project, text: t } : null; }
     case 'run': { const [project, t] = split(); return project && t ? { cmd: 'run', project, text: t } : null; }
     case 'stop': return { cmd: 'stop', ...(rest ? { project: rest } : {}) };
+    // Listing only. A schedule is standing configuration, and remote surfaces
+    // never grant standing changes — see the reply in server.ts.
+    case 'schedules': return { cmd: 'schedules', ...(rest ? { project: rest } : {}) };
     case 'fleet': case 'f': return { cmd: 'fleet', text: rest };
     default: return null;
   }
@@ -70,6 +75,7 @@ export const HELP_TEXT = [
   '/plan &lt;project&gt; &lt;what you want&gt; — talk to that project\'s planner',
   '/run &lt;project&gt; &lt;brief&gt; — skip the talk: start a mission at the project\'s default cap',
   '/stop [project] — stop the planner reply in flight',
+  '/schedules [project] — the standing schedules and when they next run (reading only; they are changed in the dashboard)',
   '/fleet [anything] — the front desk: ask how things are going, or say what you want started where',
   '',
   'Anything else you type answers the open question, continues the planning conversation you were just in, or goes to the front desk.',

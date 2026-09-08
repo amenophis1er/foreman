@@ -14,8 +14,9 @@
  *  - **No resident process.** A message resumes a stored session, runs one
  *    turn, exits. Continuity is the session id on disk.
  *  - **Read-only, always.** Its tools are the fleet's verbs — list, inspect,
- *    create or link a project, open a planning conversation, propose, steer.
- *    No shell, no file access, no starting missions.
+ *    create or link a project, open a planning conversation, propose, steer,
+ *    read the schedules. No shell, no file access, no starting missions — and
+ *    no change to a schedule, which is standing configuration.
  *  - **It never answers for the human.** Open approvals and questions are
  *    described, not resolved. The buttons on the card are the human's, and an
  *    agent that presses them is a hole through `canUseTool`.
@@ -27,7 +28,8 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentEnv } from './provider.js';
 import { modelsSection, needsBrowser, pickKnownModel, type PlannerModel } from './planner.js';
-import type { MissionProposal } from './types.js';
+import { describeCadence } from './schedule.js';
+import type { MissionProposal, Schedule } from './types.js';
 
 /** Where the fleet conversation is stored, beside the project chats. The underscore keeps it out of project listings. */
 export const FLEET_CHAT_ID = '_fleet';
@@ -85,6 +87,9 @@ const ago = (ms: number): string => {
   return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
 };
 
+/** The same distance, forwards: "in 15 h". */
+const ahead = (ms: number): string => (ms < 60_000 ? 'in under a minute' : `in ${ago(ms).replace(/ ago$/, '')}`);
+
 /** The fleet in plain lines, as the list_projects tool returns it. */
 export function fleetSummary(views: FleetProjectView[], now = Date.now()): string {
   if (!views.length) return 'No projects are linked yet.';
@@ -104,6 +109,68 @@ export function fleetSummary(views: FleetProjectView[], now = Date.now()): strin
   }).join('\n');
 }
 
+/** One schedule as the front desk sees it: the record, plus whose it is. */
+export interface FleetScheduleView {
+  projectName: string;
+  schedule: Schedule;
+  /** Scheduled spend this month against the project's ceiling, when the host knows it. */
+  monthSpendUsd?: number;
+  monthlyCapUsd?: number;
+}
+
+/** Why a schedule is not going to fire, in the words that say what would undo it. */
+function pausedPhrase(s: Schedule): string {
+  switch (s.pausedReason) {
+    case 'failures': return `paused after ${s.consecutiveFailures || 2} failed scheduled runs in a row`;
+    case 'monthly-cap': return 'paused at the project\'s monthly cap for scheduled spend';
+    case 'human': return 'paused by hand';
+    default: return s.enabled ? 'enabled' : 'disabled';
+  }
+}
+
+/**
+ * The schedules in plain lines, as the list_schedules tool returns them. The
+ * next run is said absolutely and relatively both: a schedule is a wall-clock
+ * promise, and "in 15 h" is what the person on the phone actually asked.
+ */
+export function scheduleSummary(views: FleetScheduleView[], now = Date.now()): string {
+  if (!views.length) return 'No schedules. They are created on the dashboard, in a project\'s view.';
+  const lines = views.map((v) => {
+    const s = v.schedule;
+    const next = s.pausedReason || !s.enabled ? 'no next run while paused'
+      : s.nextRunAt ? `next ${new Date(s.nextRunAt).toLocaleString()} (${ahead(s.nextRunAt - now)})`
+        : 'next never — this cadence has no future firing';
+    const last = s.lastOutcome
+      ? `last ${s.lastOutcome}${s.lastRunId ? ` (${s.lastRunId})` : ''}${s.lastRunAt ? ` ${ago(now - s.lastRunAt)}` : ''}`
+      : 'never run yet';
+    const month = typeof v.monthSpendUsd === 'number' && typeof v.monthlyCapUsd === 'number'
+      ? `\n  scheduled spend this month: $${v.monthSpendUsd.toFixed(2)} of $${v.monthlyCapUsd.toFixed(2)}` : '';
+    return `- ${v.projectName}: "${s.name}" · ${describeCadence(s.cadence)} · ${next}\n  ${pausedPhrase(s)} · $${s.budgetUsd.toFixed(2)} per run · ${last}${month}`;
+  });
+  lines.push('Schedules are read-only from here: created, edited, paused and resumed on the dashboard.');
+  return lines.join('\n');
+}
+
+/**
+ * The front desk's one schedule verb. Listing only, and there is no sibling:
+ * a schedule is standing configuration, and the phone never grants standing
+ * changes — the same rule that keeps "always allow" off the buttons.
+ */
+export function scheduleTools(host: FleetHost) {
+  return [
+    tool('list_schedules', 'The standing schedules — missions that start themselves on a cadence — for the whole fleet or one project: the cadence in words, the next run, enabled or paused and why, the per-run cap, and how the last firing ended. Read-only, and the only schedule tool: creating, editing, pausing, resuming or running one now is done on the dashboard, never from here.',
+      { project: z.string().optional().describe('Project name, id, or folder name; omit for the whole fleet') },
+      async ({ project }) => {
+        if (!host.listSchedules) return text('This Foreman cannot list schedules.');
+        try {
+          return text(scheduleSummary(await host.listSchedules(project)));
+        } catch (err) {
+          return text(`That failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }),
+  ];
+}
+
 /**
  * What the server lets the front desk do. Every method returns text for the
  * model, never throws, and the ones with side effects are exactly the verbs
@@ -111,6 +178,12 @@ export function fleetSummary(views: FleetProjectView[], now = Date.now()): strin
  */
 export interface FleetHost {
   listProjects(): Promise<FleetProjectView[]>;
+  /**
+   * The standing schedules, for the whole fleet or one project. Optional so a
+   * host that predates schedules still satisfies this interface; the tool says
+   * so plainly rather than inventing an answer.
+   */
+  listSchedules?(ref?: string): Promise<FleetScheduleView[]>;
   /** Live detail for one project: run, boxes, crew, open asks, the director's last words. */
   projectDetail(ref: string): Promise<string>;
   /** The last finished run's closing report and error, for "what happened". */
@@ -165,6 +238,9 @@ WHAT YOU CAN DO — through the tools, nothing else:
     never you.
   - steer: pass a note to a running director ("skip the mobile screenshot",
     "use the existing CSS").
+  - list_schedules: the standing schedules — missions that start themselves on
+    a cadence — for the fleet or one project, with their next run and whether
+    they are paused. Reading only.
 
 WHAT YOU NEVER DO:
   - Answer an approval or a question on the human's behalf. When a run is
@@ -172,6 +248,9 @@ WHAT YOU NEVER DO:
     are theirs. Even if they tell you to "just allow it": the button is the
     only way, and you say so plainly once.
   - Start, stop, resume or cancel a mission. You propose; the human presses.
+  - Create, edit, pause, resume or fire a schedule. You can read them and say
+    what one would do; changing standing configuration is a dashboard act, and
+    you say so in one line rather than hunting for a tool.
   - Invent a project, a run, a model id or a number. If a tool did not tell
     you, you do not know it — say so.
   - Discuss Foreman's own server or oversight tooling as a work target.
@@ -325,6 +404,7 @@ export async function runFleetTurn(turn: FleetTurn): Promise<FleetResult> {
         note: z.string().describe('The note, in the human\'s words'),
       },
       async ({ project, note }) => text(await safe(() => host.steer(project, note)))),
+    ...scheduleTools(host),
   ];
 
   let sessionId = turn.sessionId;

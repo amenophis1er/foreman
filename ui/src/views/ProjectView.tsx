@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  api, basisOf, providerHome, useChat, useRunHistory, useRunView,
-  type CostBasis, type Entry, type ProjectSummary, type RunSummary,
-  type RunView as RunViewState, type TokenUsage, withAttachments,
+  api, basisOf, providerHome, useChat, useRunHistory, useRunView, useSchedules,
+  type Cadence, type CostBasis, type Entry, type ProjectSummary, type RunSummary,
+  type RunView as RunViewState, type Schedule, type ScheduleInput, type TokenUsage, withAttachments,
 } from '../state';
 import { useDeck, useProjectTree } from '../deck';
 import { AppHeader } from '../ds/shell/AppHeader';
@@ -32,6 +32,8 @@ import { RunRow } from '../ds/mission/RunRow';
 import { NowStrip, type NowActivity } from '../ds/mission/NowStrip';
 import { DoneWhenList, doneWhenLabel, parseDoneWhen } from '../ds/mission/DoneWhenList';
 import { FilesPanel } from '../ds/mission/FilesPanel';
+import { SchedulesPanel } from '../ds/mission/SchedulesPanel';
+import { ScheduleSheet } from '../ds/mission/ScheduleSheet';
 import { FolderBrowser } from '../ds/mission/FolderBrowser';
 import { DEFAULT_SETTINGS, type Settings } from '../ds/settings/SettingsModal';
 import { CrewPanel } from '../ds/mission/CrewPanel';
@@ -814,6 +816,21 @@ export function ProjectView({
 }) {
   const history = useRunHistory(p.id);
   const memory = useMemory(p.id);
+  const schedules = useSchedules(p.id);
+  // null = closed · 'new' = create · a schedule = edit it.
+  const [scheduleSheet, setScheduleSheet] = useState<'new' | Schedule | null>(null);
+  /**
+   * Every schedule action answers with the server's own sentence, or null when
+   * it worked — a "Run now" refused because a mission is already running here
+   * (409) is a fact the human needs, not something to swallow.
+   */
+  const scheduleSaid = async (call: Promise<Response>): Promise<string | null> => {
+    const r = await call.catch(() => null);
+    if (!r) return 'could not reach the server';
+    if (!r.ok) return ((await r.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${r.status}`;
+    await schedules.reload();
+    return null;
+  };
   const effectiveSettings = { ...DEFAULT_SETTINGS, ...settings.global, ...(settings.project ?? {}) } as Settings;
   const settingOverrides = Object.keys(settings.project ?? {});
   const branchPerMission = (effectiveSettings as Record<string, unknown>).gitBranchPerMission !== false;
@@ -904,6 +921,7 @@ export function ProjectView({
   const [showDoneWhen, setShowDoneWhen] = useState(false);
   const [showFilesNarrow, setShowFilesNarrow] = useState(false);
   const [showRunsNarrow, setShowRunsNarrow] = useState(false);
+  const [showSchedulesNarrow, setShowSchedulesNarrow] = useState(false);
   const [headerErr, setHeaderErr] = useState('');
   const [forking, setForking] = useState(false);
   const [prOpen, setPrOpen] = useState(false);
@@ -1028,6 +1046,27 @@ export function ProjectView({
     </span>
   ) : null;
 
+  // Who started this run. A scheduled mission had nobody watching it begin,
+  // and that is the first thing to know when reading it back — named where a
+  // schedule still exists, plain "scheduled" once it has been deleted.
+  const scheduleName = selectedRun?.scheduleId
+    ? schedules.schedules.find((s) => s.id === selectedRun.scheduleId)?.name
+    : undefined;
+  const startedByPill = selectedRun?.scheduleId ? (
+    <span title={scheduleName
+      ? `Started by the schedule "${scheduleName}" — nobody pressed anything`
+      : 'Started by a schedule that has since been deleted'}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 8px',
+        borderRadius: 'var(--r-pill)', border: '1px solid var(--line)', background: 'var(--bg-inset)',
+        fontSize: 'var(--fs-xs)', fontFamily: 'var(--font-mono)', color: 'var(--ink-1)',
+        maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      }}>
+      <Icon name="timeline" size={11} />
+      {scheduleName ? `scheduled · ${scheduleName}` : 'scheduled'}
+    </span>
+  ) : null;
+
   // The run's identity, first thing in the rail: what am I looking at.
   const runHead = selectedRun && (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
@@ -1052,6 +1091,24 @@ export function ProjectView({
           onSelect={r.id === selectedRunId ? undefined : () => setSelectedRunId(r.id)} />
       ))}
     </div>
+  );
+  // What runs here without anyone watching. First in the rail because it is
+  // the only block with controls on it: buried under a long memory file it
+  // would need a scroll before a paused schedule could be resumed.
+  const schedulesPane = (
+    <SchedulesPanel schedules={schedules.schedules} monthSpendUsd={schedules.monthSpendUsd}
+      monthlyCapUsd={schedules.monthlyCapUsd} loading={schedules.loading} error={schedules.error}
+      projectId={p.id}
+      onNew={() => setScheduleSheet('new')}
+      onEdit={(s) => setScheduleSheet(s as Schedule)}
+      onPause={(s) => scheduleSaid(api.pauseSchedule(s.id))}
+      onResume={(s) => scheduleSaid(api.resumeSchedule(s.id))}
+      onRunNow={async (s) => {
+        const said = await scheduleSaid(api.runScheduleNow(s.id));
+        if (!said) refreshFleet();
+        return said;
+      }}
+      onDelete={(s) => scheduleSaid(api.deleteSchedule(s.id))} />
   );
   // The rail, shared by the run screen and the planning screen so the two
   // are one place: same edge, same width, same resizer, same Runs list.
@@ -1190,6 +1247,7 @@ export function ProjectView({
               ? (isRunning ? now : (selectedRun.endedAt ?? now)) - selectedRun.createdAt
               : undefined} />
         )}
+        {startedByPill}
         {modelsPill}
         {isRunning && (
           <Button variant="danger" onClick={() => void api.interrupt(selectedRunId!)}>Interrupt</Button>
@@ -1237,6 +1295,22 @@ export function ProjectView({
       {prOpen && selectedRunId && (
         <PullRequestSheet runId={selectedRunId} onClose={() => setPrOpen(false)}
           onDone={() => refreshFleet()} />
+      )}
+
+      {scheduleSheet && (
+        <ScheduleSheet schedule={scheduleSheet === 'new' ? null : scheduleSheet}
+          models={models} modelsLoading={modelsLoading} modelsNote={modelsNote}
+          modelsInheritNote={modelsInheritNote} defaultBudgetUsd={p.defaultBudgetUsd}
+          onClose={() => setScheduleSheet(null)}
+          onPreview={async (cadence) => {
+            const r = await api.previewCadence(cadence as Cadence).catch(() => null);
+            if (!r) return { error: 'could not reach the server' };
+            const body = await r.json().catch(() => ({})) as { next?: number[]; error?: string };
+            return r.ok ? { next: body.next ?? [] } : { error: body.error ?? `HTTP ${r.status}` };
+          }}
+          onSave={(input) => scheduleSaid(scheduleSheet === 'new'
+            ? api.createSchedule(p.id, input as ScheduleInput)
+            : api.updateSchedule(scheduleSheet.id, input as ScheduleInput))} />
       )}
 
       {/* Nothing sits between the header and the asks. The read-only banner
@@ -1303,12 +1377,19 @@ export function ProjectView({
       {idle ? (
         <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: wide ? 'grid' : 'flex', flexDirection: 'column', gridTemplateColumns: wide ? `minmax(0, 1fr) ${railWidth}px` : undefined }}>
         <div style={{ minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          {/* Narrow: the runs fold into the top of the conversation. */}
-          {!wide && history.length > 0 && (
-            <div style={{ padding: '6px var(--sp-3) 0', flex: '0 0 auto' }}>
-              <Disclosure label={`Runs · ${history.length}`} open={showRunsNarrow} onToggle={() => setShowRunsNarrow(!showRunsNarrow)}>
-                {runsPane}
+          {/* Narrow: the rail is gone, so the runs — and the schedules, which
+              are the only way to resume a paused one — fold into the top of
+              the conversation instead of being unreachable on a phone. */}
+          {!wide && (
+            <div style={{ padding: '6px var(--sp-3) 0', flex: '0 0 auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <Disclosure label={`Schedules · ${schedules.schedules.length}`} open={showSchedulesNarrow} onToggle={() => setShowSchedulesNarrow(!showSchedulesNarrow)}>
+                {schedulesPane}
               </Disclosure>
+              {history.length > 0 && (
+                <Disclosure label={`Runs · ${history.length}`} open={showRunsNarrow} onToggle={() => setShowRunsNarrow(!showRunsNarrow)}>
+                  {runsPane}
+                </Disclosure>
+              )}
             </div>
           )}
           {composeOpen ? (
@@ -1376,6 +1457,7 @@ export function ProjectView({
           // The folder as it stands. Every run here shares it, so it belongs
           // to the project screen, not to any one run's deck.
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
+            {schedulesPane}
             <MemoryPanel memory={memory} />
             <FolderBrowser key={p.id} files={tree.files} truncated={tree.truncated} loading={tree.loading}
               error={tree.error} onRefresh={tree.refresh} urlBase={`/projects/${encodeURIComponent(p.id)}`} />

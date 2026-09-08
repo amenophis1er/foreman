@@ -50,6 +50,14 @@
  *   DELETE /chat?projectId=      Forget the conversation and its session
  *   PUT    /providers/{id}/key   Store a provider's key {key}
  *   DELETE /providers/{id}/key   Forget it
+ *   GET    /projects/{id}/schedules  This project's schedules + this month's scheduled spend and its ceiling
+ *   POST   /projects/{id}/schedules  Add one {name, brief, cadence, budgetUsd, …} → {schedule}
+ *   PUT    /schedules/{id}       Change one (same fields, all optional) → {schedule}
+ *   DELETE /schedules/{id}       Forget one
+ *   POST   /schedules/{id}/pause   Stop it firing until a human resumes it
+ *   POST   /schedules/{id}/resume  Start it firing again, from now
+ *   POST   /schedules/{id}/run-now Start its mission at once (409 if the project is busy)
+ *   GET    /schedules/preview?cadence=  The next three firings of a cadence {next:[ms]}
  */
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -80,7 +88,7 @@ import { ServiceRegistry, listeningPid, portOpen, servicesHandler, stopService }
 import { HELP_TEXT, expandHome, parseCommand, projectsRoot, slug } from './notify/commands.js';
 import {
   DEFAULT_FLEET_MODEL, FLEET_CHAT_ID, PHONE_CONTEXT_MS, phoneRoute, runFleetTurn,
-  type FleetHost, type FleetProjectView,
+  type FleetHost, type FleetProjectView, type FleetScheduleView,
 } from './fleet-planner.js';
 import { escapeHtml as escTg } from './notify.js';
 import { RunStore, newRunId } from './store.js';
@@ -107,8 +115,12 @@ import {
   dirHasCredentials, detectAuth, hasKeychainCredentials, readAccount, type AuthMode,
 } from './preflight.js';
 import { combineBasis, costBasisOf } from './types.js';
+import { describeCadence, nextRunAt, nextRuns, validateCadence, type Cadence } from './schedule.js';
+import {
+  DEFAULT_SCHEDULED_MONTHLY_CAP_USD, afterRunOutcome, decideTicks, monthlyScheduledSpend,
+} from './schedule-guards.js';
 import type {
-  ChatMeta, CostBasis, ForemanEvent, MissionProposal, ModelChoice, Project, ProviderRef, RunMeta, ToolPolicy,
+  ChatMeta, CostBasis, ForemanEvent, MissionProposal, ModelChoice, Project, ProviderRef, RunMeta, Schedule, ToolPolicy,
 } from './types.js';
 
 /**
@@ -536,6 +548,24 @@ function activeRuns(): MissionRun[] {
 }
 
 /**
+ * The metadata of every run this process is currently driving, by run id.
+ *
+ * The emitter has to answer "was this run started by a schedule?" at the
+ * instant it emits, and a run's `run_finished` can be emitted before the
+ * MissionRun object exists at all (a provider that will not resolve fails the
+ * run in driveRun's first few lines). Reading meta.json back there would be
+ * asynchronous, and the notification envelope has already gone out by then.
+ */
+const drivingRuns = new Map<string, RunMeta>();
+
+/**
+ * Schedule names by schedule id, so a notification can say which standing
+ * instruction started a run without a disk read on the emitter's path. Filled
+ * wherever schedules are loaded anyway — every ticker pass, and each dispatch.
+ */
+const scheduleNames = new Map<string, string>();
+
+/**
  * What happened in the fleet lately, in one line each, for the front desk.
  *
  * In memory only: it exists so the fleet planner can open with the news
@@ -610,10 +640,43 @@ function makeEmitter(runId: string, projectId: string) {
         });
       }
     }
+    // The end of a scheduled run is also the schedule's news: the phone should
+    // say nobody pressed start, and the schedule's own failure bookkeeping has
+    // to move on. This is where the server learns a run ended — the
+    // orchestrator knows nothing about schedules and should not.
+    if (event === 'run_finished') {
+      const meta = drivingRuns.get(runId) ?? activeRuns().find((r) => r.meta.id === runId)?.meta;
+      if (meta?.scheduleId) {
+        d.scheduled = true;
+        const name = scheduleNames.get(meta.scheduleId);
+        if (name) d.scheduleName = name;
+        void recordScheduleOutcome(meta.scheduleId, meta).catch((err) => {
+          console.error(`failed to record outcome of schedule ${meta.scheduleId}:`, err);
+        });
+      }
+    }
     if (!projectsCache.has(projectId)) {
       void store.getProject(projectId).then((p) => { if (p) projectsCache.set(projectId, { name: p.name }); });
     }
     notifyHub.handle({ event, runId, projectId, data: d, ts: evt.ts });
+  };
+}
+
+/**
+ * An announcement about a schedule rather than about a run.
+ *
+ * A skipped or auto-paused schedule has no run to hang a line off — that is
+ * exactly what happened: nothing started. So the frame carries `runId: null`,
+ * goes nowhere near a run's event log, and otherwise travels the same three
+ * roads every other event does (open tabs, the front desk's news, the phone).
+ */
+function scheduleNotice(projectId: string) {
+  return (event: string, data: unknown): void => {
+    const frame = `event: ${event}\ndata: ${JSON.stringify({ runId: null, projectId, data })}\n\n`;
+    for (const res of sseClients) res.write(frame);
+    const d = (data ?? {}) as Record<string, unknown>;
+    noteFleetEvent(projectId, event, d);
+    notifyHub.handle({ event, runId: null, projectId, data: d, ts: Date.now() });
   };
 }
 
@@ -805,11 +868,23 @@ notifyHub.onAnswer((a) => {
       // brief, its budget, its models and its browser judgement.
       void startRun(a.projectId, project.folder, prop.mission, prop.budgetUsd,
         modelChoice(prop.directorModel), modelChoice(prop.workerModel), prop.browser === true,
-        providerOf(project), { director: prop.directorProviderId, worker: prop.workerProviderId });
+        providerOf(project), { director: prop.directorProviderId, worker: prop.workerProviderId },
+        { startedBy: 'phone' });
       void notifyHub.say(`Started <b>${escTg(project.name)}</b> as proposed, cap $${prop.budgetUsd}.`);
     })();
   }
 });
+
+/**
+ * A gap as a reader would say it: "in 15 h", "3 days ago". Used where a
+ * timestamp would make someone do arithmetic on their phone.
+ */
+function relativeTime(ms: number): string {
+  const s = Math.round(ms / 1000);
+  const a = Math.abs(s);
+  const span = a < 90 ? 'a minute' : a < 5400 ? `${Math.round(a / 60)} min` : a < 172800 ? `${Math.round(a / 3600)} h` : `${Math.round(a / 86400)} days`;
+  return s >= 0 ? `in ${span}` : `${span} ago`;
+}
 
 /** The project the phone last planned with; plain text continues it. */
 let lastPhonePlanning: string | null = null;
@@ -957,6 +1032,41 @@ const fleetHost: FleetHost = {
       });
     }
     return out;
+  },
+
+  /**
+   * The standing schedules, with what they have already cost this month
+   * against their project's ceiling — the number that decides whether the next
+   * unattended firing happens at all, and the one nobody can see from a phone.
+   *
+   * Reading only, like every other verb here. An unknown reference is an
+   * error rather than an empty list: "no schedules" and "you named a project
+   * that does not exist" are different answers, and a typo must not read as
+   * reassurance.
+   */
+  async listSchedules(ref?: string): Promise<FleetScheduleView[]> {
+    const project = ref ? await findProject(ref) : null;
+    if (ref && !project) throw new Error(await noSuchProject(ref));
+    const schedules = await store.listSchedules(project?.id);
+    if (!schedules.length) return [];
+    const runs = await store.listRuns().catch(() => [] as RunMeta[]);
+    const now = new Date();
+    const names = new Map((await store.listProjects()).map((p) => [p.id, p.name]));
+    // One settings read and one spend count per project, not per schedule:
+    // a project with six nightly schedules asks the same two questions six
+    // times, and the answers cannot differ between them.
+    const money = new Map<string, { monthSpendUsd: number; monthlyCapUsd: number }>();
+    for (const projectId of new Set(schedules.map((s) => s.projectId))) {
+      money.set(projectId, {
+        monthSpendUsd: monthlyScheduledSpend(runs, projectId, now),
+        monthlyCapUsd: (await effectiveSettings(projectId)).scheduledMonthlyCapUsd,
+      });
+    }
+    return schedules.map((schedule) => ({
+      projectName: names.get(schedule.projectId) ?? schedule.projectId,
+      schedule,
+      ...money.get(schedule.projectId)!,
+    }));
   },
 
   async projectDetail(ref) {
@@ -1246,8 +1356,34 @@ async function handlePhoneText(text: string, replyTo?: string): Promise<void> {
           if (!reserveProject(project.id)) return say(`<b>${escTg(project.name)}</b> already has an active mission.`);
           void startRun(project.id, project.folder, cmd.text, project.defaultBudgetUsd,
             modelChoice(undefined), modelChoice(undefined), /screenshot|browser|render|console/i.test(cmd.text),
-            providerOf(project));
+            providerOf(project), {}, { startedBy: 'phone' });
           return say(`Started a mission on <b>${escTg(project.name)}</b> with a $${project.defaultBudgetUsd} cap. I will tell you when it needs you or ends.`);
+        }
+        case 'schedules': {
+          // Reading only. A schedule is standing configuration — it decides
+          // what a machine does while nobody is watching — and remote surfaces
+          // never grant standing changes, so there is no create, edit, pause,
+          // resume or run-now here. The reply says so rather than leaving
+          // someone to discover it by trying.
+          const project = cmd.project ? await findProject(cmd.project) : null;
+          if (cmd.project && !project) return say(`No project called <b>${escTg(cmd.project)}</b>. /projects lists them.`);
+          const schedules = await store.listSchedules(project?.id);
+          const footer = 'Schedules are read-only from here — create, edit, pause and resume live in the dashboard.';
+          if (!schedules.length) {
+            return say(`No schedules${project ? ` on <b>${escTg(project.name)}</b>` : ''} yet.\n${footer}`);
+          }
+          const names = new Map((await store.listProjects()).map((p) => [p.id, p.name]));
+          const lines = schedules.map((s) => {
+            const state = s.pausedReason
+              ? `paused (${s.pausedReason === 'monthly-cap' ? 'monthly cap' : s.pausedReason})`
+              : s.enabled ? 'enabled' : 'disabled';
+            const next = s.pausedReason || !s.enabled || s.nextRunAt === null
+              ? 'no next run'
+              : `next ${relativeTime(s.nextRunAt - Date.now())}`;
+            const where = project ? '' : ` · ${escTg(names.get(s.projectId) ?? s.projectId)}`;
+            return `• <b>${escTg(s.name)}</b>${where}\n  ${escTg(describeCadence(s.cadence))} · ${next} · ${state}`;
+          });
+          return say(`<b>Schedules${project ? ` · ${escTg(project.name)}` : ''}</b>\n${lines.join('\n')}\n\n${footer}`);
         }
         case 'stop': {
           const project = cmd.project ? await findProject(cmd.project) : (lastPhonePlanning ? await store.getProject(lastPhonePlanning) : null);
@@ -1451,6 +1587,9 @@ async function driveRun(
   changes?: { directorChanged: boolean; workerChanged: boolean },
 ): Promise<void> {
   const emit = makeEmitter(meta.id, projectId);
+  // Registered before anything can fail, so even a run that dies on its
+  // provider still tells the emitter which schedule it belonged to.
+  drivingRuns.set(meta.id, meta);
   // One resolution per run, from the provider frozen into the run's metadata.
   // A run that cannot resolve a credential must not start: dispatching anyway
   // would fall back to whatever the environment happens to hold.
@@ -1462,6 +1601,7 @@ async function driveRun(
     await store.writeMeta(meta).catch(() => {});
     emit('run_error', { error: `provider unavailable — ${problem}` });
     emit('run_finished', { status: 'error', costUsd: meta.costUsd });
+    drivingRuns.delete(meta.id);
     activeByProject.delete(projectId);
     return;
   }
@@ -1543,6 +1683,7 @@ async function driveRun(
     await store.writeMeta(meta).catch(() => {});
     emit('run_error', { error: String(err instanceof Error ? err.message : err) });
     emit('run_finished', { status: 'error', costUsd: meta.costUsd });
+    drivingRuns.delete(meta.id);
     activeByProject.delete(projectId);
     return;
   }
@@ -1613,6 +1754,7 @@ async function driveRun(
   } finally {
     // However the run ended, it no longer needs its gateways.
     releaseGateways(meta.id);
+    drivingRuns.delete(meta.id);
     if (activeByProject.get(projectId) === run) activeByProject.delete(projectId);
     // Freeze the record: the mission doc and the deck as they stand at this
     // moment, beside the run's meta and log. Done first, before the branch
@@ -1653,6 +1795,8 @@ async function effectiveSettings(projectId: string): Promise<{
   gitBranchPerMission: boolean;
   /** Percent of the cap at which the director is told to start verifying (default 80). */
   budgetWarnAt: number;
+  /** Ceiling on what this project's SCHEDULED runs may cost in one calendar month. */
+  scheduledMonthlyCapUsd: number;
 }> {
   const s = await store.readSettings()
     .catch(() => ({ global: {}, projects: {} as Record<string, object> }));
@@ -1678,6 +1822,12 @@ async function effectiveSettings(projectId: string): Promise<{
       const raw = Number(p.budgetWarnAt ?? g.budgetWarnAt);
       return Number.isFinite(raw) && raw > 0 && raw < 100 ? raw : 60;
     })(),
+    scheduledMonthlyCapUsd: (() => {
+      // Zero is a legal answer — "this project may not spend unattended at
+      // all" — so only a negative or unreadable value falls back to the default.
+      const raw = Number(p.scheduledMonthlyCapUsd ?? g.scheduledMonthlyCapUsd);
+      return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_SCHEDULED_MONTHLY_CAP_USD;
+    })(),
   };
 }
 
@@ -1702,12 +1852,25 @@ async function startRun(
   directorModel: ModelChoice, workerModel: ModelChoice, browserTools: boolean,
   provider: ProviderRef,
   roleProviders: { director?: string; worker?: string } = {},
+  /**
+   * How this run began. Recorded rather than inferred: an unattended run and
+   * one somebody is watching deserve different treatment later, and the
+   * schedule's monthly ceiling can only count what says it was scheduled.
+   */
+  origin: {
+    startedBy?: 'human' | 'phone' | 'schedule' | 'mcp';
+    scheduleId?: string;
+    scheduleName?: string;
+  } = {},
 ): Promise<void> {
   const settings = await effectiveSettings(projectId);
+  if (origin.scheduleId && origin.scheduleName) scheduleNames.set(origin.scheduleId, origin.scheduleName);
   const meta: RunMeta = {
     id: newRunId(),
     projectId,
     folder, mission, budgetUsd,
+    startedBy: origin.startedBy ?? 'human',
+    ...(origin.scheduleId ? { scheduleId: origin.scheduleId } : {}),
     // An explicit composer choice wins; "Default" inherits from Settings.
     directorModel: directorModel ?? settings.directorModel,
     workerModel: workerModel ?? settings.workerModel,
@@ -1733,6 +1896,23 @@ async function startRun(
     activeByProject.delete(projectId);
     console.error(`failed to create run for project ${projectId}:`, err);
     return;
+  }
+  // Whoever reads this transcript later did not start this run, and the first
+  // question they will have is who did. It is the opening line, before the
+  // branch note, so the answer is at the top rather than buried in the meta.
+  if (origin.scheduleId) {
+    const emit = makeEmitter(meta.id, projectId);
+    emit('run_note', {
+      text: `Started by schedule ${origin.scheduleName ?? scheduleNames.get(origin.scheduleId) ?? origin.scheduleId}.`,
+    });
+  }
+  // The schedule's "last run" is this one, recorded the moment it exists
+  // rather than when it ends: a schedule whose mission is still running should
+  // point at it, not at the one before.
+  if (origin.scheduleId) {
+    await store.updateSchedule(origin.scheduleId, {
+      lastRunId: meta.id, lastRunAt: meta.createdAt, lastNote: '',
+    }).catch(() => {});
   }
   await consumeProposal(projectId, meta.id, mission).catch(() => {});
   // The folder's MISSION.md belongs to whichever run wrote it. Parked into
@@ -1846,6 +2026,153 @@ async function resumeRun(projectId: string, meta: RunMeta, pick: {
 }
 
 // ---------------------------------------------------------------------------
+// Schedules
+// ---------------------------------------------------------------------------
+
+/**
+ * Starts a schedule's mission. The project must already be reserved.
+ *
+ * The schedule's own choices win; anything it leaves open falls back to the
+ * project's effective settings, which is what startRun does with an absent
+ * model anyway. The browser judgement is the same heuristic the phone's /run
+ * uses, and for the same reason: there is no box for anyone to tick.
+ */
+function startScheduledRun(s: Schedule, project: Project, startedBy: 'human' | 'schedule'): void {
+  void startRun(
+    s.projectId, project.folder, s.brief, s.budgetUsd,
+    modelChoice(s.directorModel), modelChoice(s.workerModel),
+    /screenshot|browser|render|console/i.test(s.brief),
+    providerOf(project),
+    { director: s.directorProviderId, worker: s.workerProviderId },
+    { startedBy, scheduleId: s.id, scheduleName: s.name },
+  );
+}
+
+/** The next firing of this cadence as a timestamp, or null when there is none. */
+function nextRunAtMs(cadence: Cadence, after: Date): number | null {
+  const next = nextRunAt(cadence, after);
+  return next ? next.getTime() : null;
+}
+
+/**
+ * A scheduled run ended: the schedule remembers how it went.
+ *
+ * Two failures in a row pause it — see afterRunOutcome. Called from the
+ * emitter, which is where the server learns a run finished; the orchestrator
+ * knows nothing about schedules and should not have to.
+ */
+async function recordScheduleOutcome(scheduleId: string, meta: RunMeta): Promise<void> {
+  const s = await store.getSchedule(scheduleId);
+  if (!s) return;
+  const outcome = afterRunOutcome(s, { status: meta.status, stopReason: meta.stopReason });
+  await store.updateSchedule(s.id, {
+    lastRunId: meta.id,
+    lastRunAt: meta.endedAt ?? Date.now(),
+    lastOutcome: meta.status === 'running' ? undefined : meta.status,
+    // Whatever the last tick could not do, it did this time: the note would
+    // otherwise still read "project busy" beside a run that just finished.
+    lastNote: '',
+    consecutiveFailures: outcome.consecutiveFailures,
+    pausedReason: outcome.pausedReason,
+  });
+  if (outcome.pausedNow) {
+    const emit = scheduleNotice(s.projectId);
+    emit('schedule_paused', { scheduleId: s.id, name: s.name, projectId: s.projectId, reason: 'failures' });
+  }
+}
+
+/**
+ * One pass of the ticker: what is due, and what to do about it.
+ *
+ * Passes must not overlap. A pass awaits the store several times, and two of
+ * them interleaving could both see the same schedule as due and start it
+ * twice — the project reservation would catch that, but as a 409 nobody is
+ * there to read rather than as a rule.
+ */
+let tickInFlight = false;
+async function scheduleTick(): Promise<void> {
+  if (tickInFlight) return;
+  tickInFlight = true;
+  try {
+    const schedules = await store.listSchedules();
+    if (!schedules.length) return;
+    for (const s of schedules) scheduleNames.set(s.id, s.name);
+    const now = new Date();
+    // A schedule with no next firing would sit dormant for ever — a record
+    // written by an older build, or one whose cadence was never scheduled.
+    // Giving it one here costs a write once and never again.
+    for (const s of schedules) {
+      if (!s.enabled || s.pausedReason !== null || s.nextRunAt !== null) continue;
+      s.nextRunAt = nextRunAtMs(s.cadence, now);
+      await store.updateSchedule(s.id, { nextRunAt: s.nextRunAt }).catch(() => {});
+    }
+    const runs = await store.listRuns().catch(() => [] as RunMeta[]);
+    const monthSpend = new Map<string, number>();
+    const caps = new Map<string, number>();
+    for (const projectId of new Set(schedules.map((s) => s.projectId))) {
+      monthSpend.set(projectId, monthlyScheduledSpend(runs, projectId, now));
+      caps.set(projectId, (await effectiveSettings(projectId)).scheduledMonthlyCapUsd);
+    }
+    const actions = decideTicks({
+      schedules,
+      now,
+      busyProjectIds: new Set(activeByProject.keys()),
+      monthSpend,
+      capFor: (projectId) => caps.get(projectId) ?? DEFAULT_SCHEDULED_MONTHLY_CAP_USD,
+    });
+    for (const action of actions) {
+      const s = schedules.find((x) => x.id === action.scheduleId);
+      if (!s) continue;
+      if (action.kind === 'pause') {
+        await store.updateSchedule(s.id, { pausedReason: action.reason }).catch(() => {});
+        const emit = scheduleNotice(s.projectId);
+        emit('schedule_paused', {
+          scheduleId: s.id, name: s.name, projectId: s.projectId, reason: action.reason,
+        });
+        continue;
+      }
+      const skipped = async (nextAt: number | null) => {
+        await store.updateSchedule(s.id, {
+          nextRunAt: nextAt, lastOutcome: 'skipped', lastNote: 'project busy',
+        }).catch(() => {});
+        const emit = scheduleNotice(s.projectId);
+        emit('schedule_skipped', {
+          scheduleId: s.id, name: s.name, projectId: s.projectId, reason: 'project busy',
+        });
+      };
+      if (action.kind === 'skip') { await skipped(action.nextRunAt); continue; }
+      const project = await store.getProject(s.projectId).catch(() => null);
+      if (!project) {
+        // The project was unlinked and this schedule outlived it. Nothing to
+        // announce; move it along so the tick does not repeat every 30s.
+        await store.updateSchedule(s.id, { nextRunAt: action.nextRunAt }).catch(() => {});
+        continue;
+      }
+      // Reservation is the last step before dispatch — no awaits in between,
+      // exactly as in POST /run. It can still fail: another dispatch may have
+      // taken the project since this pass read the active map, and that is the
+      // skip case, not a tick to drop on the floor.
+      if (!reserveProject(s.projectId)) { await skipped(action.nextRunAt); continue; }
+      startScheduledRun(s, project, 'schedule');
+      await store.updateSchedule(s.id, { nextRunAt: action.nextRunAt }).catch(() => {});
+    }
+  } catch (err) {
+    // A ticker that throws is a ticker that stops. Nothing here is worth the
+    // schedules of every other project.
+    console.error('schedule tick failed:', err);
+  } finally {
+    tickInFlight = false;
+  }
+}
+
+// Every half minute, and once shortly after startup so a firing missed while
+// the machine was off is caught up rather than waiting for the next slot. The
+// first pass is delayed: the orphan sweep and the store's own startup work
+// come first, and a schedule is never so urgent that ten seconds matter.
+setTimeout(() => void scheduleTick(), 10_000).unref();
+setInterval(() => void scheduleTick(), 30_000).unref();
+
+// ---------------------------------------------------------------------------
 // Static files
 // ---------------------------------------------------------------------------
 
@@ -1928,6 +2255,52 @@ async function browseRoots(): Promise<string[]> {
   return roots;
 }
 
+/**
+ * A schedule's writable fields out of a request body, or the first thing wrong
+ * with them. `partial` is the PUT: an absent field means "leave it alone",
+ * where on the POST it means the schedule would be missing something it needs.
+ *
+ * The cadence goes through validateCadence rather than being trusted, because
+ * the failure this guards against is silent — a cron expression nobody can
+ * parse becomes a schedule that simply never fires, and looks healthy doing it.
+ */
+function parseScheduleBody(
+  b: Record<string, unknown>, partial: boolean,
+): { error: string } | { fields: Partial<Schedule> } {
+  const fields: Partial<Schedule> = {};
+  for (const key of ['name', 'brief'] as const) {
+    if (b[key] === undefined) {
+      if (!partial) return { error: `${key} is required` };
+      continue;
+    }
+    const v = typeof b[key] === 'string' ? (b[key] as string).trim() : '';
+    if (!v) return { error: `${key} must not be empty` };
+    fields[key] = v;
+  }
+  if (b.budgetUsd !== undefined) {
+    const n = Number(b.budgetUsd);
+    if (!Number.isFinite(n) || n <= 0) return { error: 'budgetUsd must be a positive number' };
+    fields.budgetUsd = n;
+  } else if (!partial) {
+    return { error: 'budgetUsd is required' };
+  }
+  if (b.cadence !== undefined) {
+    const parsed = validateCadence(b.cadence);
+    if (!parsed.ok) return { error: parsed.error };
+    fields.cadence = parsed.cadence;
+  } else if (!partial) {
+    return { error: 'cadence is required' };
+  }
+  for (const key of ['directorModel', 'workerModel'] as const) {
+    if (typeof b[key] === 'string' && (b[key] as string).trim()) fields[key] = modelChoice(b[key]);
+  }
+  for (const key of ['directorProviderId', 'workerProviderId'] as const) {
+    if (typeof b[key] === 'string' && (b[key] as string).trim()) fields[key] = (b[key] as string).trim();
+  }
+  if (typeof b.enabled === 'boolean') fields.enabled = b.enabled;
+  return { fields };
+}
+
 function json(res: http.ServerResponse, code: number, body: unknown): void {
   res.writeHead(code, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -1969,6 +2342,9 @@ const server = http.createServer(async (req, res) => {
   const stopServiceMatch = url.pathname.match(/^\/runs\/([^/]+)\/services\/(\d{1,5})\/stop$/);
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
   const providerKeyMatch = url.pathname.match(/^\/providers\/([A-Za-z0-9_-]{1,64})\/key$/);
+  const projectSchedulesMatch = url.pathname.match(/^\/projects\/([^/]+)\/schedules$/);
+  const scheduleMatch = url.pathname.match(/^\/schedules\/([^/]+)$/);
+  const scheduleActionMatch = url.pathname.match(/^\/schedules\/([^/]+)\/(pause|resume|run-now)$/);
 
   try {
     if (req.method === 'GET' && (url.pathname === '/'
@@ -2252,7 +2628,7 @@ const server = http.createServer(async (req, res) => {
     } else if (req.method === 'POST' && url.pathname === '/run') {
       const {
         projectId, mission, budgetUsd, directorModel, workerModel, browserTools,
-        directorProviderId, workerProviderId, allowDirty,
+        directorProviderId, workerProviderId, allowDirty, startedBy,
       } = await readBody(req);
       if (typeof projectId !== 'string' || typeof mission !== 'string' || !mission.trim()) {
         return json(res, 400, { error: 'projectId and mission are required' });
@@ -2294,7 +2670,11 @@ const server = http.createServer(async (req, res) => {
         {
           director: typeof directorProviderId === 'string' ? directorProviderId : undefined,
           worker: typeof workerProviderId === 'string' ? workerProviderId : undefined,
-        });
+        },
+        // 'schedule' is deliberately not accepted here: a caller must not be
+        // able to forge a scheduled start and charge the month's unattended
+        // allowance for a run no schedule asked for.
+        { startedBy: startedBy === 'phone' || startedBy === 'mcp' ? startedBy : 'human' });
       json(res, 200, { ok: true });
 
     } else if (url.pathname === '/notify' && req.method === 'GET') {
@@ -2900,6 +3280,107 @@ const server = http.createServer(async (req, res) => {
       const project = await store.getProject(url.pathname.split('/')[2]).catch(() => null);
       if (!project) return json(res, 404, { error: 'unknown project' });
       json(res, 200, await readMemory(project.folder));
+
+    } else if (req.method === 'GET' && url.pathname === '/schedules/preview') {
+      // The picker's "next three runs". Deliberately the same function the
+      // ticker fires from, so what the human is shown and what will actually
+      // happen cannot drift apart.
+      let cadence: unknown;
+      try { cadence = JSON.parse(url.searchParams.get('cadence') ?? ''); }
+      catch { return json(res, 400, { error: 'cadence must be a JSON object in the query string' }); }
+      const parsed = validateCadence(cadence);
+      if (!parsed.ok) return json(res, 400, { error: parsed.error });
+      json(res, 200, { next: nextRuns(parsed.cadence, new Date(), 3).map((d) => d.getTime()) });
+
+    } else if (req.method === 'GET' && projectSchedulesMatch) {
+      const projectId = projectSchedulesMatch[1];
+      if (!await store.getProject(projectId)) return json(res, 404, { error: 'unknown project' });
+      const [schedules, runs, settings] = await Promise.all([
+        store.listSchedules(projectId), store.listRuns().catch(() => [] as RunMeta[]), effectiveSettings(projectId),
+      ]);
+      json(res, 200, {
+        schedules,
+        monthSpendUsd: monthlyScheduledSpend(runs, projectId, new Date()),
+        monthlyCapUsd: settings.scheduledMonthlyCapUsd,
+      });
+
+    } else if (req.method === 'POST' && projectSchedulesMatch) {
+      const projectId = projectSchedulesMatch[1];
+      if (!await store.getProject(projectId)) return json(res, 404, { error: 'unknown project' });
+      const parsed = parseScheduleBody(await readBody(req), false);
+      if ('error' in parsed) return json(res, 400, { error: parsed.error });
+      const f = parsed.fields;
+      const schedule = await store.addSchedule({
+        projectId,
+        name: f.name!, brief: f.brief!, cadence: f.cadence!, budgetUsd: f.budgetUsd!,
+        directorModel: f.directorModel, workerModel: f.workerModel,
+        directorProviderId: f.directorProviderId, workerProviderId: f.workerProviderId,
+        // Enabled unless the caller said otherwise: a schedule nobody switched
+        // on is a form somebody filled in and forgot.
+        enabled: f.enabled !== false,
+        nextRunAt: f.enabled === false ? null : nextRunAtMs(f.cadence!, new Date()),
+        consecutiveFailures: 0,
+        pausedReason: null,
+      });
+      scheduleNames.set(schedule.id, schedule.name);
+      json(res, 200, { schedule });
+
+    } else if (req.method === 'PUT' && scheduleMatch) {
+      const existing = await store.getSchedule(scheduleMatch[1]);
+      if (!existing) return json(res, 404, { error: 'unknown schedule' });
+      const parsed = parseScheduleBody(await readBody(req), true);
+      if ('error' in parsed) return json(res, 400, { error: parsed.error });
+      const f = parsed.fields;
+      const enabled = f.enabled ?? existing.enabled;
+      const patch: Partial<Schedule> = { ...f };
+      // A changed cadence is a changed answer to "when next?", counted from
+      // now: keeping the old firing time would mean the schedule the human
+      // just moved fires one more time on the schedule they moved it off.
+      if (f.cadence || f.enabled !== undefined) {
+        patch.nextRunAt = enabled && existing.pausedReason === null
+          ? nextRunAtMs(f.cadence ?? existing.cadence, new Date())
+          : null;
+      }
+      const schedule = await store.updateSchedule(existing.id, patch);
+      if (schedule) scheduleNames.set(schedule.id, schedule.name);
+      json(res, 200, { schedule });
+
+    } else if (req.method === 'DELETE' && scheduleMatch) {
+      const removed = await store.removeSchedule(scheduleMatch[1]);
+      json(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'unknown schedule' });
+
+    } else if (req.method === 'POST' && scheduleActionMatch) {
+      const [, scheduleId, action] = scheduleActionMatch;
+      const s = await store.getSchedule(scheduleId);
+      if (!s) return json(res, 404, { error: 'unknown schedule' });
+      if (action === 'pause') {
+        json(res, 200, { schedule: await store.updateSchedule(s.id, { pausedReason: 'human', nextRunAt: null }) });
+
+      } else if (action === 'resume') {
+        // Resuming is a dashboard act and has no remote equivalent on purpose:
+        // whatever paused this — the human, the month's ceiling, two failures
+        // in a row — is a thing to look at before it runs unattended again.
+        json(res, 200, {
+          schedule: await store.updateSchedule(s.id, {
+            pausedReason: null,
+            consecutiveFailures: 0,
+            nextRunAt: s.enabled ? nextRunAtMs(s.cadence, new Date()) : null,
+          }),
+        });
+
+      } else {
+        const project = await store.getProject(s.projectId);
+        if (!project) return json(res, 404, { error: 'unknown project' });
+        // Allowed even at the monthly ceiling, and not counted against it
+        // beforehand: the ceiling governs UNATTENDED spending, and a human
+        // pressing a button is by definition not that. The run still carries
+        // the scheduleId, so what it costs does count towards the month.
+        if (!reserveProject(s.projectId)) {
+          return json(res, 409, { error: 'this project already has an active mission' });
+        }
+        startScheduledRun(s, project, 'human');
+        json(res, 200, { ok: true });
+      }
 
     } else if (req.method === 'GET' && url.pathname === '/missiondoc') {
       const runId = url.searchParams.get('run');

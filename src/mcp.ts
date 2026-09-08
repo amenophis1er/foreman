@@ -10,17 +10,20 @@
  * What it offers is what an agent watching or launching missions needs: the
  * fleet, runs, a run's status with a `wait` (one call that returns when
  * something changes, instead of a polling loop), the transcript, the mission
- * doc and memory, linking a project, starting a mission, steering a director.
+ * doc and memory, the schedules, linking a project, starting a mission,
+ * steering a director.
  *
  * What it does not offer, on purpose: approving or denying, answering the
  * director's questions, interrupt, resume, raising a budget, opening a pull
- * request, settings and keys. Those are the moments Foreman exists to put a
+ * request, settings and keys, and any change to a schedule. Those are the
+ * moments Foreman exists to put a
  * human in; `run_status` says when a run needs one, and with what, so the
  * agent's job is to send the human to decide, not to decide.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import { describeCadence, type Cadence } from './schedule.js';
 
 export interface ToolResult {
   /** What the model reads. */
@@ -68,6 +71,45 @@ interface ProjectCard {
   id: string; name: string; folder: string; activeRun: RunSummary | null;
   lastRun: { id: string; title?: string; mission: string; status: string; costUsd: number; createdAt: number } | null;
   pendingPermissions: number; pendingQuestions: number; needs?: Need[]; git?: { branch?: string; dirty?: boolean } | null;
+}
+
+/** A schedule as `GET /projects/{id}/schedules` reports it. */
+interface ScheduleSummary {
+  id: string; name: string; cadence: Cadence; budgetUsd: number; enabled: boolean;
+  nextRunAt: number | null; pausedReason: null | 'failures' | 'monthly-cap' | 'human';
+  consecutiveFailures?: number; lastOutcome?: string; lastRunId?: string; lastRunAt?: number; lastNote?: string;
+}
+interface SchedulePayload { schedules: ScheduleSummary[]; monthSpendUsd?: number; monthlyCapUsd?: number }
+
+/** A moment as a reader would say it: "in 15 h", "3 days ago". */
+export function relativeTime(ms: number): string {
+  const s = Math.round(ms / 1000);
+  const a = Math.abs(s);
+  const span = a < 90 ? 'a minute' : a < 5400 ? `${Math.round(a / 60)} min` : a < 172800 ? `${Math.round(a / 3600)} h` : `${Math.round(a / 86400)} days`;
+  return s >= 0 ? `in ${span}` : `${span} ago`;
+}
+
+/** Why a schedule is not going to fire, in the words that say what would undo it. */
+function pausedPhrase(s: ScheduleSummary): string {
+  switch (s.pausedReason) {
+    case 'failures': return `paused after ${s.consecutiveFailures ?? 2} failed scheduled runs in a row`;
+    case 'monthly-cap': return 'paused at the project\'s monthly cap for scheduled spend';
+    case 'human': return 'paused by hand';
+    default: return s.enabled ? 'enabled' : 'disabled';
+  }
+}
+
+/**
+ * One line for a schedule. The next run is said twice — absolutely, because a
+ * schedule is a wall-clock promise, and relatively, because "in 15 h" is what
+ * the reader actually wanted to know.
+ */
+function scheduleLine(s: ScheduleSummary): string {
+  const next = s.pausedReason || !s.enabled ? 'no next run while paused'
+    : s.nextRunAt ? `next ${new Date(s.nextRunAt).toLocaleString()} (${relativeTime(s.nextRunAt - Date.now())})`
+      : 'next never — this cadence has no future firing';
+  const last = s.lastOutcome ? `last ${s.lastOutcome}${s.lastRunId ? ` (${s.lastRunId})` : ''}${s.lastRunAt ? ` ${relativeTime(s.lastRunAt - Date.now())}` : ''}` : 'never run yet';
+  return `${s.name} · ${describeCadence(s.cadence)} · ${next} · ${pausedPhrase(s)} · ${usd(s.budgetUsd)} per run · ${last}`;
 }
 
 /** One line for a run, the way the fleet board says it. */
@@ -373,6 +415,36 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
     },
   };
 
+  const schedules: ToolDef = {
+    name: 'list_schedules',
+    description: 'The standing schedules: missions that start themselves in their project on a cadence. Per schedule — the project, the name, the cadence in words, the next run, enabled or paused and why, the per-run cap, and how the last firing ended with its run id. Read-only, and the only schedule tool there is: creating, editing, pausing, resuming or running one now happens on the dashboard, because a schedule is standing configuration and remote surfaces never grant standing changes. Do not look for another tool.',
+    schema: { projectId: z.string().optional() },
+    run: async ({ projectId }) => {
+      const all = (await get<{ projects: ProjectCard[] }>('/projects')).projects;
+      const ref = projectId === undefined ? '' : String(projectId).trim();
+      const wanted = ref ? all.filter((p) => p.id === ref || p.name.toLowerCase() === ref.toLowerCase()) : all;
+      if (ref && !wanted.length) return { text: `No project ${ref}. fleet_status lists them by id and name.` };
+      const blocks: string[] = [];
+      const data: Array<{ projectId: string; project: string; schedules: ScheduleSummary[]; monthSpendUsd?: number; monthlyCapUsd?: number }> = [];
+      for (const p of wanted) {
+        const d = await get<SchedulePayload>(`/projects/${encodeURIComponent(p.id)}/schedules`).catch(() => null);
+        if (!d) continue;
+        const list = d.schedules ?? [];
+        data.push({ projectId: p.id, project: p.name, schedules: list, monthSpendUsd: d.monthSpendUsd, monthlyCapUsd: d.monthlyCapUsd });
+        if (!list.length) {
+          if (ref) blocks.push(`${p.name} (${p.id}) — no schedules.`);
+          continue;
+        }
+        const month = typeof d.monthSpendUsd === 'number' && typeof d.monthlyCapUsd === 'number'
+          ? ` · scheduled this month ${usd(d.monthSpendUsd)} of ${usd(d.monthlyCapUsd)}` : '';
+        blocks.push(`${p.name} (${p.id}) — ${list.length} schedule${list.length === 1 ? '' : 's'}${month}\n${list.map((s) => `  ${scheduleLine(s)}`).join('\n')}`);
+      }
+      if (!blocks.length) return { text: 'No schedules. They are created on the dashboard, in a project\'s view.', data: { projects: data } };
+      blocks.push('Read-only here: a schedule is created, edited, paused or resumed on the dashboard.');
+      return { text: blocks.join('\n'), data: { projects: data } };
+    },
+  };
+
   const search: ToolDef = {
     name: 'search_runs',
     description: 'Runs across the fleet whose title, brief, project or folder match.',
@@ -456,7 +528,7 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
     },
   };
 
-  return [fleet, listRuns, runStatus, runReport, transcript, missionDoc, memory, search, doctor, link, start, steer];
+  return [fleet, listRuns, runStatus, runReport, transcript, missionDoc, memory, schedules, search, doctor, link, start, steer];
 }
 
 /** Runs the MCP server over stdio until the client goes away. Nothing may be written to stdout but the protocol. */

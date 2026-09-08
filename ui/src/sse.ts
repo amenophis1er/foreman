@@ -44,6 +44,10 @@ export const SSE_EVENTS = [
   'git_branch', 'git_note', 'git_committed', 'pull_request', 'memory_updated',
   // a resumed run's own mission doc put back into the folder
   'mission_doc_restored',
+  // a note about the run itself (which schedule started it, say)
+  'run_note',
+  // standing instructions: one stopped firing, or a firing was passed over
+  'schedule_paused', 'schedule_skipped',
 ] as const;
 
 const listeners = new Set<SseListener>();
