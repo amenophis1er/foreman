@@ -498,6 +498,13 @@ export async function runCli(command: string, rest: string[], ctx: { version: st
     case 'uninstall': return uninstall(rest);
     case 'status': return status();
     case 'doctor': return doctor();
+    case 'mcp': {
+      // Stdio is the protocol channel: nothing else may print there.
+      const { serveMcp } = await import('./mcp.js');
+      await serveMcp();
+      await new Promise(() => {}); // until the client closes the pipe
+      return 0;
+    }
     case 'completion': {
       const { completionScript, detectShell, installCompletion } = await import('./completion.js');
       const arg = rest[0];

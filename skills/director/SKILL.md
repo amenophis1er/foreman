@@ -5,6 +5,11 @@ description: Kick off a Foreman mission for the current project — ensures the 
 
 # /director — launch a Foreman mission from this session
 
+> Prefer the MCP: `claude mcp add foreman -- foreman mcp` gives this session
+> `start_mission`, `run_status` (with a wait, so no polling) and the rest as
+> tools, with the same governance. The steps below are the curl fallback for a
+> session without it.
+
 You are the launcher only. The mission itself runs in Foreman's own director
 and worker sessions with budgets, approval cards, and MISSION.md governance;
 the human supervises from the dashboard, not from this session. Do NOT do the

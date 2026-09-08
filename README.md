@@ -230,11 +230,33 @@ result.
 ```sh
 npm ci && npm run setup      # dependencies, then the dashboard build
 npm start                    # serves http://localhost:4177
-npm test                     # 365 tests, node:test
+npm test                     # 373 tests, node:test
 npm run typecheck            # server and dashboard
 npm run dev                  # API + Vite together
 scripts/dev-restart.sh       # restarts the server only when nothing would be lost
 ```
+
+## Use Foreman from another agent
+
+`foreman mcp` serves Foreman's tools over stdio, so a Claude Code session, Codex
+or Antigravity can watch and launch missions without a polling loop:
+
+```sh
+claude mcp add foreman -- foreman mcp
+codex mcp add foreman -- foreman mcp
+agy mcp add foreman -- foreman mcp
+```
+
+Tools: `fleet_status`, `list_runs`, `run_status` (with `wait_seconds`: one call
+that returns when the run changes), `run_transcript`, `mission_doc`,
+`project_memory`, `search_runs`, `doctor`, `link_project` (folder or Git URL),
+`start_mission`, `steer`. It talks to the running server at `FOREMAN_URL`
+(default `http://localhost:4177`) and has no logic of its own.
+
+Deliberately absent: approving or denying, answering the director's questions,
+interrupt, resume, raising a budget, opening a pull request, settings and keys.
+Those are the moments Foreman exists to put a human in; `run_status` says when
+a run needs one, and with what, so the agent's job is to send you to decide.
 
 To run a checkout beside an installed Foreman on the same machine, give it its
 own port and leave the bot to the installed one:

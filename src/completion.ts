@@ -25,6 +25,7 @@ export const COMMANDS: Array<[string, string]> = [
   ['service', 'Keep Foreman running at login'],
   ['uninstall', 'Remove the service and the background server'],
   ['completion', 'Shell completion: zsh, bash, fish, or install'],
+  ['mcp', 'Serve Foreman\'s tools to another agent over stdio'],
   ['help', 'Show usage'],
   ['version', 'Print the version'],
 ];
