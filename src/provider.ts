@@ -427,8 +427,22 @@ export interface AgentEnv {
  * programming error rather than a user error, and the failure mode it guards
  * against is a leaked token, so it fails loudly instead of degrading.
  */
+/**
+ * The server's own knobs, which an agent must not inherit. `PORT` is the one
+ * that bit: the service sets it for the dashboard, an agent's dev server
+ * honoured it, bound Foreman's port on a wildcard address and shadowed the
+ * dashboard on localhost until it exited. The rest are Foreman's operating
+ * settings — none of them means anything to a project's own tooling, and a
+ * worker reading `FOREMAN_HOME` would only find somewhere it should not be.
+ */
+const SERVER_ONLY_VARS = [
+  'PORT', 'FOREMAN_SERVICES_PORT', 'FOREMAN_HOME', 'FOREMAN_BIND', 'FOREMAN_BROWSER',
+  'FOREMAN_AUTH_MODE', 'FOREMAN_CLAUDE_CONFIG_DIR', 'FOREMAN_CLAUDE_EXECUTABLE', 'FOREMAN_NO_TELEGRAM', 'FOREMAN_LOG',
+];
+
 export function providerEnv(p: ResolvedProvider, gatewayUrl?: string): AgentEnv {
   const env: Record<string, string | undefined> = { ...process.env };
+  for (const v of SERVER_ONLY_VARS) delete env[v];
   env.CLAUDE_CONFIG_DIR = p.configDir;
 
   if (p.wire === 'anthropic-native') {

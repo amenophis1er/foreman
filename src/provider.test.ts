@@ -364,3 +364,19 @@ test('a role provider carries the role’s model, so every alias resolves on its
   assert.equal(withRoleModel(bare, '').model, undefined);
   assert.equal(withRoleModel(bare, undefined), bare, 'no change returns the same object');
 });
+
+
+test('agents do not inherit the server\'s own environment: PORT and FOREMAN_* are dropped', async () => {
+  const saved = { PORT: process.env.PORT, FOREMAN_HOME: process.env.FOREMAN_HOME, FOREMAN_BIND: process.env.FOREMAN_BIND };
+  process.env.PORT = '4177'; process.env.FOREMAN_HOME = '/tmp/fh'; process.env.FOREMAN_BIND = 'all';
+  try {
+    const p = await resolveProvider({ kind: 'claude-code' }, '/tmp/foreman-test-root');
+    const { env } = providerEnv(p);
+    assert.equal(env.PORT, undefined, 'a dev server a worker starts must not bind the dashboard port');
+    assert.equal(env.FOREMAN_HOME, undefined);
+    assert.equal(env.FOREMAN_BIND, undefined);
+    assert.ok(env.PATH, 'the rest of the environment survives');
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
