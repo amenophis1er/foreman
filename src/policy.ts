@@ -153,15 +153,52 @@ const WRITE_VERBS: Record<string, { mode: ArgMode; opts?: string[]; does: string
 const FILE_OPTS = new Set(['-o', '--output', '-O', '--output-document']);
 /** Prefixes that merely wrap the real verb (`sudo rm`, `env FOO=1 mkdir`). */
 const WRAPPERS = new Set(['sudo', 'env', 'command', 'exec', 'nohup', 'time', 'nice', 'builtin']);
+/** Shells whose `-c` argument is a command in its own right. */
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash']);
 /** Pseudo-devices: writing to them touches nothing on disk. */
 const DEV_SINKS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/tty']);
 const URL_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 /** `> f`, `>> f`, `2> f`, `&> f` — but not `2>&1` / `>&2` (fd duplication). */
 const REDIRECT_RE = /(?:&>>?|\d*>>?)(?!&)\s*(\S+)/g;
 
+/**
+ * Shell operators inside quotes are text, not operators. The redirect scan
+ * and the segment split below work on the raw string, so a perl program in
+ * single quotes — `perl -pi -e 's/x =>/y/' f` — read as `>` followed by the
+ * path `/y/`, which resolved to the filesystem root and put an approval card
+ * in front of an ordinary in-folder edit. Operators inside a quoted region
+ * are swapped for private-use characters before the scan and swapped back by
+ * `bare()`, so tokens still carry their real text. Spaces inside quotes are
+ * masked too, so a quoted string is one token: `sh -c '…'` bodies and paths
+ * with spaces both come through whole. Quoting rules followed:
+ * single quotes take everything literally; double quotes honour backslash;
+ * a backslash outside quotes escapes the next character.
+ */
+const MASK: Record<string, string> = { '>': '\uE001', '<': '\uE002', '|': '\uE003', ';': '\uE004', '&': '\uE005', '\n': '\uE006', ' ': '\uE007', '\t': '\uE008' };
+const UNMASK_RE = /[\uE001-\uE008]/g;
+const UNMASK: Record<string, string> = Object.fromEntries(Object.entries(MASK).map(([k, v]) => [v, k]));
+function maskQuoted(command: string): string {
+  let out = '';
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote === null) {
+      if (c === '\\' && i + 1 < command.length) { out += c + command[++i]; continue; }
+      if (c === '"' || c === "'") quote = c;
+      out += c;
+      continue;
+    }
+    if (quote === '"' && c === '\\' && i + 1 < command.length) { out += c + command[++i]; continue; }
+    if (c === quote) { quote = null; out += c; continue; }
+    out += MASK[c] ?? c;
+  }
+  return out;
+}
+const unmask = (s: string): string => s.replace(UNMASK_RE, (ch) => UNMASK[ch] ?? ch);
+
 /** Strips one layer of matching quotes and shell grouping punctuation. */
 function bare(token: string): string {
-  let t = token.replace(/^[(\\]+|[)]+$/g, '');
+  let t = unmask(token).replace(/^[(\\]+|[)]+$/g, '');
   if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) t = t.slice(1, -1);
   return t;
 }
@@ -266,7 +303,7 @@ export function bashEscape(
   // appended to while we walk, and one command must see one consistent view.
   const roots = [root, ...extraRoots];
   const outside = (p: string): boolean => !DEV_SINKS.has(p) && !underAnyRoot(p, roots);
-  const label = (seg: string): string => (seg.length > 80 ? seg.slice(0, 77) + '…' : seg);
+  const label = (raw: string): string => { const seg = unmask(raw); return seg.length > 80 ? seg.slice(0, 77) + '…' : seg; };
   const hit = (segment: string, does: string, p: string, isDir: boolean): BashEscape => ({
     reason: `${label(segment)} — ${does} outside the mission folder`,
     path: p,
@@ -275,7 +312,7 @@ export function bashEscape(
 
   let cwd = root; // virtual cwd, so `cd sub && rm -rf ../../x` resolves correctly
 
-  const segments = command
+  const segments = maskQuoted(command)
     .split(/&&|\|\||;|\n|\|(?!\|)|(?<![&>\d])&(?![&>])/)
     .map((s) => s.trim())
     .filter(Boolean);
@@ -294,6 +331,19 @@ export function bashEscape(
     const verb = path.basename(words[i]);
     const args = words.slice(i + 1);
     const flagless = args.filter((a) => !a.startsWith('-'));
+
+    // `sh -c '…'`: the quoted body is a command of its own, run from the
+    // current virtual cwd. Analysed as one, so quoting cannot hide a `cd /tmp`
+    // — masking made the body opaque to the split above, and this is where it
+    // is looked at instead.
+    if (SHELLS.has(verb)) {
+      const c = args.indexOf('-c');
+      if (c >= 0 && c + 1 < args.length) {
+        const inner = bashEscape(args[c + 1], cwd, roots);
+        if (inner) return { ...inner, reason: `${label(segment)} — ${inner.reason.replace(/^.*? — /, '')}` };
+      }
+      continue;
+    }
 
     if (verb === 'cd' || verb === 'pushd') {
       const target = flagless[0] ?? '~'; // bare `cd` goes home

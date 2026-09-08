@@ -149,6 +149,31 @@ test('a file write under the root does not escape', () => {
   assert.ok(bashEscapesFolder('echo hi > /tmp/out.txt', FOLDER, [ROOT]), 'outside the root still prompts');
 });
 
+test('operators inside quotes are text: a perl program with => is not a redirect', () => {
+  // The exact shape that put an approval card in front of an in-folder edit:
+  // `=>/` inside the single-quoted program read as `>` + the path `/…`.
+  assert.equal(bashEscapesFolder(`perl -0pi -e 's/\\.filter\\(\\(\\[a, b\\]\\) =>/.filter(([a]) =>/' ${ROOT}/x.tsx`, FOLDER, [ROOT]), null);
+  assert.equal(bashEscapesFolder(`set -e; D=src/f; perl -0pi -e 's/ a,\\n b,/ a,/' $D/one.tsx; perl -0pi -e 's/x =>/y/' $D/two.tsx`, FOLDER, [ROOT]), null);
+  assert.equal(bashEscapesFolder('echo "a > b; c | d & e" && echo \'x>/etc/passwd\'', FOLDER, [ROOT]), null);
+  assert.equal(bashEscapesFolder(`git commit -m "fix: handle a > b" ${ROOT}`, FOLDER, [ROOT]), null);
+  // A real redirect next to a quoted one is still seen, with its real text.
+  assert.deepEqual(bashEscape('echo "x > y" > /tmp/out.txt', FOLDER), {
+    reason: 'echo "x > y" > /tmp/out.txt — redirects output outside the mission folder', path: '/tmp/out.txt', grant: '/tmp',
+  });
+  // Quoted paths still resolve: the mask touches operators, not text.
+  assert.ok(bashEscapesFolder('rm -rf "/opt/homebrew"', FOLDER, [ROOT]));
+  // A quoted path with spaces is one token now, so it resolves and is judged.
+  assert.equal(bashEscape(`echo hi > "/tmp/o u t.txt"`, FOLDER)!.path, '/tmp/o u t.txt');
+  assert.equal(bashEscapesFolder(`echo hi > "${ROOT}/o u t.txt"`, FOLDER, [ROOT]), null);
+});
+
+test('a shell -c body is analysed as a command, so quoting cannot hide a cd', () => {
+  assert.ok(bashEscapesFolder(`sh -c 'cd /tmp && npm install'`, FOLDER, [ROOT]));
+  assert.match(bashEscapesFolder(`bash -c "mkdir -p /tmp/x/y"`, FOLDER, [ROOT])!, /creates a path outside/);
+  assert.equal(bashEscapesFolder(`sh -c 'npm test && echo ok'`, FOLDER, [ROOT]), null);
+  assert.equal(bashEscape(`bash -c 'cd /tmp/x'`, FOLDER)!.grant, '/tmp/x');
+});
+
 test('bashEscape carries the offending path and the directory to grant', () => {
   // Directory-ish targets: the path itself is the grant.
   assert.deepEqual(bashEscape('cd /tmp/x && ls', FOLDER), {
