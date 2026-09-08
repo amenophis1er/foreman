@@ -265,6 +265,14 @@ const DEFAULT_MAX_TURNS = 150;
  */
 export const DEFAULT_MAX_TOKENS = 20_000_000;
 
+/** The cap behind a capReached() sentence, as the run record stores it. */
+export function stopReasonOf(cap: string): 'budget' | 'turns' | 'time' | 'tokens' {
+  if (cap.startsWith('TURN')) return 'turns';
+  if (cap.startsWith('TIME')) return 'time';
+  if (cap.startsWith('TOKEN')) return 'tokens';
+  return 'budget';
+}
+
 /**
  * The token cap as a director should read it: "5M tokens", not "5000000".
  * A budget is only useful if the agent it constrains can hold it in mind, and
@@ -1725,6 +1733,8 @@ export class MissionRun {
     const maxSeconds = this.meta.maxSeconds ?? DEFAULT_MAX_SECONDS;
     if (elapsed < maxSeconds + CAP_WATCHDOG_GRACE_MS / 1000) return;
     this.hardStopped = true;
+    this.meta.stopReason = 'time';
+    this.saveMeta(this.meta);
     this.emit('budget_stop', {
       costUsd: this.meta.costUsd,
       budgetUsd: this.meta.budgetUsd,
@@ -1797,6 +1807,8 @@ export class MissionRun {
     const cap = this.capReached();
     if (!cap || this.budgetStopped) return null;
     this.budgetStopped = true;
+    this.meta.stopReason = stopReasonOf(cap);
+    this.saveMeta(this.meta);
     this.emit('budget_stop', {
       costUsd: this.meta.costUsd,
       budgetUsd: this.meta.budgetUsd,

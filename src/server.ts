@@ -1724,6 +1724,8 @@ async function startRun(
  */
 async function resumeRun(projectId: string, meta: RunMeta, pick: {
   directorModel?: string; directorProviderId?: string; workerModel?: string; workerProviderId?: string;
+  /** A new cap for the resumed attempt — the answer to "stopped at its budget". */
+  budgetUsd?: number;
 } = {}): Promise<void> {
   const sessionId = meta.directorSessionId;
   // Resume re-reads Settings for tool policy and auto-allow, so a policy
@@ -1748,9 +1750,24 @@ async function resumeRun(projectId: string, meta: RunMeta, pick: {
   if (workerChanged) { meta.workerModel = modelChoice(pick.workerModel); meta.workerProviderId = pick.workerProviderId; }
   meta.toolPolicy = settings.toolPolicy;
   meta.autoAllowReadOnly = settings.autoAllowReadOnly;
+  // A raised cap rides the resume: the run that stopped at $10 continues
+  // under $15, and the transcript says who moved it and from where. Written
+  // to the log as a settings change, which is what it is.
+  const budgetWas = meta.budgetUsd;
+  if (typeof pick.budgetUsd === 'number' && Number.isFinite(pick.budgetUsd) && pick.budgetUsd > 0 && pick.budgetUsd !== meta.budgetUsd) {
+    meta.budgetUsd = pick.budgetUsd;
+  }
+  const stoppedAt = meta.stopReason;
+  meta.stopReason = undefined;
   meta.status = 'running';
   meta.endedAt = undefined;
   meta.resumes = (meta.resumes ?? 0) + 1;
+  if (meta.budgetUsd !== budgetWas) {
+    makeEmitter(meta.id, projectId)('settings_changed', {
+      budgetUsd: meta.budgetUsd,
+      changes: [`Budget ${meta.budgetUsd > budgetWas ? 'raised' : 'lowered'} to $${meta.budgetUsd.toFixed(2)} (was $${budgetWas.toFixed(2)}) before resume${stoppedAt === 'budget' ? ' — the last attempt stopped at its cap' : ''}.`],
+    });
+  }
   if (meta.git) {
     const back = await ensureMissionBranch(meta.folder, meta.git.branch);
     if (back) makeEmitter(meta.id, projectId)('git_note', { text: `Could not return to ${meta.git.branch} (${back}); the resumed mission runs on whatever is checked out.` });
@@ -2740,6 +2757,8 @@ const server = http.createServer(async (req, res) => {
       const overrides = {
         directorModel: str(resumeBody.directorModel), directorProviderId: str(resumeBody.directorProviderId),
         workerModel: str(resumeBody.workerModel), workerProviderId: str(resumeBody.workerProviderId),
+        budgetUsd: typeof resumeBody.budgetUsd === 'number' && Number.isFinite(resumeBody.budgetUsd) && resumeBody.budgetUsd > 0
+          ? Math.round(resumeBody.budgetUsd * 100) / 100 : undefined,
       };
       void resumeRun(meta.projectId, meta, overrides);
       json(res, 200, { ok: true });

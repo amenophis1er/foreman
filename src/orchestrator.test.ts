@@ -9,7 +9,7 @@ import {
   stalledWorkerReport, workerStatusBlock,
   watchRepeats, watchSilence, REPEAT_EXEMPT, observeToolUse,
   DEFAULT_ASK_TIMEOUT_MS, armAskTimeout, unattendedAnswer, unattendedDenyMessage,
-  tokenCapLabel,
+  tokenCapLabel, stopReasonOf,
 } from './orchestrator.js';
 import { makePolicy, type PendingPermission } from './policy.js';
 import type { AgentEnv } from './provider.js';
@@ -1248,4 +1248,11 @@ test('tokenCapLabel rounds to a figure a director can hold in mind', () => {
   assert.equal(tokenCapLabel(1_500_000), '1.5M tokens');
   assert.equal(tokenCapLabel(250_000), '250k tokens');
   assert.equal(tokenCapLabel(400), '400 tokens');
+});
+
+test('stopReasonOf names the cap behind a capReached sentence', () => {
+  assert.equal(stopReasonOf('BUDGET CAP REACHED: $10.02 of $10.00.'), 'budget');
+  assert.equal(stopReasonOf('TURN CAP REACHED: 150 director turns.'), 'turns');
+  assert.equal(stopReasonOf('TIME CAP REACHED: 240 minutes.'), 'time');
+  assert.equal(stopReasonOf('TOKEN CAP REACHED: 20.1M tokens.'), 'tokens');
 });

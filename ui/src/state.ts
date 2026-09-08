@@ -120,6 +120,8 @@ export type RunSummary = {
   budgetUsd: number; status: Status; costUsd: number;
   createdAt: number; endedAt?: number;
   directorModel?: string; workerModel?: string; resumes?: number;
+  /** Which cap ended the last attempt, when one did; cleared by a resume. */
+  stopReason?: 'budget' | 'turns' | 'time' | 'tokens';
   /** The branch this mission ran on, when Foreman gave it one; `pr` once the human opened one from it. */
   git?: { branch: string; base: string; baseHead: string | null; commits?: number; commit?: string; pr?: string; prState?: 'merged' | 'closed' };
   browserTools?: boolean;
@@ -1257,7 +1259,7 @@ export const api = {
       browserTools: opts.browserTools || undefined,
     }),
   /** Resume; `on` names models for this resume ("Resume on…"), ahead of Settings. */
-  resume: (runId: string, on: { directorModel?: string; directorProviderId?: string; workerModel?: string; workerProviderId?: string } = {}) =>
+  resume: (runId: string, on: { directorModel?: string; directorProviderId?: string; workerModel?: string; workerProviderId?: string; budgetUsd?: number } = {}) =>
     post(`/runs/${encodeURIComponent(runId)}/resume`, on),
   permission: (id: string, behavior: 'allow' | 'allow_always' | 'deny', message?: string) =>
     post('/permission', { id, behavior, message }),

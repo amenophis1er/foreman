@@ -325,6 +325,12 @@ export interface RunMeta {
   askTimeoutMs?: number;
   /** Give agents a headless Playwright browser (navigate, click, screenshot). */
   browserTools?: boolean;
+  /**
+   * Which cap ended the last attempt, when one did. The dashboard reads it
+   * to offer the one action that helps — raise the budget and resume — and
+   * a resume clears it. Absent when the run ended for any other reason.
+   */
+  stopReason?: 'budget' | 'turns' | 'time' | 'tokens';
   folder: string;
   mission: string;
   budgetUsd: number;

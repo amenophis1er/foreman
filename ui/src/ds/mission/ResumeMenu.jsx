@@ -10,13 +10,14 @@ import { ModelSelect } from '../forms/ModelSelect';
  * provider saying no — a usage limit, an outage — when the work is fine and
  * only the endpoint is not: pick another, resume, keep going.
  */
-export function ResumeMenu({ director, worker, models, loading, note, busy, onResume, style }) {
+export function ResumeMenu({ director, worker, budget, spent, models, loading, note, busy, onResume, style }) {
   const [open, setOpen] = useState(false);
   const [d, setD] = useState({ id: director || '', providerId: undefined });
   const [wk, setW] = useState({ id: worker || '', providerId: undefined });
+  const [cap, setCap] = useState(budget ?? 0);
   const box = useRef(null);
 
-  useEffect(() => { setD({ id: director || '', providerId: undefined }); setW({ id: worker || '', providerId: undefined }); }, [director, worker, open]);
+  useEffect(() => { setD({ id: director || '', providerId: undefined }); setW({ id: worker || '', providerId: undefined }); setCap(budget ?? 0); }, [director, worker, budget, open]);
   useEffect(() => {
     if (!open) return;
     const onDoc = (e) => { if (box.current && !box.current.contains(e.target)) setOpen(false); };
@@ -25,14 +26,17 @@ export function ResumeMenu({ director, worker, models, loading, note, busy, onRe
     return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
   }, [open]);
 
-  const changed = (d.id && d.id !== director) || (wk.id && wk.id !== worker);
+  const capChanged = typeof budget === 'number' && Number.isFinite(cap) && cap > 0 && Math.abs(cap - budget) >= 0.005;
+  const changed = (d.id && d.id !== director) || (wk.id && wk.id !== worker) || capChanged;
   const go = () => {
     onResume?.({
       ...(d.id && d.id !== director ? { directorModel: d.id, directorProviderId: d.providerId } : {}),
       ...(wk.id && wk.id !== worker ? { workerModel: wk.id, workerProviderId: wk.providerId } : {}),
+      ...(capChanged ? { budgetUsd: Math.round(cap * 100) / 100 } : {}),
     });
     setOpen(false);
   };
+  const bump = (n) => setCap(Math.round((cap + n) * 100) / 100);
   const label = { fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textTransform: 'uppercase', letterSpacing: 'var(--ls-caps)', marginBottom: 4 };
 
   return (
@@ -55,8 +59,23 @@ export function ResumeMenu({ director, worker, models, loading, note, busy, onRe
           boxShadow: '0 12px 32px rgba(0,0,0,0.25)', padding: 'var(--sp-3)', display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)',
         }}>
           <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-1)', lineHeight: 'var(--lh)' }}>
-            Same mission, other models. A new director starts a fresh session and reads the mission doc; workers change for the next spawns.
+            Same mission, other terms. A new director starts a fresh session and reads the mission doc; workers change for the next spawns; a new cap applies from the first turn.
           </div>
+          {typeof budget === 'number' && (
+            <div>
+              <div style={label}>Budget cap</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <span style={{ color: 'var(--ink-2)' }}>$</span>
+                <input type="number" min="0.5" step="0.5" value={cap}
+                  onChange={(e) => setCap(Number(e.target.value))}
+                  style={{ width: 72, font: 'inherit', fontFamily: 'var(--font-mono)', padding: '4px 6px', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)', background: 'var(--bg-inset)', color: 'var(--ink-0)' }} />
+                <Button size="sm" onClick={() => bump(5)}>+$5</Button>
+                <Button size="sm" onClick={() => bump(10)}>+$10</Button>
+                <Button size="sm" onClick={() => setCap(Math.round(budget * 2 * 100) / 100)}>×2</Button>
+                {typeof spent === 'number' && <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums' }}>${spent.toFixed(2)} spent of ${budget.toFixed(2)}</span>}
+              </div>
+            </div>
+          )}
           <div>
             <div style={label}>Director</div>
             <ModelSelect block allowDefault={false} models={models} loading={loading} note={note} value={d.id}
@@ -70,7 +89,7 @@ export function ResumeMenu({ director, worker, models, loading, note, busy, onRe
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--sp-2)' }}>
             <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>Cancel</Button>
             <Button variant="good" size="sm" icon="resume" disabled={busy || !changed} onClick={go}
-              title={changed ? 'Resume with these models' : 'Pick a different model first — or use Resume as is'}>Resume</Button>
+              title={changed ? 'Resume on these terms' : 'Change a model or the cap first — or use Resume as is'}>Resume</Button>
           </div>
         </div>
       )}

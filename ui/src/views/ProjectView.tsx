@@ -1102,6 +1102,7 @@ export function ProjectView({
         )}
         {canResume && (
           <ResumeMenu director={selectedRun?.directorModel} worker={selectedRun?.workerModel}
+            budget={selectedRun?.budgetUsd} spent={selectedRun?.costUsd}
             models={models} loading={modelsLoading} note={modelsNote} busy={resuming}
             onResume={(on) => void doResume(on)} />
         )}
@@ -1163,6 +1164,25 @@ export function ProjectView({
           This project has nothing to run on: Claude Code is not signed in on this machine. Sign in and restart Foreman,
           or give the project a provider of its own.
           <Button variant="ghost" size="sm" icon="provider" style={{ marginLeft: 'var(--sp-2)' }} onClick={() => onSettings('provider')}>Settings → Provider</Button>
+        </Banner>
+      )}
+      {/* Stopped at a cap: the one thing the reader wants is to raise it and
+          go on, so that is the banner — a click, not a trip through a menu.
+          Turn, time and token caps reset on resume by themselves. */}
+      {canResume && selectedRun?.stopReason === 'budget' && (
+        <Banner tone="caution">
+          This run stopped at its ${selectedRun.budgetUsd.toFixed(2)} cap with ${selectedRun.costUsd.toFixed(2)} spent. Raise the cap and continue:
+          {[5, 10].map((n) => (
+            <Button key={n} variant="good" size="sm" icon="resume" disabled={resuming} style={{ marginLeft: 'var(--sp-2)' }}
+              onClick={() => void doResume({ budgetUsd: Math.round((selectedRun.budgetUsd + n) * 100) / 100 })}>+${n} & resume</Button>
+          ))}
+          <Button variant="good" size="sm" icon="resume" disabled={resuming} style={{ marginLeft: 'var(--sp-2)' }}
+            onClick={() => void doResume({ budgetUsd: Math.round(selectedRun.budgetUsd * 2 * 100) / 100 })}>Double & resume</Button>
+        </Banner>
+      )}
+      {canResume && selectedRun?.stopReason && selectedRun.stopReason !== 'budget' && (
+        <Banner tone="caution">
+          This run stopped at its {selectedRun.stopReason === 'turns' ? 'turn' : selectedRun.stopReason === 'time' ? 'time' : 'token'} cap. Resume continues it with a fresh allowance.
         </Banner>
       )}
       {selectedRunId && !viewingLive && (
