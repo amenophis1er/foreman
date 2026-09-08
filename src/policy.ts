@@ -297,6 +297,7 @@ export interface BashEscape {
  */
 export function bashEscape(
   command: string, folder: string, extraRoots: Iterable<string> = [],
+  shell?: { cwd?: string },
 ): BashEscape | null {
   const root = path.resolve(folder);
   // Snapshot the grants once per call: the caller's set is mutable and may be
@@ -310,7 +311,15 @@ export function bashEscape(
     grant: isDir ? p : path.dirname(p),
   });
 
-  let cwd = root; // virtual cwd, so `cd sub && rm -rf ../../x` resolves correctly
+  // The virtual cwd, so `cd sub && rm -rf ../../x` resolves correctly. It
+  // starts where the agent's shell actually is: Claude Code's Bash tool keeps
+  // its working directory between commands, so a director that ran
+  // `cd examples/demo` one call ago and now writes `../../.foreman/work/x.log`
+  // is writing inside the folder — read from the root that looked like two
+  // levels out, and put an approval card in front of an in-folder log.
+  let cwd = shell?.cwd ? path.resolve(shell.cwd) : root;
+  // `cd` inside a subshell does not outlive it; only top-level moves persist.
+  let depth = 0;
 
   const segments = maskQuoted(command)
     .split(/&&|\|\||;|\n|\|(?!\|)|(?<![&>\d])&(?![&>])/)
@@ -323,7 +332,13 @@ export function bashEscape(
       const p = asPath(m[1], cwd);
       if (p !== null && outside(p)) return hit(segment, 'redirects output', p, false);
     }
+    const opens = (segment.match(/\(/g) ?? []).length;
+    const closes = (segment.match(/\)/g) ?? []).length;
     const words = segment.replace(REDIRECT_RE, ' ').split(/\s+/).filter(Boolean).map(bare);
+    // Depth as seen at this segment's verb: an opening paren on the segment
+    // itself puts its `cd` inside the subshell.
+    const depthHere = depth + (segment.trimStart().startsWith('(') ? 1 : 0);
+    depth = Math.max(0, depth + opens - closes);
     // Peel wrappers and leading VAR=value assignments to reach the real verb.
     let i = 0;
     while (i < words.length && (WRAPPERS.has(words[i]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]))) i++;
@@ -352,6 +367,7 @@ export function bashEscape(
       // Enough on its own: whatever follows (relative writes, `npm install`,
       // `git init`) lands there, so we need not look at later segments.
       if (outside(p)) return hit(segment, 'writes after this land', p, true);
+      if (depthHere === 0 && shell) shell.cwd = p;
       continue;
     }
 
@@ -532,6 +548,10 @@ export function makePolicy(
   const foremanDir = path.join(folder, '.foreman') + path.sep;
   const toolPolicy = { ...DEFAULT_TOOL_POLICY, ...settings?.toolPolicy };
   const autoReadOnly = settings?.autoAllowReadOnly !== false;
+  // Where this agent's shell is. One policy per agent session, and the SDK's
+  // Bash keeps its cwd across calls, so a top-level `cd` in an allowed
+  // command is where the next command starts. Reset only with the session.
+  const shell: { cwd?: string } = { cwd: folder };
 
   return async (toolName, input, opts) => {
     // An explicit grant (Settings policy or the human's "Always" click) is a
@@ -557,10 +577,15 @@ export function makePolicy(
     // The shell is the other door out of the job site: a command that would
     // write outside the folder prompts under the same rule, so a blanket
     // `Bash: allow` (or an "Always" click) cannot quietly `cd /tmp && npm i`.
+    // Analysed from the shell's current directory; the walk records where a
+    // top-level `cd` leaves it. A command that escapes is not run unless the
+    // human allows it, so its `cd` is remembered only after an allow below.
+    const shellAfter = { cwd: shell.cwd };
     const escape =
       toolName === 'Bash' && typeof input.command === 'string'
-        ? bashEscape(input.command, folder, allowedRoots)
+        ? bashEscape(input.command, folder, allowedRoots, shellAfter)
         : null;
+    const rememberCwd = () => { if (toolName === 'Bash') shell.cwd = shellAfter.cwd; };
     const leavesFolder = outsideFolder || escape !== null;
     // What "always" on this card grants — see `PendingPermission.escapedPath`.
     // For a file tool the parent directory: the worker that wrote
@@ -590,6 +615,7 @@ export function makePolicy(
     ) {
       // Carry the reason through so the log shows what was waved past.
       hooks.onAutoAllow(agent, toolName, opts.decisionReason);
+      rememberCwd();
       return { behavior: 'allow' };
     }
 
@@ -632,13 +658,21 @@ export function makePolicy(
       input,
       title,
       description,
-      decisionReason: opts.decisionReason ??
-        (leavesFolder ? `Path is outside the mission folder (${folder})` : undefined),
+      // The card's one warning line. When the folder boundary is the reason,
+      // say that — the SDK's own heuristic ("contains shell syntax (&) that
+      // cannot be statically analyzed") is true of most real commands and
+      // tells the reader nothing about why THIS one stopped.
+      decisionReason: leavesFolder
+        ? (escape?.reason ?? `${filePath} is outside the mission folder`)
+        : opts.decisionReason,
       escapedPath,
     });
 
     return new Promise<PermissionResult>((resolve) => {
-      hooks.register(id, { resolve, toolName, suggestions: opts.suggestions, escapedPath });
+      hooks.register(id, {
+        resolve: (r) => { if (r.behavior === 'allow') rememberCwd(); resolve(r); },
+        toolName, suggestions: opts.suggestions, escapedPath,
+      });
       opts.signal.addEventListener('abort', () => {
         if (hooks.unregister(id)) {
           resolve({ behavior: 'deny', message: 'Run was interrupted.' });

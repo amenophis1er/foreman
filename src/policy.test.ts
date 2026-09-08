@@ -167,6 +167,21 @@ test('operators inside quotes are text: a perl program with => is not a redirect
   assert.equal(bashEscapesFolder(`echo hi > "${ROOT}/o u t.txt"`, FOLDER, [ROOT]), null);
 });
 
+test('the shell keeps its cwd between commands: a cd in one call places the next', () => {
+  const shell = { cwd: FOLDER };
+  assert.equal(bashEscape('cd examples/demo', FOLDER, [], shell), null);
+  assert.equal(shell.cwd, path.join(FOLDER, 'examples/demo'));
+  // The exact shape from a real mission: a log two levels up is inside the folder.
+  assert.equal(bashEscape('(npx tsx server.ts > ../../.foreman/work/demo/run1.log 2>&1 &) ; sleep 1', FOLDER, [], shell), null);
+  // A cd inside a subshell does not move the shell.
+  assert.equal(bashEscape('(cd .. && ls) && echo ok', FOLDER, [], shell), null);
+  assert.equal(shell.cwd, path.join(FOLDER, 'examples/demo'));
+  // From there, three levels up is out, and says so.
+  assert.match(bashEscape('touch ../../../x', FOLDER, [], shell)!.reason, /outside the mission folder/);
+  // Without a shell, the analysis starts at the folder as before.
+  assert.match(bashEscape('echo hi > ../../.foreman/work/demo/run1.log', FOLDER)!.reason, /redirects output outside/);
+});
+
 test('a shell -c body is analysed as a command, so quoting cannot hide a cd', () => {
   assert.ok(bashEscapesFolder(`sh -c 'cd /tmp && npm install'`, FOLDER, [ROOT]));
   assert.match(bashEscapesFolder(`bash -c "mkdir -p /tmp/x/y"`, FOLDER, [ROOT])!, /creates a path outside/);
