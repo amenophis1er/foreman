@@ -73,7 +73,7 @@ import { budgetAnchor, modelRecords, projectRecord, recordLine } from './track-r
 import { reconcileRole } from './role-provider.js';
 import { detectBrowser, installChromium } from './browser.js';
 import { frozenDeck, frozenMissionDoc, parkMissionDoc, restoreMissionDoc, snapshotRun } from './snapshot.js';
-import { closeMissionBranch, compareUrl, createPullRequest, ensureMissionBranch, ghReady, gitInfo, missionBranchName, prDraft, pullRequestState, pushBranch, renameMissionBranch, startMissionBranch, type GitInfo } from './gitwork.js';
+import { closeMissionBranch, compareUrl, createPullRequest, dirtyPaths, ensureMissionBranch, ghReady, gitInfo, missionBranchName, prDraft, pullRequestState, pushBranch, renameMissionBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
 import { ServiceRegistry, portOpen, servicesHandler } from './services.js';
@@ -1673,7 +1673,7 @@ async function effectiveSettings(projectId: string): Promise<{
     gitBranchPerMission: (p.gitBranchPerMission ?? g.gitBranchPerMission) !== false,
     budgetWarnAt: (() => {
       const raw = Number(p.budgetWarnAt ?? g.budgetWarnAt);
-      return Number.isFinite(raw) && raw > 0 && raw < 100 ? raw : 80;
+      return Number.isFinite(raw) && raw > 0 && raw < 100 ? raw : 60;
     })(),
   };
 }
@@ -1744,6 +1744,7 @@ async function startRun(
   // touches anything — so the deck's baseline, taken at the director's first
   // turn, is the branch point, and the diff is exactly the mission.
   if (settings.gitBranchPerMission) {
+    const carried = await dirtyPaths(folder);
     const g = await startMissionBranch(folder, mission, meta.id);
     const emit = makeEmitter(meta.id, projectId);
     if ('error' in g) {
@@ -1753,6 +1754,14 @@ async function startRun(
       await store.writeMeta(meta).catch(() => {});
       gitInfoCache.delete(folder);
       emit('git_branch', { branch: g.branch, base: g.base, text: `On branch ${g.branch}, made from ${g.base}. Foreman commits the mission's work here when it ends; merging and pushing stay yours.` });
+      // Whoever started this may not have been at the keyboard to be asked.
+      if (carried.length) {
+        emit('git_note', {
+          text: `The checkout had uncommitted changes when this mission started, and they came along to ${g.branch}: `
+            + `${carried.slice(0, 5).join(', ')}${carried.length > 5 ? `, and ${carried.length - 5} more` : ''}. `
+            + "They will be part of the mission's closing commit unless you take them off the branch first.",
+        });
+      }
     }
   }
   await driveRun(projectId, meta);
@@ -2238,7 +2247,7 @@ const server = http.createServer(async (req, res) => {
     } else if (req.method === 'POST' && url.pathname === '/run') {
       const {
         projectId, mission, budgetUsd, directorModel, workerModel, browserTools,
-        directorProviderId, workerProviderId,
+        directorProviderId, workerProviderId, allowDirty,
       } = await readBody(req);
       if (typeof projectId !== 'string' || typeof mission !== 'string' || !mission.trim()) {
         return json(res, 400, { error: 'projectId and mission are required' });
@@ -2246,6 +2255,29 @@ const server = http.createServer(async (req, res) => {
       const project = await store.getProject(projectId);
       if (!project) return json(res, 404, { error: 'unknown project' });
       await mkdir(project.folder, { recursive: true });
+      // A mission on its own branch takes the working tree with it: `checkout
+      // -b` carries uncommitted work onto the mission branch, and the closing
+      // commit sweeps whatever is left into the mission's own commit, under
+      // the mission's name. So a dirty checkout is refused here rather than
+      // quietly absorbed — with an override, because it is the human's tree
+      // and their call. Only this route refuses: a mission started from the
+      // phone has nobody standing at the keyboard to answer, and gets the
+      // warning in its transcript instead.
+      {
+        const s = await effectiveSettings(projectId);
+        if (s.gitBranchPerMission && allowDirty !== true) {
+          const info = await gitInfo(project.folder);
+          if (info.repo && info.dirty) {
+            const files = await dirtyPaths(project.folder);
+            return json(res, 409, {
+              error: `This checkout has uncommitted changes on ${info.branch ?? 'HEAD'}. `
+                + 'They would follow the mission onto its branch and be committed with its work. '
+                + 'Commit or stash them first, or start anyway.',
+              code: 'dirty-checkout', branch: info.branch ?? null, files,
+            });
+          }
+        }
+      }
       // Reservation is the last step before dispatch — no awaits in between.
       if (!reserveProject(projectId)) {
         return json(res, 409, { error: 'this project already has an active mission' });

@@ -1264,6 +1264,8 @@ export const api = {
     /** Where each role runs, from the picked model. Absent = the project's provider. */
     directorProviderId?: string; workerProviderId?: string;
     browserTools?: boolean;
+    /** Start even though the checkout has uncommitted changes (see the dirty-checkout refusal). */
+    allowDirty?: boolean;
   } = {}) =>
     post('/run', {
       projectId, mission, budgetUsd,
@@ -1272,6 +1274,7 @@ export const api = {
       directorProviderId: opts.directorProviderId || undefined,
       workerProviderId: opts.workerProviderId || undefined,
       browserTools: opts.browserTools || undefined,
+      allowDirty: opts.allowDirty || undefined,
     }),
   /** Resume; `on` names models for this resume ("Resume on…"), ahead of Settings. */
   resume: (runId: string, on: { directorModel?: string; directorProviderId?: string; workerModel?: string; workerProviderId?: string; budgetUsd?: number } = {}) =>

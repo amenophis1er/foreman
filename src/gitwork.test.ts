@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, writeFile } from 'node:fs/promises';
-import { closeMissionBranch, ensureMissionBranch, gitInfo, missionBranchName, startMissionBranch, renameMissionBranch } from './gitwork.js';
+import { closeMissionBranch, ensureMissionBranch, gitInfo, missionBranchName, startMissionBranch, renameMissionBranch, dirtyPaths,
+} from './gitwork.js';
 
 const sh = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).toString();
 
@@ -107,4 +108,19 @@ test('renameMissionBranch takes the run title once there is one, and leaves a br
   assert.equal(await renameMissionBranch(dir, renamed!, 'Studio data sanitization and null handling', '1788713434983-226123af'), null);
   sh(dir, 'checkout', '-q', 'main');
   assert.equal(await renameMissionBranch(dir, renamed!, 'Another title', '1788713434983-226123af'), null);
+});
+
+test('dirtyPaths names the uncommitted work a mission branch would carry', async () => {
+  const dir = await repo();
+  assert.deepEqual(await dirtyPaths(dir), [], 'a clean checkout carries nothing');
+
+  await writeFile(path.join(dir, 'README.md'), 'hello, edited\n');
+  await writeFile(path.join(dir, 'scratch.txt'), 'untracked\n');
+  const dirty = await dirtyPaths(dir);
+  assert.deepEqual(dirty.sort(), ['README.md', 'scratch.txt'], 'tracked edits and untracked files both count');
+
+  // The cap is for a message, not for the truth of it.
+  assert.equal((await dirtyPaths(dir, 1)).length, 1);
+  // Not a repository at all: nothing to report, and no throw.
+  assert.deepEqual(await dirtyPaths(os.tmpdir()), []);
 });

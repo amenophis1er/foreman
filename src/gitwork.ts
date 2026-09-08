@@ -85,6 +85,22 @@ export function missionBranchName(mission: string, runId: string): string {
  * Uncommitted changes come along, as `checkout -b` always does. Resolves to
  * the record for the run, or to one sentence on why it could not.
  */
+/**
+ * The paths with uncommitted changes, tracked or untracked, capped for a
+ * message. `checkout -b` carries all of them onto the mission's branch, and
+ * the closing commit sweeps whatever is still uncommitted into the mission's
+ * own commit — so this is what a human stands to have committed under a
+ * mission's name without noticing.
+ */
+export async function dirtyPaths(folder: string, limit = 8): Promise<string[]> {
+  try {
+    const out = await git(['status', '--porcelain', '--untracked-files=normal'], folder);
+    return out.split('\n').map((l) => l.slice(3).trim()).filter(Boolean).slice(0, limit);
+  } catch {
+    return [];
+  }
+}
+
 export async function startMissionBranch(folder: string, mission: string, runId: string): Promise<MissionGit | { error: string }> {
   const info = await gitInfo(folder);
   if (!info.repo) return { error: 'not a git repository' };

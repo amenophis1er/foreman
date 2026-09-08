@@ -30,7 +30,7 @@ export function ProposalCard({
   directorProviderId: suggestedDirectorProvider, workerProviderId: suggestedWorkerProvider,
   modelRationale,
   models, modelsLoading, modelsNote, modelsInheritNote,
-  busy, error, onStart, onDismiss, style,
+  busy, error, errorAction, onStart, onDismiss, style,
 }) {
   const [brief, setBrief] = useState(mission);
   const [budget, setBudget] = useState(budgetUsd);
@@ -129,7 +129,18 @@ export function ProposalCard({
         </Field>
       </div>
 
-      {error && <Banner tone="error" inline>{error}</Banner>}
+      {error && (
+        <Banner tone="error" inline>
+          {error}
+          {errorAction && (
+            <button type="button" onClick={errorAction.onClick} disabled={busy}
+              style={{
+                marginLeft: 8, background: 'none', border: 0, padding: 0, font: 'inherit',
+                color: 'inherit', textDecoration: 'underline', cursor: busy ? 'default' : 'pointer',
+              }}>{errorAction.label}</button>
+          )}
+        </Banner>
+      )}
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--sp-2)' }}>
         <Button variant="ghost" onClick={onDismiss} disabled={busy}>Not this one</Button>

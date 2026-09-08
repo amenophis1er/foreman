@@ -14,6 +14,12 @@ export interface MissionTemplate {
   worker: string;
 }
 
+/** One action offered beside the error, e.g. "Start anyway" after a refusal the human can override. */
+export interface ComposerErrorAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface ComposerResult {
   mission: string;
   budget: number;
@@ -38,6 +44,8 @@ export interface ComposerProps {
   defaultBudgetUsd?: number;
   /** Server error, shown inline (typically a 409: a mission is already running). */
   error?: string;
+  /** Offered next to the error, when the refusal is one the human can override. */
+  errorAction?: ComposerErrorAction;
   busy?: boolean;
   /** Override the built-in Bug fix / Add tests / Refactor / Audit set. */
   templates?: MissionTemplate[];

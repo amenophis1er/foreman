@@ -76,7 +76,7 @@ function ModeTab({ icon, label, active, onClick }) {
  * The mission composer: templates, an editor frame (Write / Preview, formatting, attachments), a parameter tray, one primary action.
  * Drafts persist per folder (text and settings; attachments are not persisted).
  */
-export function Composer({ folder, defaultBudgetUsd = 5, error, busy, templates = MISSION_TEMPLATES, models, modelsLoading, modelsNote, modelsInheritNote, onStart, style }) {
+export function Composer({ folder, defaultBudgetUsd = 5, error, errorAction, busy, templates = MISSION_TEMPLATES, models, modelsLoading, modelsNote, modelsInheritNote, onStart, style }) {
   const stored = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(draftKey(folder)) || 'null'); } catch { return null; }
   }, [folder]);
@@ -224,7 +224,18 @@ export function Composer({ folder, defaultBudgetUsd = 5, error, busy, templates 
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
-        {error && <Banner tone="error" inline style={{ marginRight: 'auto' }}>{error}</Banner>}
+        {error && (
+          <Banner tone="error" inline style={{ marginRight: 'auto' }}>
+            {error}
+            {errorAction && (
+              <button type="button" onClick={errorAction.onClick} disabled={busy}
+                style={{
+                  marginLeft: 8, background: 'none', border: 0, padding: 0, font: 'inherit',
+                  color: 'inherit', textDecoration: 'underline', cursor: busy ? 'default' : 'pointer',
+                }}>{errorAction.label}</button>
+            )}
+          </Banner>
+        )}
         <span title="Start the mission with Cmd+Enter from the editor" style={{
           display: 'inline-flex', alignItems: 'center', gap: 4,
           fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',

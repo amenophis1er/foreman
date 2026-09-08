@@ -28,7 +28,7 @@ export const DEFAULT_SETTINGS = {
   // Opus is the default director: strong enough to plan and verify, without
   // Fable's frontier price on every mission.
   directorModel: 'opus', workerModel: 'sonnet', plannerModel: 'sonnet',
-  budgetCap: 5, budgetWarnAt: 80, budgetHardStop: true,
+  budgetCap: 5, budgetWarnAt: 60, budgetHardStop: true,
   autoAllowReadOnly: true, alwaysSurvivesResume: true,
   toolPolicy: { Bash: 'allow', Write: 'allow', Edit: 'allow', WebFetch: 'allow', spawn_worker: 'allow' },
   theme: 'light', textSize: 'default', density: 'comfortable', showTimestamps: true,
@@ -130,7 +130,7 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
     </>,
     budget: <>
       {row('budgetCap', 'Default cap per run', 'The composer starts here; you can change it per mission.', <TextInput type="number" prefix="$" min={0} step={1} width={110} value={get('budgetCap')} onChange={(v) => set('budgetCap', v)} />)}
-      {row('budgetWarnAt', 'Warn at', 'Meter turns amber and, if enabled, you get a notification.', <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><TextInput type="number" min={10} max={100} step={5} width={80} value={get('budgetWarnAt')} onChange={(v) => set('budgetWarnAt', v)} /><span style={{ color: 'var(--ink-2)' }}>%</span></span>)}
+      {row('budgetWarnAt', 'Warn at', 'Meter turns amber, the director is told to start verifying, and, if enabled, you get a notification. Leave room: the wind-down turn has to pay for verification and the report.', <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><TextInput type="number" min={10} max={100} step={5} width={80} value={get('budgetWarnAt')} onChange={(v) => set('budgetWarnAt', v)} /><span style={{ color: 'var(--ink-2)' }}>%</span></span>)}
       {row('budgetHardStop', 'Hard stop at cap', 'Off: the run pauses and asks instead of stopping.', <Switch checked={get('budgetHardStop')} onChange={(v) => set('budgetHardStop', v)} />)}
     </>,
     approvals: <>

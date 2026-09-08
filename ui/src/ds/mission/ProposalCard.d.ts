@@ -52,6 +52,8 @@ export interface ProposalCardProps {
   busy?: boolean;
   /** Server error from the start attempt (typically a 409). */
   error?: string;
+  /** Offered beside the error when the human can override the refusal. */
+  errorAction?: { label: string; onClick: () => void };
   onStart?: (v: ProposalStart) => void;
   /** Dismiss without spending a turn saying "no". The next proposal replaces it. */
   onDismiss?: () => void;

@@ -382,9 +382,11 @@ function PullRequestSheet({ runId, onClose, onDone }: { runId: string; onClose: 
 }
 
 function PlanPane({
-  chat, folder, starting, error, models, modelsLoading, modelsNote, modelsInheritNote, onStart, onCompose, hasRuns, projectId, onSettings,
+  chat, folder, starting, error, errorAction, models, modelsLoading, modelsNote, modelsInheritNote, onStart, onCompose, hasRuns, projectId, onSettings,
   recent = [], runsOn, onOpenRun, onForkRun, forking = false,
 }: {
+  /** Offered beside the error when the human can override the refusal. */
+  errorAction?: { label: string; onClick: () => void };
   /** The project's latest runs, newest first, for the empty state's "pick up where you left off". */
   recent?: RunSummary[];
   /** "missions here run on … · cap $… · Change", under the invitation. */
@@ -577,7 +579,7 @@ function PlanPane({
             modelRationale={chat.proposal.modelRationale}
             models={models} modelsLoading={modelsLoading}
             modelsNote={modelsNote} modelsInheritNote={modelsInheritNote}
-            busy={starting} error={error}
+            busy={starting} error={error} errorAction={errorAction}
             onStart={(v) => onStart(v)}
             onDismiss={chat.dismissProposal} />
         )}
@@ -771,6 +773,11 @@ export function ProjectView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRunId]);
 
+  // While a mission runs, the project folder is its workspace: a commit the
+  // human makes there lands on the mission's branch, and anything left
+  // uncommitted joins the mission's closing commit. Worth saying out loud
+  // rather than leaving to whoever notices the branch pill.
+  const heldBranch = activeRunId ? history.find((r) => r.id === activeRunId)?.git?.branch : undefined;
   const viewingLive = selectedRunId !== null && selectedRunId === activeRunId;
   const run = useRunView(selectedRunId, viewingLive);
   const selectedRun = history.find((r) => r.id === selectedRunId);
@@ -856,6 +863,9 @@ export function ProjectView({
     } finally { setForking(false); }
   };
   const [composerErr, setComposerErr] = useState('');
+  // A start the server refused because the checkout is dirty, kept so the
+  // override can retry it without re-uploading the attachments.
+  const [dirtyRetry, setDirtyRetry] = useState<{ v: Parameters<typeof startMission>[0] } | null>(null);
   const [starting, setStarting] = useState(false);
   const chat = useChat(activeRunId ? null : p.id);
   // Idle projects open on the conversation: the composer asks for a
@@ -902,8 +912,9 @@ export function ProjectView({
     mission: string; budget: number; directorModel?: string; workerModel?: string;
     directorProviderId?: string; workerProviderId?: string; browserTools?: boolean;
     attachments?: File[];
-  }) => {
+  }, allowDirty = false) => {
     setComposerErr('');
+    setDirtyRetry(null);
     setStarting(true);
     // The composer collected files all along; until now they went nowhere.
     let mission = v.mission;
@@ -913,11 +924,19 @@ export function ProjectView({
       .run(p.id, mission, v.budget, {
         directorModel: v.directorModel, workerModel: v.workerModel,
         directorProviderId: v.directorProviderId, workerProviderId: v.workerProviderId,
-        browserTools: v.browserTools,
+        browserTools: v.browserTools, allowDirty: allowDirty || undefined,
       })
       .finally(() => setStarting(false));
-    if (!r.ok) setComposerErr((await r.json()).error);
-    else refreshFleet();
+    if (r.ok) { refreshFleet(); return; }
+    const body = await r.json().catch(() => ({} as { error?: string; code?: string; files?: string[] }));
+    setComposerErr(body.error ?? 'could not start');
+    // The uncommitted work is the human's, so the refusal is theirs to
+    // overrule — retried with the mission text the attachments already
+    // produced, so nothing is uploaded twice.
+    if (body.code === 'dirty-checkout') {
+      setComposerErr(`${body.error}${body.files?.length ? ` (${body.files.join(', ')})` : ''}`);
+      setDirtyRetry({ v: { ...v, mission, attachments: [] } });
+    }
   };
 
   const idle = !activeRunId && selectedRunId === null;
@@ -1191,6 +1210,13 @@ export function ProjectView({
           This run stopped at its {selectedRun.stopReason === 'turns' ? 'turn' : selectedRun.stopReason === 'time' ? 'time' : 'token'} cap. Resume continues it with a fresh allowance.
         </Banner>
       )}
+      {heldBranch && (
+        <Banner tone="caution">
+          This checkout is held by the running mission, on{' '}
+          <span style={{ fontFamily: 'var(--font-mono)' }}>{heldBranch}</span>. Commits you make in the
+          folder land on that branch, and anything left uncommitted joins the mission's closing commit.
+        </Banner>
+      )}
       {selectedRunId && !viewingLive && (
         <Banner tone="readonly">
           Viewing a past run (read-only).
@@ -1226,7 +1252,9 @@ export function ProjectView({
                   flow (scrollable) when the composer is taller than the view. */}
               <div style={{ margin: 'auto', width: '100%', padding: 'var(--sp-4) 0 var(--sp-5)' }}>
                 <Composer folder={p.folder} defaultBudgetUsd={p.defaultBudgetUsd}
-                  error={composerErr} busy={starting} models={models}
+                  error={composerErr}
+                  errorAction={dirtyRetry ? { label: 'Start anyway', onClick: () => void startMission(dirtyRetry.v, true) } : undefined}
+                  busy={starting} models={models}
                   modelsLoading={modelsLoading} modelsNote={modelsNote}
                   modelsInheritNote={modelsInheritNote}
                   onStart={(v) => void startMission(v)}
@@ -1260,6 +1288,7 @@ export function ProjectView({
           ) : (
             <>
               <PlanPane chat={chat} folder={p.folder} starting={starting} error={composerErr}
+                errorAction={dirtyRetry ? { label: 'Start anyway', onClick: () => void startMission(dirtyRetry.v, true) } : undefined}
                 models={models} modelsLoading={modelsLoading}
                 modelsNote={modelsNote} modelsInheritNote={modelsInheritNote}
                 onStart={(v) => void startMission(v)}
