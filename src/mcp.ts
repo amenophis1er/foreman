@@ -222,22 +222,47 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
     },
   };
 
+  /** What is pending on a run right now, from the fleet payload. */
+  async function needsOf(id: string): Promise<Need[]> {
+    const projects = (await get<{ projects: ProjectCard[] }>('/projects')).projects;
+    const card = projects.find((p) => p.activeRun?.id === id);
+    return (card?.needs ?? []).filter((n) => !n.runId || n.runId === id);
+  }
+
   const runStatus: ToolDef = {
     name: 'run_status',
-    description: 'One run: status, spend against cap, crew and their states, DONE WHEN ticks, what needs a human, branch and pull request. With wait_seconds > 0 it returns as soon as anything changes on that run (or at the timeout) — use it instead of polling.',
-    schema: { runId: z.string(), wait_seconds: z.number().int().min(0).max(maxWait).default(0) },
-    run: async ({ runId, wait_seconds }) => {
+    description: 'One run: status, spend against cap, crew and their states, DONE WHEN ticks, what needs a human, branch and pull request. With wait_seconds > 0 it blocks until `until` is met — "any" change on the run, the run "finished", or it "needs_you" (a pending approval or question, or finished) — or until the timeout. Use it instead of polling; call again if it timed out.',
+    schema: {
+      runId: z.string(),
+      wait_seconds: z.number().int().min(0).max(maxWait).default(0),
+      until: z.enum(['any', 'finished', 'needs_you']).default('any'),
+    },
+    run: async ({ runId, wait_seconds, until }) => {
       const id = String(runId);
+      const cond = String(until ?? 'any');
       let changed: boolean | undefined;
       if (Number(wait_seconds) > 0) {
-        const before = await findRun(id);
-        if (before.status === 'running') changed = await waitForRunEvent(base, id, Number(wait_seconds), f);
-        else changed = false;
+        // Wait in rounds: each round ends on the first event for the run,
+        // then the condition is checked against fresh state; an event that
+        // does not satisfy it (a cost tick, under "finished") starts another
+        // round with the time that is left. The clock is the outer bound.
+        const deadline = Date.now() + Number(wait_seconds) * 1000;
+        changed = false;
+        for (;;) {
+          const now = await findRun(id);
+          const satisfied = now.status !== 'running'
+            || (cond === 'needs_you' && (await needsOf(id)).length > 0)
+            || (cond === 'any' && changed);
+          if (satisfied) break;
+          const left = Math.ceil((deadline - Date.now()) / 1000);
+          if (left <= 0) break;
+          const got = await waitForRunEvent(base, id, left, f);
+          if (!got) break;
+          changed = true;
+        }
       }
       const r = await findRun(id);
-      const projects = (await get<{ projects: ProjectCard[] }>('/projects')).projects;
-      const card = projects.find((p) => p.activeRun?.id === id);
-      const needs = (card?.needs ?? []).filter((n) => !n.runId || n.runId === id);
+      const needs = await needsOf(id);
       const doc = await get<{ doc: string }>(`/missiondoc?run=${encodeURIComponent(id)}`).then((d) => d.doc).catch(() => '');
       const dw = doneWhen(doc);
       const workers = (r.workers ?? []).map((w) => `  ${w.id} · ${w.status} · ${usd(w.costUsd)} · ${w.task.slice(0, 80)}`);
@@ -248,9 +273,47 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
         dw.done.length + dw.open.length ? `DONE WHEN ${dw.done.length}/${dw.done.length + dw.open.length}${dw.open.length ? `\n  open: ${dw.open.join('\n  open: ')}` : ''}` : null,
         workers.length ? `crew:\n${workers.join('\n')}` : null,
         needs.length ? `NEEDS YOU (${needs.length}) — only a human can answer these, on the dashboard or the phone:\n${needs.map((n) => `  [${n.kind}] ${n.text}`).join('\n')}` : null,
-        changed !== undefined ? (changed ? 'changed: yes' : 'changed: no (timeout)') : null,
+        changed !== undefined ? (r.status !== 'running' ? 'finished' : needs.length && cond === 'needs_you' ? 'needs you' : changed ? 'changed: yes' : 'changed: no (timeout — call again)') : null,
       ].filter(Boolean);
-      return { text: lines.join('\n'), data: { run: r, doneWhen: dw, needs, changed } };
+      return { text: lines.join('\n'), data: { run: r, doneWhen: dw, needs, changed, waitedFor: Number(wait_seconds) > 0 ? cond : undefined } };
+    },
+  };
+
+  const runReport: ToolDef = {
+    name: 'run_report',
+    description: 'What a finished run produced, in one call: the director\'s final report, DONE WHEN ticks, the files it changed with +/− counts, the branch, commit and pull request, spend and crew. For a running run it reports the state so far.',
+    schema: { runId: z.string() },
+    run: async ({ runId }) => {
+      const id = String(runId);
+      const r = await findRun(id);
+      const [events, docRes, deck] = await Promise.all([
+        get<{ events: Array<{ ts: number; event: string; data: Record<string, unknown> }> }>(`/runs/${encodeURIComponent(id)}/events`).then((d) => d.events).catch(() => []),
+        get<{ doc: string }>(`/missiondoc?run=${encodeURIComponent(id)}`).catch(() => ({ doc: '' })),
+        get<{ files: Array<{ path: string; status: string; additions: number; deletions: number; preexisting?: boolean }>; artifacts: Array<{ path: string; kind: string }>; totals: { files: number; additions: number; deletions: number }; baseline: { kind: string } }>(`/runs/${encodeURIComponent(id)}/deck`).catch(() => null),
+      ]);
+      // The director's last words: the final assistant text before the run ended.
+      let report = '';
+      for (const e of events) {
+        if (e.event !== 'message' || e.data?.agent !== 'director') continue;
+        const msg = e.data.msg as { type?: string; message?: { content?: Array<{ type: string; text?: string }> } } | undefined;
+        const text = msg?.type === 'assistant' ? msg.message?.content?.filter((c) => c.type === 'text' && c.text).map((c) => c.text).join('\n') : '';
+        if (text && text.trim().length > 40) report = text.trim();
+      }
+      const dw = doneWhen(docRes.doc);
+      const files = deck?.files ?? [];
+      const own = files.filter((x) => !x.preexisting);
+      const fileLines = own.slice(0, 40).map((x) => `  ${x.status.padEnd(8)} ${x.path}  +${x.additions} −${x.deletions}`);
+      const images = (deck?.artifacts ?? []).filter((a) => a.kind === 'image').length;
+      const lines = [
+        runLine(r),
+        r.git ? `branch ${r.git.branch} from ${r.git.base}${r.git.commits ? ` · ${r.git.commits} commit${r.git.commits === 1 ? '' : 's'}` : ''}${r.git.pr ? ` · PR ${r.git.pr}${r.git.prState ? ` (${r.git.prState})` : ''}` : ' · no pull request yet (the human opens it from the run page)'}` : 'not a git repository',
+        `DONE WHEN ${dw.done.length}/${dw.done.length + dw.open.length}${dw.open.length ? ` · open: ${dw.open.join(' · ')}` : ''}`,
+        deck ? `changed: ${own.length} file${own.length === 1 ? '' : 's'} · +${deck.totals.additions} −${deck.totals.deletions}${images ? ` · ${images} screenshot${images === 1 ? '' : 's'}` : ''}${files.length > own.length ? ` · ${files.length - own.length} already dirty before the run` : ''}` : null,
+        fileLines.length ? fileLines.join('\n') + (own.length > 40 ? `\n  … ${own.length - 40} more` : '') : null,
+        `crew: ${(r.workers ?? []).length} worker${(r.workers ?? []).length === 1 ? '' : 's'} · ${(r.workers ?? []).filter((w) => w.status === 'done').length} done`,
+        report ? `\nDirector's report:\n${report.slice(0, 4000)}` : '\nNo final report from the director yet.',
+      ].filter(Boolean);
+      return { text: lines.join('\n'), data: { run: r, doneWhen: dw, files: own, totals: deck?.totals, report } };
     },
   };
 
@@ -377,7 +440,7 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
     },
   };
 
-  return [fleet, listRuns, runStatus, transcript, missionDoc, memory, search, doctor, link, start, steer];
+  return [fleet, listRuns, runStatus, runReport, transcript, missionDoc, memory, search, doctor, link, start, steer];
 }
 
 /** Runs the MCP server over stdio until the client goes away. Nothing may be written to stdout but the protocol. */

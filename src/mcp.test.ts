@@ -54,7 +54,7 @@ test('run_status: crew, DONE WHEN from the mission doc, needs, and no wait on a 
   assert.match(r.text, /stopped at its budget cap/);
   assert.match(r.text, /DONE WHEN 1\/2\n  open: docs updated/);
   assert.match(r.text, /worker-1 · done/);
-  assert.match(r.text, /changed: no/);
+  assert.match(r.text, /^finished$/m);
   assert.ok(!calls.some((c) => c.path.startsWith('/events')), 'a finished run is never waited on');
 });
 
@@ -77,6 +77,52 @@ test('run_status with a wait subscribes to /events and returns on the first even
   assert.match(r.text, /changed: yes/);
   assert.match(r.text, /NEEDS YOU \(1\) — only a human can answer/);
   assert.match(r.text, /\[perm\] director wants Bash/);
+});
+
+test('run_status until=finished waits through events that are not the end, and stops at the end', async () => {
+  // Two rounds: a cost tick (not finished) then the run turns done.
+  let reads = 0;
+  const sseOnce = () => new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode('event: cost\ndata: {"runId":"r1","projectId":"p1","data":{}}\n\n')); } });
+  const { fetchImpl, calls } = fakeServer({
+    'GET /runs': () => { reads += 1; return { runs: [run({ status: reads >= 4 ? 'done' : 'running' })] }; },
+    'GET /projects': { projects: [{ id: 'p1', name: 'app', folder: '/x/app', activeRun: null, needs: [] }] },
+    'GET /missiondoc': { doc: '' },
+    'GET /events': () => new Response(sseOnce(), { status: 200 }),
+  });
+  const r = await tool(foremanTools({ base: 'http://f', fetchImpl }), 'run_status').run({ runId: 'r1', wait_seconds: 10, until: 'finished' });
+  assert.match(r.text, /r1 · done/);
+  assert.match(r.text, /^finished$/m);
+  assert.ok(calls.filter((c) => c.path.startsWith('/events')).length >= 2, 'kept waiting past the first event');
+});
+
+test('run_status until=needs_you returns when an approval appears', async () => {
+  let asked = false;
+  const { fetchImpl } = fakeServer({
+    'GET /runs': { runs: [run()] },
+    'GET /projects': () => ({ projects: [{ id: 'p1', name: 'app', folder: '/x/app', activeRun: run(), needs: asked ? [{ kind: 'perm', id: 'a1', runId: 'r1', text: 'director wants Bash' }] : [] }] }),
+    'GET /missiondoc': { doc: '' },
+    'GET /events': () => { asked = true; return new Response(new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode('event: permission_request\ndata: {"runId":"r1","projectId":"p1","data":{}}\n\n')); } }), { status: 200 }); },
+  });
+  const r = await tool(foremanTools({ base: 'http://f', fetchImpl }), 'run_status').run({ runId: 'r1', wait_seconds: 5, until: 'needs_you' });
+  assert.match(r.text, /^needs you$/m);
+  assert.match(r.text, /\[perm\] director wants Bash/);
+});
+
+test('run_report: the director\'s last words, DONE WHEN, changed files and the branch in one call', async () => {
+  const say = (agent: string, text: string) => ({ ts: 1, event: 'message', data: { agent, msg: { type: 'assistant', message: { content: [{ type: 'text', text }] } } } });
+  const { fetchImpl } = fakeServer({
+    'GET /runs': { runs: [run({ status: 'done', git: { branch: 'foreman/fix-r1', base: 'main', commits: 1, pr: 'https://github.com/o/r/pull/9', prState: 'merged' } })] },
+    'GET /runs/r1/events': { events: [say('director', 'Starting.'), say('worker-1', 'A long worker message that must not be mistaken for the report.'), say('director', 'All done: tests pass, docs updated, nothing left undone in this mission.')] },
+    'GET /missiondoc': { doc: '- [x] tests pass\n- [x] docs updated\n' },
+    'GET /runs/r1/deck': { baseline: { kind: 'git' }, files: [{ path: 'src/a.ts', status: 'modified', additions: 10, deletions: 2 }, { path: 'old.txt', status: 'modified', additions: 1, deletions: 1, preexisting: true }], artifacts: [{ path: 'shot.png', kind: 'image' }], totals: { files: 2, additions: 11, deletions: 3 } },
+  });
+  const r = await tool(foremanTools({ base: 'http://f', fetchImpl }), 'run_report').run({ runId: 'r1' });
+  assert.match(r.text, /branch foreman\/fix-r1 from main · 1 commit · PR https:\/\/github.com\/o\/r\/pull\/9 \(merged\)/);
+  assert.match(r.text, /DONE WHEN 2\/2/);
+  assert.match(r.text, /changed: 1 file · \+11 −3 · 1 screenshot · 1 already dirty before the run/);
+  assert.match(r.text, /modified src\/a\.ts  \+10 −2/);
+  assert.match(r.text, /Director's report:\nAll done: tests pass/);
+  assert.doesNotMatch(r.text, /worker message/);
 });
 
 test('waitForRunEvent gives up at the timeout when nothing arrives for the run', async () => {
@@ -114,7 +160,7 @@ test('the tool set has no human-only actions', () => {
   for (const forbidden of ['approve', 'deny', 'permission', 'answer', 'interrupt', 'resume', 'budget', 'pull_request', 'open_pr', 'settings', 'key']) {
     assert.ok(!names.some((n) => n.split('_').includes(forbidden) || n === forbidden), `${forbidden} must not be a tool`);
   }
-  assert.deepEqual(names, ['fleet_status', 'list_runs', 'run_status', 'run_transcript', 'mission_doc', 'project_memory', 'search_runs', 'doctor', 'link_project', 'start_mission', 'steer']);
+  assert.deepEqual(names, ['fleet_status', 'list_runs', 'run_status', 'run_report', 'run_transcript', 'mission_doc', 'project_memory', 'search_runs', 'doctor', 'link_project', 'start_mission', 'steer']);
 });
 
 test('a server that is not there is said in one sentence with the start command', async () => {

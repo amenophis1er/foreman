@@ -247,10 +247,12 @@ codex mcp add foreman -- foreman mcp
 agy mcp add foreman -- foreman mcp
 ```
 
-Tools: `fleet_status`, `list_runs`, `run_status` (with `wait_seconds`: one call
-that returns when the run changes), `run_transcript`, `mission_doc`,
+Tools: `fleet_status`, `list_runs`, `run_status` (with `wait_seconds` and
+`until`: one call that blocks until the run changes, finishes, or needs you),
+`run_report` (a finished run in one call: the director's report, DONE WHEN,
+changed files, branch and pull request), `run_transcript`, `mission_doc`,
 `project_memory`, `search_runs`, `doctor`, `link_project` (folder or Git URL),
-`start_mission`, `steer`. It talks to the running server at `FOREMAN_URL`
+`start_mission`, `steer`. Start, wait until finished, read the report: three calls. It talks to the running server at `FOREMAN_URL`
 (default `http://localhost:4177`) and has no logic of its own.
 
 Deliberately absent: approving or denying, answering the director's questions,
