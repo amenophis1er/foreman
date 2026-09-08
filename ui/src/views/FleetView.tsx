@@ -38,6 +38,142 @@ type ServerNeed = {
 type FleetProject = ProjectSummary & { needs?: ServerNeed[] };
 
 /**
+ * One standing instruction, as `GET /projects/:id/schedules` reports it. Only
+ * the fields the board reads are named; the rest of the record belongs to the
+ * project page, which is where a schedule is edited, paused and resumed.
+ */
+type Schedule = {
+  id: string;
+  projectId: string;
+  name: string;
+  cadence: string;
+  enabled: boolean;
+  nextRunAt: number | null;
+  pausedReason: null | 'failures' | 'monthly-cap' | 'human';
+};
+
+/**
+ * How long an unchanged fleet keeps its schedules before they are read again.
+ *
+ * The read hangs off the fleet poll rather than a timer of its own, and that
+ * poll runs every three seconds — far too often for a thing that moves on the
+ * scale of hours. A newly linked project is still read immediately.
+ */
+const SCHEDULE_REFRESH_MS = 30_000;
+
+/** Schedules per project id. A project that has none, or whose read failed, maps to `[]`. */
+function useSchedules(projects: ProjectSummary[]): Record<string, Schedule[]> {
+  const [byProject, setByProject] = useState<Record<string, Schedule[]>>({});
+  const lastRead = useRef(0);
+
+  useEffect(() => {
+    const ids = projects.map((p) => p.id);
+    const due = Date.now() - lastRead.current >= SCHEDULE_REFRESH_MS;
+    // Everything on the clock; otherwise only what has never been read, so a
+    // project linked seconds ago does not wait out the interval.
+    const wanted = due ? ids : ids.filter((id) => !(id in byProject));
+    if (wanted.length === 0) return;
+    if (due) lastRead.current = Date.now();
+    let alive = true;
+    void Promise.all(wanted.map(async (id) => {
+      const r = await fetch(`/projects/${encodeURIComponent(id)}/schedules`).catch(() => null);
+      if (!r?.ok) return [id, [] as Schedule[]] as const;
+      const body = await r.json().catch(() => ({})) as { schedules?: Schedule[] };
+      return [id, body.schedules ?? []] as const;
+    })).then((pairs) => {
+      if (alive) setByProject((cur) => ({ ...cur, ...Object.fromEntries(pairs) }));
+    });
+    return () => { alive = false; };
+  }, [projects, byProject]);
+
+  return byProject;
+}
+
+/**
+ * "in 4 h" — coarse on purpose. Nobody plans their evening around the seconds,
+ * and a tooltip that counts them down is a tooltip that is always slightly wrong.
+ */
+function inWords(ms: number): string {
+  const min = Math.round(ms / 60_000);
+  if (min <= 0) return 'due now';
+  if (min === 1) return 'in a minute';
+  if (min < 60) return `in ${min} min`;
+  const h = Math.round(min / 60);
+  if (h === 1) return 'in an hour';
+  if (h < 48) return `in ${h} h`;
+  return `in ${Math.round(h / 24)} days`;
+}
+
+/** Why Foreman stopped starting it, in the words someone would use out loud. */
+function pausedWhy(reason: Exclude<Schedule['pausedReason'], null>): string {
+  if (reason === 'failures') return 'two runs in a row failed';
+  if (reason === 'monthly-cap') return 'this month’s scheduled spend reached its ceiling';
+  return 'you paused it';
+}
+
+/**
+ * What the tile's clock should say, or null for a project with no enabled
+ * schedule. Caution is never the only signal: the sentence carries the whole
+ * meaning, which is what a screen reader and a colour-blind reader get.
+ */
+function clockOf(schedules: Schedule[] | undefined): { paused: boolean; text: string } | null {
+  const live = (schedules ?? []).filter((s) => s.enabled);
+  if (live.length === 0) return null;
+  const more = (n: number) => (n > 0 ? ` (+${n} more scheduled)` : '');
+
+  // A paused schedule wins the glyph: it is the one that will not run again
+  // until a person says so, and that is the fact worth surfacing on a board.
+  const paused = live.find((s) => s.pausedReason);
+  if (paused) {
+    return {
+      paused: true,
+      text: `Paused — “${paused.name}” will not run because ${pausedWhy(paused.pausedReason!)}.`
+        + ` Resume it from the project page.${more(live.length - 1)}`,
+    };
+  }
+
+  const next = live
+    .filter((s): s is Schedule & { nextRunAt: number } => typeof s.nextRunAt === 'number')
+    .sort((a, b) => a.nextRunAt - b.nextRunAt)[0];
+  if (!next) {
+    const s = live[0];
+    return { paused: false, text: `Scheduled: “${s.name}” — no next run planned yet.${more(live.length - 1)}` };
+  }
+  return {
+    paused: false,
+    text: `Next scheduled run ${inWords(next.nextRunAt - Date.now())} — ${next.name}${more(live.length - 1)}`,
+  };
+}
+
+/**
+ * The tile's clock. Focusable so the sentence is reachable without a mouse,
+ * and labelled with that same sentence so it is reachable without sight; it
+ * does nothing when pressed, because a schedule is changed on the project page.
+ *
+ * Paused does not say so in amber and nothing else — a reader who cannot see
+ * the difference between amber and grey would read a stopped schedule as a
+ * running one. It changes glyph (clock → pause bars) and grows the rail's
+ * "paused" chip: word, outline and shape, the same vocabulary as the rail.
+ */
+function ScheduleClock({ clock }: { clock: { paused: boolean; text: string } }) {
+  return (
+    <span tabIndex={0} role="img" title={clock.text} aria-label={clock.text}
+      style={{
+        position: 'absolute', left: 'var(--sp-4)', bottom: 'var(--sp-3)',
+        display: 'inline-flex', alignItems: 'center', gap: 3,
+        borderRadius: clock.paused ? 'var(--r-pill)' : 'var(--r-sm)',
+        border: clock.paused ? '1px solid var(--status-warning)' : undefined,
+        padding: clock.paused ? '0 5px' : undefined,
+        fontSize: 'var(--fs-xs)', lineHeight: '15px',
+        color: clock.paused ? 'var(--status-warning)' : 'var(--ink-2)',
+      }}>
+      <Icon name={clock.paused ? 'interrupted' : 'timeline'} size={clock.paused ? 10 : 12} />
+      {clock.paused && 'paused'}
+    </span>
+  );
+}
+
+/**
  * Does one project answer to this query?
  *
  * Name, path and mission all match: a fleet accumulates several checkouts of
@@ -292,6 +428,7 @@ export function FleetView({
     }
   };
   const browserInstall = useBrowserInstall();
+  const schedules = useSchedules(projects);
   const picker = usePicker((p) => void link(p), (id) => { refresh(); onOpen(id); });
 
   // Filtering narrows, it never reorders: the server's urgency ordering
@@ -496,21 +633,31 @@ export function FleetView({
                 display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
                 gap: 'var(--sp-3)',
               }}>
-                {recent.map((p) => (
-                  <OutcomeTile key={p.id} name={p.name} folder={p.folder}
-                    lastRun={p.lastRun && p.lastRun.status !== 'idle' && p.lastRun.status !== 'running'
-                      ? p.lastRun : null}
-                    // A run that ended badly is unfinished business: open it,
-                    // where Resume is. A done run's next act is choosing what
-                    // comes next, and the project page now leads with its runs
-                    // and the two ways on from each.
-                    onOpen={() => {
-                      const r = p.lastRun;
-                      if (r?.id && onOpenRun && (r.status === 'error' || r.status === 'interrupted')) onOpenRun(p.id, r.id);
-                      else onOpen(p.id);
-                    }}
-                    onUnlink={() => setUnlinking(p)} />
-                ))}
+                {recent.map((p) => {
+                  const clock = clockOf(schedules[p.id]);
+                  return (
+                    // The clock rides over the tile rather than inside it: the
+                    // tile is a shared component and a standing instruction is
+                    // a fleet-board fact, not part of a project's last outcome.
+                    <div key={p.id} style={{ position: 'relative', display: 'flex', minWidth: 0 }}>
+                      <OutcomeTile name={p.name} folder={p.folder}
+                        style={{ flex: 1, minWidth: 0 }}
+                        lastRun={p.lastRun && p.lastRun.status !== 'idle' && p.lastRun.status !== 'running'
+                          ? p.lastRun : null}
+                        // A run that ended badly is unfinished business: open it,
+                        // where Resume is. A done run's next act is choosing what
+                        // comes next, and the project page now leads with its runs
+                        // and the two ways on from each.
+                        onOpen={() => {
+                          const r = p.lastRun;
+                          if (r?.id && onOpenRun && (r.status === 'error' || r.status === 'interrupted')) onOpenRun(p.id, r.id);
+                          else onOpen(p.id);
+                        }}
+                        onUnlink={() => setUnlinking(p)} />
+                      {clock && <ScheduleClock clock={clock} />}
+                    </div>
+                  );
+                })}
               </div>
             </section>
           )}

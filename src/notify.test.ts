@@ -123,6 +123,67 @@ test('a transport that throws costs a failure count, never an exception on the e
   assert.equal(hub.delivered, 0);
 });
 
+test('a paused schedule says which one and why, and is gated by its cause', () => {
+  const c = ctx()();
+  const cap = shape(env('schedule_paused', { scheduleId: 's1', name: 'nightly deps', reason: 'monthly-cap' }), c)!;
+  assert.equal(cap.key, 'schedule:s1');
+  assert.equal(cap.gate, 'budget', 'the monthly ceiling is a spending guard');
+  assert.match(cap.text, /nightly deps/);
+  assert.match(cap.text, /this month&#x27;s scheduled spend would go past the ceiling|this month's scheduled spend would go past the ceiling/);
+
+  const fail = shape(env('schedule_paused', { scheduleId: 's1', name: 'nightly deps', reason: 'failures' }), c)!;
+  assert.equal(fail.key, 'schedule:s1');
+  assert.equal(fail.gate, 'needsYou', 'only a human can resume it');
+  assert.match(fail.text, /two scheduled runs in a row failed/);
+
+  // Resuming is deliberately a dashboard act, so there is nothing to tap.
+  for (const s of [cap, fail]) {
+    assert.match(s.text, /Resume it from the Foreman dashboard/);
+    assert.equal(s.buttons, undefined);
+  }
+});
+
+test('an unknown pause reason still shapes, and does not throw', () => {
+  const c = ctx()();
+  assert.doesNotThrow(() => shape(env('schedule_paused', { scheduleId: 's1', name: 'nightly deps', reason: 'kaput' }), c));
+  const s = shape(env('schedule_paused', { scheduleId: 's1', name: 'nightly deps', reason: 'kaput' }), c)!;
+  assert.equal(s.key, 'schedule:s1');
+  assert.equal(s.gate, 'done');
+  assert.match(s.text, /nightly deps/);
+  assert.doesNotThrow(() => shape(env('schedule_skipped', { scheduleId: 's1', name: 'nightly deps', reason: 'moon phase' }), c));
+});
+
+test('a skipped scheduled run is informational, and consecutive skips are not deduped', () => {
+  const c = ctx()();
+  const s = shape(env('schedule_skipped', { scheduleId: 's1', name: 'nightly deps', reason: 'project busy' }), c)!;
+  assert.equal(s.gate, 'done');
+  assert.equal(s.key, 'skip:s1:1000000');
+  assert.match(s.text, /nightly deps/);
+  assert.match(s.text, /already had a mission running/);
+  assert.match(s.text, /next scheduled run stands/);
+  // Like a stall, the timestamp is in the key so tonight's skip is not
+  // swallowed by last night's.
+  const later = shape(env('schedule_skipped', { scheduleId: 's1', name: 'nightly deps', reason: 'project busy' }, { ts: 1_000_500 }), c)!;
+  assert.notEqual(later.key, s.key);
+});
+
+test('a scheduled run says nobody pressed start; an ordinary one reads exactly as before', () => {
+  const c = ctx()();
+  const plain = shape(env('run_finished', { status: 'done' }), c)!;
+  assert.equal(plain.text,
+    '<b>Mission done</b> · shop\n<i>Build the checkout page</i>' +
+    '\n<a href="http://box.local:4177/#/p/p1/r/r1">Open in Foreman</a>');
+
+  const sched = shape(env('run_finished', { status: 'done', scheduled: true, scheduleName: 'nightly deps' }), c)!;
+  assert.equal(sched.key, plain.key, 'same key, so it still edits and dedupes as before');
+  assert.equal(sched.gate, plain.gate);
+  assert.match(sched.text, /Mission done · scheduled · nightly deps/);
+
+  // Without a name it still marks itself as unattended.
+  const anon = shape(env('run_finished', { status: 'error', scheduled: true }), c)!;
+  assert.match(anon.text, /Mission failed · scheduled/);
+});
+
 // ---------------------------------------------------------------------------
 // Telegram, against a stub of the Bot API
 // ---------------------------------------------------------------------------

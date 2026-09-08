@@ -7,6 +7,7 @@
  *   <root>/runs/<runId>/events.jsonl  — one ForemanEvent per line, append-only
  *   <root>/chats/<projectId>/…        — same two files for a project's
  *                                       planning conversation
+ *   <root>/schedules.json             — every Schedule, one JSON array
  *
  * Design notes for reviewers:
  *  - The event log is the source of truth for the UI; meta.json is a derived
@@ -24,7 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type {
-  ChatMeta, ForemanEvent, Project, ProviderRef, RunMeta, RunSummary, SettingsFile,
+  ChatMeta, ForemanEvent, Project, ProviderRef, RunMeta, RunSummary, Schedule, SettingsFile,
 } from './types.js';
 
 const RUN_ID_RE = /^[0-9]{13}-[0-9a-f]{8}$/;
@@ -142,11 +143,16 @@ export class RunStore {
   }
 
   /** Unlinks a project (run history is kept). Returns whether it existed. */
-  removeProject(projectId: string): Promise<boolean> {
-    return this.mutateProjects((projects) => {
+  async removeProject(projectId: string): Promise<boolean> {
+    const existed = await this.mutateProjects((projects) => {
       const rest = projects.filter((p) => p.id !== projectId);
       return { projects: rest, result: rest.length !== projects.length };
     });
+    // Its schedules go with it: a standing instruction to run missions in a
+    // folder Foreman no longer knows about has nowhere to fire. Sequential and
+    // not nested inside the mutate, because both writes share one chain.
+    await this.removeProjectSchedules(projectId);
+    return existed;
   }
 
   async getProject(projectId: string): Promise<Project | null> {
@@ -181,6 +187,114 @@ export class RunStore {
     });
     this.projectsChain = task.catch(() => {});
     return task;
+  }
+
+  // -- schedules ------------------------------------------------------------
+
+  /**
+   * Every schedule lives in one small file, not a directory per schedule:
+   * there are a handful of them, the ticker reads all of them on every tick to
+   * decide what is due, and a single array is one read and one atomic write.
+   * It shares `projectsChain` with projects.json and settings.json so a write
+   * here can never interleave with one of those.
+   */
+  private get schedulesFile(): string {
+    return path.join(this.root, 'schedules.json');
+  }
+
+  /** All schedules, or one project's; oldest first so the list never reorders
+   *  itself under the human between visits. A missing or unparseable file is
+   *  an empty list — the ticker must keep running, not crash on a bad byte. */
+  async listSchedules(projectId?: string): Promise<Schedule[]> {
+    const raw = await readFile(this.schedulesFile, 'utf8').catch(() => null);
+    let all: Schedule[] = [];
+    if (raw) {
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed)) all = parsed as Schedule[];
+      } catch {
+        all = [];
+      }
+    }
+    const wanted = projectId ? all.filter((s) => s.projectId === projectId) : all;
+    return [...wanted].sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /** Atomically rewrites schedules.json through `mutate`; returns its result. */
+  private mutateSchedules<T>(
+    mutate: (schedules: Schedule[]) => { schedules: Schedule[]; result: T },
+  ): Promise<T> {
+    const task = this.projectsChain.then(async () => {
+      const { schedules, result } = mutate(await this.listSchedules());
+      await mkdir(this.root, { recursive: true });
+      const tmp = path.join(this.root, `.schedules.${crypto.randomBytes(4).toString('hex')}.tmp`);
+      await writeFile(tmp, JSON.stringify(schedules, null, 2));
+      await rename(tmp, this.schedulesFile);
+      return result;
+    });
+    this.projectsChain = task.catch(() => {});
+    return task;
+  }
+
+  async getSchedule(id: string): Promise<Schedule | null> {
+    return (await this.listSchedules()).find((s) => s.id === id) ?? null;
+  }
+
+  /** Records a new schedule. The id and creation time are the store's to give,
+   *  like a project's; callers may pass them when restoring a known record. */
+  addSchedule(
+    s: Omit<Schedule, 'id' | 'createdAt'> & { id?: string; createdAt?: number },
+  ): Promise<Schedule> {
+    return this.mutateSchedules((schedules) => {
+      const schedule: Schedule = {
+        ...s,
+        id: s.id ?? `s-${crypto.randomBytes(6).toString('hex')}`,
+        createdAt: s.createdAt ?? Date.now(),
+      };
+      return { schedules: [...schedules, schedule], result: schedule };
+    });
+  }
+
+  /**
+   * Merges a partial change. `undefined` means "leave it alone" and `null` is
+   * a value in its own right — `pausedReason` and `nextRunAt` are both cleared
+   * by writing null, and a spread alone would let an absent key erase them.
+   * Identity (id, project, creation) is not patchable; a schedule that moved
+   * project would silently start running missions in another folder.
+   */
+  updateSchedule(
+    id: string,
+    patch: Partial<Omit<Schedule, 'id' | 'projectId' | 'createdAt'>>,
+  ): Promise<Schedule | null> {
+    return this.mutateSchedules((schedules) => {
+      const i = schedules.findIndex((s) => s.id === id);
+      if (i === -1) return { schedules, result: null };
+      const next: Schedule = { ...schedules[i] };
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined) continue;
+        (next as unknown as Record<string, unknown>)[key] = value;
+      }
+      const updated = [...schedules];
+      updated[i] = next;
+      return { schedules: updated, result: next };
+    });
+  }
+
+  /** Forgets one schedule. Returns whether it existed. */
+  removeSchedule(id: string): Promise<boolean> {
+    return this.mutateSchedules((schedules) => {
+      const rest = schedules.filter((s) => s.id !== id);
+      return { schedules: rest, result: rest.length !== schedules.length };
+    });
+  }
+
+  /** Forgets a project's schedules; returns how many went. Called when a
+   *  project is unlinked, so no schedule outlives the project it fires in. */
+  removeProjectSchedules(projectId: string): Promise<number> {
+    return this.mutateSchedules((schedules) => {
+      const rest = schedules.filter((s) => s.projectId !== projectId);
+      return { schedules: rest, result: schedules.length - rest.length };
+    });
   }
 
   // -- runs -----------------------------------------------------------------

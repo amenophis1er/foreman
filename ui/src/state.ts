@@ -132,6 +132,47 @@ export type RunSummary = {
   metered?: boolean;
   usage?: TokenUsage;
   turns?: number;
+  /** The schedule that started this run, when one did; the header names it. */
+  scheduleId?: string;
+  startedBy?: 'human' | 'phone' | 'schedule' | 'mcp';
+};
+
+/** How often a schedule fires. Mirrors `Cadence` in src/schedule.ts. */
+export type Cadence =
+  | { kind: 'daily'; at: string }
+  | { kind: 'weekly'; day: number; at: string }
+  | { kind: 'interval'; everyMinutes: number }
+  | { kind: 'cron'; expr: string };
+
+/**
+ * A standing instruction: start this mission, in this project, on this
+ * cadence. Mirrors `Schedule` in src/types.ts — the fields the dashboard
+ * shows and the fields the editor writes back.
+ */
+export type Schedule = {
+  id: string; projectId: string; name: string; brief: string;
+  cadence: Cadence;
+  /** Budget for one run, not for the schedule's life. */
+  budgetUsd: number;
+  directorModel?: string; workerModel?: string;
+  directorProviderId?: string; workerProviderId?: string;
+  enabled: boolean; createdAt: number;
+  lastRunId?: string; lastRunAt?: number;
+  lastOutcome?: 'done' | 'error' | 'interrupted' | 'skipped';
+  lastNote?: string;
+  /** Next firing, ms epoch; null when disabled or nothing is scheduled. */
+  nextRunAt: number | null;
+  consecutiveFailures: number;
+  /** Why it stopped firing by itself — never a colour alone in the UI. */
+  pausedReason: null | 'failures' | 'monthly-cap' | 'human';
+};
+
+/** What the editor sends; every field optional on PUT. */
+export type ScheduleInput = {
+  name?: string; brief?: string; cadence?: Cadence; budgetUsd?: number;
+  directorModel?: string; workerModel?: string;
+  directorProviderId?: string; workerProviderId?: string;
+  enabled?: boolean;
 };
 
 export type ProjectSummary = {
@@ -458,11 +499,14 @@ function applyWire(s: RunView, e: WireEvent): RunView {
     case 'git_branch':
     case 'git_note':
     case 'git_committed':
+    // A note about the run itself — that a schedule started it, say. Plain
+    // system furniture: it reports a fact, it is not something gone wrong.
+    case 'run_note':
       return {
         ...s,
         entries: [...s.entries, {
           id: ++seq, ts, agent: 'system', kind: (e.event === 'git_committed' && d.error) || e.event === 'git_note' ? 'error' : 'system',
-          title: e.event === 'git_branch' ? `branch · ${String(d.branch ?? '')}` : e.event === 'git_committed' ? 'branch closed' : 'git',
+          title: e.event === 'git_branch' ? `branch · ${String(d.branch ?? '')}` : e.event === 'git_committed' ? 'branch closed' : e.event === 'run_note' ? 'note' : 'git',
           body: String(d.text ?? ''),
         }],
       };
@@ -797,6 +841,52 @@ export function useRunHistory(projectId: string) {
     return unsub;
   }, [projectId, refresh]);
   return runs;
+}
+
+/**
+ * A project's schedules, and what they have spent this month against the
+ * ceiling that pauses them. Re-read on the events that can change any of it
+ * without this tab acting: a schedule paused itself (failures, the cap), a
+ * firing was skipped, or a run started or ended — which moves `lastOutcome`,
+ * `nextRunAt` and the month's spend at once.
+ */
+export function useSchedules(projectId: string | null): {
+  schedules: Schedule[]; monthSpendUsd: number; monthlyCapUsd: number;
+  loading: boolean; error: string; reload: () => Promise<void>;
+} {
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [spend, setSpend] = useState({ monthSpendUsd: 0, monthlyCapUsd: 0 });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const reload = useCallback(async () => {
+    if (!projectId) { setSchedules([]); setLoading(false); return; }
+    const r = await api.schedules(projectId).catch(() => null);
+    if (!r) { setError('could not reach the server'); setLoading(false); return; }
+    if (!r.ok) {
+      setError((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`);
+      setLoading(false);
+      return;
+    }
+    const d = await r.json() as { schedules: Schedule[]; monthSpendUsd: number; monthlyCapUsd: number };
+    setSchedules(d.schedules ?? []);
+    setSpend({ monthSpendUsd: d.monthSpendUsd ?? 0, monthlyCapUsd: d.monthlyCapUsd ?? 0 });
+    setError('');
+    setLoading(false);
+  }, [projectId]);
+
+  useEffect(() => {
+    setLoading(true);
+    void reload();
+    const unsub = onSse((event, env) => {
+      if (env.projectId !== projectId) return;
+      if (event === 'schedule_paused' || event === 'schedule_skipped'
+        || event === 'run_started' || event === 'run_finished') void reload();
+    });
+    return unsub;
+  }, [projectId, reload]);
+
+  return { schedules, ...spend, loading, error, reload };
 }
 
 // ---------------------------------------------------------------------------
@@ -1324,6 +1414,24 @@ export const api = {
     }),
   clearProviderKey: (providerId: string) =>
     fetch(`/providers/${encodeURIComponent(providerId)}/key`, { method: 'DELETE' }),
+  /** A project's standing instructions, with the month's scheduled spend against its ceiling. */
+  schedules: (projectId: string) => fetch(`/projects/${encodeURIComponent(projectId)}/schedules`),
+  createSchedule: (projectId: string, input: ScheduleInput) =>
+    post(`/projects/${encodeURIComponent(projectId)}/schedules`, input),
+  updateSchedule: (id: string, patch: ScheduleInput) =>
+    fetch(`/schedules/${encodeURIComponent(id)}`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  deleteSchedule: (id: string) =>
+    fetch(`/schedules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  pauseSchedule: (id: string) => post(`/schedules/${encodeURIComponent(id)}/pause`, {}),
+  resumeSchedule: (id: string) => post(`/schedules/${encodeURIComponent(id)}/resume`, {}),
+  /** Start this schedule's mission now; 409 when the project is already busy. */
+  runScheduleNow: (id: string) => post(`/schedules/${encodeURIComponent(id)}/run-now`, {}),
+  /** The next three firings a cadence would produce, or why it cannot be read. */
+  previewCadence: (cadence: Cadence) =>
+    fetch(`/schedules/preview?cadence=${encodeURIComponent(JSON.stringify(cadence))}`),
   browse: (path?: string) =>
     fetch('/browse' + (path ? `?path=${encodeURIComponent(path)}` : '')),
   mkdir: (parent: string, name: string) => post('/mkdir', { parent, name }),

@@ -161,6 +161,34 @@ a human's judgement is required *and* being wrong is expensive.
   phone with buttons. The default is what happens when you truly cannot
   answer, not what happens because you never knew.
 
+## Schedules
+
+A schedule is a mission that starts itself. It lives in Foreman, not in the
+repository: a name, a brief, a cadence — daily, weekly, every N hours, or a
+five-field cron expression — and its own budget. When it fires, the mission
+runs in the project's folder on its own branch and leaves a run you cannot
+tell apart from one you started by hand: same transcript, same files, same
+report, same place in the fleet.
+
+Standing spend is the thing that can hurt you while you are away, so three
+guards bound it, all in the server, none of them the agent's to interpret:
+
+- **The per-run cap**, the same budget every mission has.
+- **A monthly ceiling on scheduled spend, per project** —
+  `scheduledMonthlyCapUsd`, $25 by default. Foreman pauses the schedule
+  *before* the run that would cross it, rather than stopping one halfway.
+- **Two failed scheduled runs in a row pause it.** A schedule that has started
+  failing keeps failing, and it should stop costing money until someone reads
+  why.
+
+A paused schedule says which of the three paused it, and what would undo it.
+
+Schedules are created and edited in the dashboard's project view. The phone
+and `foreman mcp` list them — cadence, next run, whether they are paused and
+why — and can do nothing else: resuming a paused schedule is a decision at the
+desk, because a schedule is standing configuration, and Foreman grants no
+standing changes from a remote surface.
+
 ## From your phone
 
 With the Telegram bot linked (Settings → Notifications, scan the QR):
@@ -230,7 +258,7 @@ result.
 ```sh
 npm ci && npm run setup      # dependencies, then the dashboard build
 npm start                    # serves http://localhost:4177
-npm test                     # 379 tests, node:test
+npm test                     # 424 tests, node:test
 npm run typecheck            # server and dashboard
 npm run dev                  # API + Vite together
 scripts/dev-restart.sh       # restarts the server only when nothing would be lost
@@ -251,12 +279,14 @@ Tools: `fleet_status`, `list_runs`, `run_status` (with `wait_seconds` and
 `until`: one call that blocks until the run changes, finishes, or needs you),
 `run_report` (a finished run in one call: the director's report, DONE WHEN,
 changed files, branch and pull request), `run_transcript`, `mission_doc`,
-`project_memory`, `search_runs`, `doctor`, `link_project` (folder or Git URL),
+`project_memory`, `list_schedules` (read-only: what starts itself and when),
+`search_runs`, `doctor`, `link_project` (folder or Git URL),
 `start_mission`, `steer`. Start, wait until finished, read the report: three calls. It talks to the running server at `FOREMAN_URL`
 (default `http://localhost:4177`) and has no logic of its own.
 
 Deliberately absent: approving or denying, answering the director's questions,
-interrupt, resume, raising a budget, opening a pull request, settings and keys.
+interrupt, resume, raising a budget, opening a pull request, settings and keys,
+and any change to a schedule.
 Those are the moments Foreman exists to put a human in; `run_status` says when
 a run needs one, and with what, so the agent's job is to send you to decide.
 

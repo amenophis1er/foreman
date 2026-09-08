@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { RunStore, newRunId } from './store.js';
-import type { RunMeta } from './types.js';
+import type { RunMeta, Schedule } from './types.js';
 
 function meta(id: string, over: Partial<RunMeta> = {}): RunMeta {
   return {
@@ -149,5 +149,85 @@ test('sweepOrphans leaves a running run alone while another live process owns it
   assert.ok(swept.includes(dead), 'a dead owner is an orphan');
   assert.ok(!swept.includes(theirs), 'a live foreign owner keeps its run');
   assert.equal((await store.readMeta(theirs))!.status, 'running');
+  await rm(root, { recursive: true, force: true });
+});
+
+function schedule(over: Partial<Schedule> = {}): Omit<Schedule, 'id' | 'createdAt'> & { createdAt?: number } {
+  return {
+    projectId: 'p-1', name: 'nightly', brief: 'tidy the tests', budgetUsd: 3,
+    cadence: { kind: 'daily', at: '03:00' } as unknown as Schedule['cadence'],
+    enabled: true, nextRunAt: 1000, consecutiveFailures: 0, pausedReason: null,
+    ...over,
+  };
+}
+
+test('schedules: add generates an id, list is per project and oldest first', async () => {
+  const { store, root } = await tmpStore();
+  const a = await store.addSchedule(schedule({ createdAt: 2000 }));
+  const b = await store.addSchedule(schedule({ createdAt: 1000, name: 'weekly' }));
+  const other = await store.addSchedule(schedule({ projectId: 'p-2' }));
+
+  assert.match(a.id, /^s-[0-9a-f]{12}$/);
+  assert.notEqual(a.id, b.id);
+  assert.deepEqual((await store.listSchedules()).map((s) => s.id), [b.id, a.id, other.id]);
+  assert.deepEqual((await store.listSchedules('p-1')).map((s) => s.name), ['weekly', 'nightly']);
+  assert.deepEqual(await store.getSchedule(a.id), a);
+  assert.equal(await store.getSchedule('s-missing'), null);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('schedules: update merges, and null clears where undefined leaves alone', async () => {
+  const { store, root } = await tmpStore();
+  const s = await store.addSchedule(schedule({ pausedReason: 'failures', consecutiveFailures: 3 }));
+
+  const paused = await store.updateSchedule(s.id, { lastOutcome: 'error' });
+  assert.equal(paused?.pausedReason, 'failures', 'an absent key is left alone');
+  assert.equal(paused?.lastOutcome, 'error');
+
+  const resumed = await store.updateSchedule(s.id, {
+    pausedReason: null, nextRunAt: null, consecutiveFailures: 0,
+  });
+  assert.equal(resumed?.pausedReason, null);
+  assert.equal(resumed?.nextRunAt, null);
+  assert.equal(resumed?.consecutiveFailures, 0);
+  // And it survived the write, not just the returned object.
+  assert.equal((await store.getSchedule(s.id))?.nextRunAt, null);
+
+  assert.equal(await store.updateSchedule('s-missing', { enabled: false }), null);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('schedules: remove reports whether it existed', async () => {
+  const { store, root } = await tmpStore();
+  const a = await store.addSchedule(schedule());
+  const b = await store.addSchedule(schedule({ name: 'other' }));
+  assert.equal(await store.removeSchedule(a.id), true);
+  assert.equal(await store.removeSchedule(a.id), false);
+  assert.deepEqual((await store.listSchedules()).map((s) => s.id), [b.id]);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('schedules: unlinking a project takes its schedules with it', async () => {
+  const { store, root } = await tmpStore();
+  const p = await store.addProject('/tmp/sched-proj');
+  const q = await store.addProject('/tmp/other-proj');
+  await store.addSchedule(schedule({ projectId: p.id }));
+  await store.addSchedule(schedule({ projectId: p.id, name: 'second' }));
+  const keep = await store.addSchedule(schedule({ projectId: q.id }));
+
+  assert.equal(await store.removeProject(p.id), true);
+  assert.deepEqual((await store.listSchedules()).map((s) => s.id), [keep.id]);
+  assert.deepEqual(await store.listSchedules(p.id), []);
+  await rm(root, { recursive: true, force: true });
+});
+
+test('schedules: a corrupt schedules.json reads as empty rather than throwing', async () => {
+  const { store, root } = await tmpStore();
+  const { writeFile } = await import('node:fs/promises');
+  await writeFile(path.join(root, 'schedules.json'), '{not json');
+  assert.deepEqual(await store.listSchedules(), []);
+  // And a write over it recovers the file.
+  const s = await store.addSchedule(schedule());
+  assert.deepEqual((await store.listSchedules()).map((x) => x.id), [s.id]);
   await rm(root, { recursive: true, force: true });
 });

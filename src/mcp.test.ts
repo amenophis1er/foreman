@@ -164,7 +164,44 @@ test('the tool set has no human-only actions', () => {
   for (const forbidden of ['approve', 'deny', 'permission', 'answer', 'interrupt', 'resume', 'budget', 'pull_request', 'open_pr', 'settings', 'key']) {
     assert.ok(!names.some((n) => n.split('_').includes(forbidden) || n === forbidden), `${forbidden} must not be a tool`);
   }
-  assert.deepEqual(names, ['fleet_status', 'list_runs', 'run_status', 'run_report', 'run_transcript', 'mission_doc', 'project_memory', 'search_runs', 'doctor', 'link_project', 'start_mission', 'steer']);
+  assert.deepEqual(names, ['fleet_status', 'list_runs', 'run_status', 'run_report', 'run_transcript', 'mission_doc', 'project_memory', 'list_schedules', 'search_runs', 'doctor', 'link_project', 'start_mission', 'steer']);
+});
+
+test('list_schedules says the cadence in words, the next run both ways, and why one is paused', async () => {
+  const now = Date.now();
+  const { fetchImpl } = fakeServer({
+    'GET /projects': { projects: [
+      { id: 'p1', name: 'app', folder: '/x/app', activeRun: null, lastRun: null, pendingPermissions: 0, pendingQuestions: 0 },
+      { id: 'p2', name: 'lib', folder: '/x/lib', activeRun: null, lastRun: null, pendingPermissions: 0, pendingQuestions: 0 },
+    ] },
+    'GET /projects/p1/schedules': { monthSpendUsd: 4.2, monthlyCapUsd: 25, schedules: [
+      { id: 's1', name: 'nightly deps', cadence: { kind: 'daily', at: '07:30' }, budgetUsd: 3, enabled: true, nextRunAt: now + 15 * 3_600_000, pausedReason: null, consecutiveFailures: 0, lastOutcome: 'done', lastRunId: 'r9', lastRunAt: now - 9 * 3_600_000 },
+      { id: 's2', name: 'weekly audit', cadence: { kind: 'interval', everyMinutes: 360 }, budgetUsd: 2, enabled: false, nextRunAt: null, pausedReason: 'failures', consecutiveFailures: 2 },
+    ] },
+    'GET /projects/p2/schedules': { monthSpendUsd: 0, monthlyCapUsd: 25, schedules: [] },
+  });
+  const r = await tool(foremanTools({ base: 'http://f', fetchImpl }), 'list_schedules').run({});
+  assert.match(r.text, /app \(p1\) — 2 schedules · scheduled this month \$4\.20 of \$25\.00/);
+  assert.match(r.text, /nightly deps · daily 07:30 · next .* \(in 15 h\) · enabled · \$3\.00 per run · last done \(r9\) 9 h ago/);
+  assert.match(r.text, /weekly audit · every 6 hours · no next run while paused · paused after 2 failed scheduled runs in a row/);
+  assert.ok(!r.text.includes('lib'), 'a project with no schedules is not listed when the whole fleet was asked');
+  assert.match(r.text, /created, edited, paused or resumed on the dashboard/);
+});
+
+test('list_schedules takes a project by id or name, and no tool changes a schedule', async () => {
+  const { fetchImpl, calls } = fakeServer({
+    'GET /projects': { projects: [{ id: 'p1', name: 'app', folder: '/x/app', activeRun: null, lastRun: null, pendingPermissions: 0, pendingQuestions: 0 }] },
+    'GET /projects/p1/schedules': { schedules: [] },
+  });
+  const tools = foremanTools({ base: 'http://f', fetchImpl });
+  assert.match((await tool(tools, 'list_schedules').run({ projectId: 'App' })).text, /app \(p1\) — no schedules/);
+  assert.match((await tool(tools, 'list_schedules').run({ projectId: 'nope' })).text, /No project nope\./);
+  assert.ok(!calls.some((c) => c.method !== 'GET'), 'listing schedules only reads');
+  const names = tools.map((t) => t.name);
+  for (const forbidden of ['create_schedule', 'edit_schedule', 'update_schedule', 'pause_schedule', 'resume_schedule', 'run_schedule', 'run_schedule_now', 'delete_schedule']) {
+    assert.ok(!names.includes(forbidden), `${forbidden} must not be a tool`);
+  }
+  assert.match(tool(tools, 'list_schedules').description, /dashboard/);
 });
 
 test('a server that is not there is said in one sentence with the start command', async () => {

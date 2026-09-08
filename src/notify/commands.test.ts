@@ -11,6 +11,8 @@ test('parseCommand: one shape per command, bot suffix tolerated, junk is null', 
   assert.deepEqual(parseCommand('/run lp1 ship it'), { cmd: 'run', project: 'lp1', text: 'ship it' });
   assert.deepEqual(parseCommand('/stop'), { cmd: 'stop' });
   assert.deepEqual(parseCommand('/stop lp1'), { cmd: 'stop', project: 'lp1' });
+  assert.deepEqual(parseCommand('/schedules'), { cmd: 'schedules' });
+  assert.deepEqual(parseCommand('/schedules@ForemanBot lp1'), { cmd: 'schedules', project: 'lp1' });
   assert.equal(parseCommand('/plan test-4'), null);
   assert.equal(parseCommand('/new'), null);
   assert.equal(parseCommand('/dance'), null);

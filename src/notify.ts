@@ -260,12 +260,56 @@ export function shape(env: Envelope, ctx: NotifyContext): Shaped | null {
     case 'run_finished': {
       const status = String(d.status ?? 'done');
       const title = status === 'done' ? 'Mission done' : status === 'error' ? 'Mission failed' : 'Mission interrupted';
+      // A scheduled run says so in its title: nobody pressed start, so the
+      // first question a phone raises — "who did this?" — is already answered.
+      const sched = d.scheduled
+        ? ` · scheduled${d.scheduleName ? ` · ${clip(d.scheduleName, 40)}` : ''}`
+        : '';
       return { key: `finished:${env.runId}`, gate: 'done',
-        text: `${head(title)}${runLine}${foot}` };
+        text: `${head(title + sched)}${runLine}${foot}` };
     }
     case 'run_error':
       return { key: `error:${env.runId}:${env.ts ?? ''}`, gate: 'done',
         text: `${head('Mission error')}${runLine}\n${esc(clip(d.error))}${foot}` };
+
+    // --- scheduled missions -------------------------------------------
+    case 'schedule_paused': {
+      // A paused schedule is the one thing here that stays broken until
+      // someone acts, so it says why in plain words. Which toggle carries it
+      // follows the cause: the monthly ceiling is a spending guard, repeated
+      // failures are a thing only a human can clear. Anything else — a hand
+      // on the switch — is news, not a summons.
+      const reason = String(d.reason ?? '');
+      const gate: keyof NotifyPrefs = reason === 'monthly-cap' ? 'budget' : reason === 'failures' ? 'needsYou' : 'done';
+      const why = reason === 'failures'
+        ? 'two scheduled runs in a row failed'
+        : reason === 'monthly-cap'
+          ? "this month's scheduled spend would go past the ceiling"
+          : reason === 'human'
+            ? 'you paused it'
+            : `paused${reason ? ` — ${esc(clip(reason, 60))}` : ''}`;
+      return {
+        key: `schedule:${d.scheduleId}`, gate,
+        // No buttons on purpose: resuming a schedule is a dashboard act, where
+        // the cadence, the caps and what it last did are all in view.
+        text: `${head('Schedule paused')}\n<b>${esc(clip(d.name, 60))}</b> — ${why}.` +
+          `\n<i>Resume it from the Foreman dashboard; there is no resume from here.</i>${foot}`,
+      };
+    }
+    case 'schedule_skipped': {
+      // Nothing is wrong and nothing is owed: the cadence simply stepped over
+      // a busy project. Keyed by timestamp like a stall, so a run of skips
+      // reads as a run of skips rather than one deduped line.
+      const reason = String(d.reason ?? '');
+      const why = reason === 'project busy'
+        ? 'the project already had a mission running, so this turn was not started'
+        : `not started${reason ? ` — ${esc(clip(reason, 60))}` : ''}`;
+      return {
+        key: `skip:${d.scheduleId}:${env.ts ?? ''}`, gate: 'done',
+        text: `${head('Scheduled run skipped')}\n<b>${esc(clip(d.name, 60))}</b> — ${why}.` +
+          `\n<i>The next scheduled run stands.</i>${foot}`,
+      };
+    }
     default:
       return null;
   }
