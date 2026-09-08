@@ -847,7 +847,7 @@ function sendJson(res: ServerResponse, code: number, body: unknown): void {
  */
 export async function handleDeckRoute(
   req: IncomingMessage, res: ServerResponse, url: URL,
-  lookup: (scope: 'runs' | 'projects', id: string) => Promise<{ folder: string } | null>,
+  lookup: (scope: 'runs' | 'projects', id: string) => Promise<{ folder: string; deck?: Deck } | null>,
 ): Promise<boolean> {
   // The same jail and the same viewer serve two scopes: a run (its deck,
   // relative to a baseline) and a project (its tree as it stands, no baseline).
@@ -863,7 +863,9 @@ export async function handleDeckRoute(
     if (!run) { sendJson(res, 404, { error: 'not found' }); return true; }
 
     if (what === 'deck') {
-      sendJson(res, 200, await deckFor(run.folder, runId));
+      // A finished run's deck is the one frozen when it ended (snapshot.ts);
+      // the caller hands it over. A running run is diffed live.
+      sendJson(res, 200, run.deck ?? await deckFor(run.folder, runId));
       return true;
     }
     if (what === 'tree') {

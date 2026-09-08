@@ -32,6 +32,8 @@ export interface Deck {
   totals: { files: number; additions: number; deletions: number };
   /** The server's caveat, when it has one ("no baseline — showing the working tree"). */
   note?: string;
+  /** Set on a finished run: the deck as it stood when the run ended, not the folder now. */
+  frozenAt?: number;
 }
 
 export interface DeckState {

@@ -182,6 +182,11 @@ export class RunStore {
     return path.join(this.runsDir, runId);
   }
 
+  /** The run's own directory, for the record a run keeps beside its meta and log (see snapshot.ts). */
+  runDirectory(runId: string): string {
+    return this.runDir(runId);
+  }
+
   /** Creates the run directory and writes initial metadata. */
   async createRun(meta: RunMeta): Promise<void> {
     await mkdir(this.runDir(meta.id), { recursive: true });

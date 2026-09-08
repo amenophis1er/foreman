@@ -42,6 +42,8 @@ export const SSE_EVENTS = [
   'models_changed',
   // git: the mission's branch
   'git_branch', 'git_note', 'git_committed', 'pull_request', 'memory_updated',
+  // a resumed run's own mission doc put back into the folder
+  'mission_doc_restored',
 ] as const;
 
 const listeners = new Set<SseListener>();

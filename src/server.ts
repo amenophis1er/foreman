@@ -72,6 +72,7 @@ import { readMemory } from './memory.js';
 import { budgetAnchor, modelRecords, projectRecord, recordLine } from './track-record.js';
 import { reconcileRole } from './role-provider.js';
 import { detectBrowser, installChromium } from './browser.js';
+import { frozenDeck, frozenMissionDoc, restoreMissionDoc, snapshotRun } from './snapshot.js';
 import { closeMissionBranch, compareUrl, createPullRequest, ensureMissionBranch, ghReady, gitInfo, prDraft, pullRequestState, pushBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
@@ -1595,6 +1596,15 @@ async function driveRun(
     // However the run ended, it no longer needs its gateways.
     releaseGateways(meta.id);
     if (activeByProject.get(projectId) === run) activeByProject.delete(projectId);
+    // Freeze the record: the mission doc and the deck as they stand at this
+    // moment, beside the run's meta and log. Done first, before the branch
+    // closes, so the record is what the crew left — a later mission in the
+    // same folder rewrites MISSION.md and the live diff, never this copy.
+    const frozen = await snapshotRun(store.runDirectory(meta.id), meta.folder, meta.id);
+    if (frozen.doc || frozen.deck) {
+      meta.snapshotAt = Date.now();
+      await store.writeMeta(meta).catch(() => {});
+    }
     // A finished mission on its own branch closes with a commit of whatever
     // the crew left uncommitted. Done only: an interrupted run resumes on
     // the same branch and its tree, and an error is not a result to record.
@@ -1773,6 +1783,15 @@ async function resumeRun(projectId: string, meta: RunMeta, pick: {
     if (back) makeEmitter(meta.id, projectId)('git_note', { text: `Could not return to ${meta.git.branch} (${back}); the resumed mission runs on whatever is checked out.` });
     gitInfoCache.delete(meta.folder);
   }
+  // The director resumes from MISSION.md. If another mission ran here since,
+  // the folder's copy is that mission's; this run's own goes back first.
+  const restored = await restoreMissionDoc(store.runDirectory(meta.id), meta.folder).catch(() => 'none' as const);
+  if (restored === 'restored') {
+    const emit = makeEmitter(meta.id, projectId);
+    emit('mission_doc_restored', {
+      text: 'Restored this run\'s own MISSION.md into the folder before resuming; a later mission had overwritten it.',
+    });
+  }
   await store.writeMeta(meta).catch((err) => {
     console.error(`failed to persist resume of ${meta.id}:`, err);
   });
@@ -1895,7 +1914,9 @@ const server = http.createServer(async (req, res) => {
       return project ? { folder: project.folder } : null;
     }
     const m = await store.readMeta(id).catch(() => null);
-    return m ? { folder: m.folder } : null;
+    if (!m) return null;
+    const frozen = m.status !== 'running' ? await frozenDeck(store.runDirectory(m.id)) : null;
+    return { folder: m.folder, ...(frozen ? { deck: frozen } : {}) };
   })) return;
   const runResumeMatch = url.pathname.match(/^\/runs\/([^/]+)\/resume$/);
   const prMatch = url.pathname.match(/^\/runs\/([^/]+)\/pr$/);
@@ -2779,9 +2800,11 @@ const server = http.createServer(async (req, res) => {
       if (!runId) return json(res, 400, { error: 'run parameter is required' });
       const meta = await store.readMeta(runId);
       if (!meta) return json(res, 404, { error: 'unknown run' });
-      const doc = await readFile(path.join(meta.folder, '.foreman', 'MISSION.md'), 'utf8')
-        .catch(() => null);
-      json(res, 200, { doc });
+      // A finished run answers with the doc as it ended; only a running run
+      // reads the folder, which is the one mission running there right now.
+      const frozen = meta.status !== 'running' ? await frozenMissionDoc(store.runDirectory(meta.id)) : null;
+      const doc = frozen ?? await readFile(path.join(meta.folder, '.foreman', 'MISSION.md'), 'utf8').catch(() => null);
+      json(res, 200, { doc, frozen: frozen !== null });
 
     } else if (req.method === 'GET' && url.pathname === '/browse') {
       const requested = url.searchParams.get('path') || os.homedir();

@@ -440,6 +440,11 @@ function applyWire(s: RunView, e: WireEvent): RunView {
           title: d.method === 'gh' ? 'pull request' : 'branch pushed', body: String(d.text ?? ''),
         }],
       };
+    case 'mission_doc_restored':
+      return {
+        ...s,
+        entries: [...s.entries, { id: ++seq, ts, agent: 'system', kind: 'system', title: 'mission doc restored', body: String(d.text ?? '') }],
+      };
     case 'git_branch':
     case 'git_note':
     case 'git_committed':

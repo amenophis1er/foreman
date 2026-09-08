@@ -79,9 +79,11 @@ export function FilesPanel({ runId, deck, loading, error, missing, services = []
   // artifacts live, so the two lists together are the whole picture.
   const seen = new Set((tree?.files ?? []).map((f) => f.path));
   const folderFiles = [...(tree?.files ?? []), ...artifacts.filter((a) => !seen.has(a.path))];
-  const baseline = deck.baseline.kind === 'git' && deck.baseline.head
+  const baseline = (deck.baseline.kind === 'git' && deck.baseline.head
     ? `against ${String(deck.baseline.head).slice(0, 8)}`
-    : deck.baseline.kind === 'snapshot' ? 'against a snapshot at run start' : 'no baseline';
+    : deck.baseline.kind === 'snapshot' ? 'against a snapshot at run start' : 'no baseline')
+    // A finished run's deck is frozen at its end; say so, since the folder has moved on.
+    + (deck.frozenAt ? ` · as it ended ${new Date(deck.frozenAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : '');
 
   return (
     <div style={wrap}>

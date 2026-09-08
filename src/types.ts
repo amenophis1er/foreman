@@ -331,6 +331,8 @@ export interface RunMeta {
    * a resume clears it. Absent when the run ended for any other reason.
    */
   stopReason?: 'budget' | 'turns' | 'time' | 'tokens';
+  /** When the run's record was frozen (MISSION.md and deck copied beside it); absent on older runs. */
+  snapshotAt?: number;
   folder: string;
   mission: string;
   budgetUsd: number;
