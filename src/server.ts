@@ -76,7 +76,7 @@ import { frozenDeck, frozenMissionDoc, parkMissionDoc, restoreMissionDoc, snapsh
 import { closeMissionBranch, compareUrl, createPullRequest, dirtyPaths, ensureMissionBranch, ghReady, gitInfo, missionBranchName, prDraft, pullRequestState, pushBranch, renameMissionBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
-import { ServiceRegistry, portOpen, servicesHandler } from './services.js';
+import { ServiceRegistry, listeningPid, portOpen, servicesHandler, stopService } from './services.js';
 import { HELP_TEXT, expandHome, parseCommand, projectsRoot, slug } from './notify/commands.js';
 import {
   DEFAULT_FLEET_MODEL, FLEET_CHAT_ID, PHONE_CONTEXT_MS, phoneRoute, runFleetTurn,
@@ -1578,8 +1578,11 @@ async function driveRun(
     exposeService: async (runId, port, label) => {
       if (servicesDown) return { ok: false, reason: servicesDown };
       if (!(await portOpen(port))) return { ok: false, reason: `nothing is listening on 127.0.0.1:${port} — start the server first` };
-      const svc = services.register(runId, port, label);
-      return { ok: true, url: `${await servicesBase()}${svc.path}`, path: svc.path };
+      // Whoever holds the port right now is what the crew just started, and
+      // the only process a later stop is allowed to touch.
+      const pid = await listeningPid(port);
+      const svc = services.register(runId, port, label, pid ?? undefined);
+      return { ok: true, url: `${await servicesBase()}${svc.path}`, path: svc.path, pid: pid ?? undefined };
     },
   });
   activeByProject.set(projectId, run);
@@ -1962,6 +1965,8 @@ const server = http.createServer(async (req, res) => {
   const runResumeMatch = url.pathname.match(/^\/runs\/([^/]+)\/resume$/);
   const prMatch = url.pathname.match(/^\/runs\/([^/]+)\/pr$/);
   const prStateMatch = url.pathname.match(/^\/runs\/([^/]+)\/pr\/state$/);
+  const runServicesMatch = url.pathname.match(/^\/runs\/([^/]+)\/services$/);
+  const stopServiceMatch = url.pathname.match(/^\/runs\/([^/]+)\/services\/(\d{1,5})\/stop$/);
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
   const providerKeyMatch = url.pathname.match(/^\/providers\/([A-Za-z0-9_-]{1,64})\/key$/);
 
@@ -2705,6 +2710,33 @@ const server = http.createServer(async (req, res) => {
       broadcastChat(FLEET_CHAT_ID, 'chat_cleared', {});
       json(res, 200, { ok: true });
 
+    } else if (runServicesMatch && req.method === 'GET') {
+      // What this run exposed, and what of it is still up. Asked after a run
+      // ends as much as during it: a finished mission leaves no agent behind
+      // to tidy, so the human needs somewhere to see the leftovers.
+      const meta = await store.readMeta(runServicesMatch[1]).catch(() => null);
+      if (!meta) return json(res, 404, { error: 'unknown run' });
+      const list = await Promise.all((meta.services ?? []).map(async (s) => {
+        const holder = await listeningPid(s.port);
+        return {
+          port: s.port, label: s.label, since: s.since, path: s.path,
+          listening: holder !== null,
+          // Only a process Foreman watched start is one it will offer to stop.
+          ours: holder !== null && s.pid !== undefined && holder === s.pid,
+        };
+      }));
+      json(res, 200, { runId: meta.id, status: meta.status, services: list });
+
+    } else if (stopServiceMatch && req.method === 'POST') {
+      const meta = await store.readMeta(stopServiceMatch[1]).catch(() => null);
+      if (!meta) return json(res, 404, { error: 'unknown run' });
+      const port = Number(stopServiceMatch[2]);
+      const svc = (meta.services ?? []).find((s) => s.port === port);
+      if (!svc) return json(res, 404, { error: 'this run did not expose that port' });
+      const r = await stopService(port, svc.pid);
+      if (!r.ok) return json(res, 409, { error: r.reason });
+      json(res, 200, { ok: true, how: r.how });
+
     } else if (prStateMatch && req.method === 'GET') {
       // What became of the run's pull request. A final answer (merged,
       // closed) is written to the run so it is not asked again; open is.
@@ -2990,7 +3022,7 @@ void closeOrphanedChatTurns().then((ids) => {
 // Services declared by earlier runs are still worth proxying if their
 // processes outlived the run; the registry is rebuilt from what was saved.
 void store.listRuns().then((runs) => {
-  for (const r of runs) for (const s of (r as { services?: Array<{ port: number; label: string }> }).services ?? []) services.register(r.id, s.port, s.label);
+  for (const r of runs) for (const s of (r as { services?: Array<{ port: number; label: string; pid?: number }> }).services ?? []) services.register(r.id, s.port, s.label, s.pid);
 }).catch(() => {});
 
 if (BIND === 'all') {

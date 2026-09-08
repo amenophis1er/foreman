@@ -16,11 +16,18 @@
  */
 import http from 'node:http';
 import net from 'node:net';
+import { execFile } from 'node:child_process';
 import type { GuardVerdict } from './guard.js';
 
 export interface ExposedService {
   port: number;
   label: string;
+  /**
+   * The process listening on the port when the crew exposed it. Recorded so a
+   * stop later can prove it is still the same process — a port is a slot
+   * anyone can take, and Foreman must never kill something it did not start.
+   */
+  pid?: number;
   /** `/svc/<runId>/<port>/` — the path under the services origin, not Foreman's. */
   path: string;
   since: number;
@@ -53,14 +60,66 @@ export function portOpen(port: number, timeoutMs = 800): Promise<boolean> {
   });
 }
 
+/**
+ * The pid of whatever is listening on a local port, via lsof. Null when
+ * nothing is, or when lsof is unavailable — in which case Foreman simply
+ * never offers to stop the service, which is the safe direction.
+ */
+export async function listeningPid(port: number): Promise<number | null> {
+  return new Promise((resolve) => {
+    execFile('lsof', ['-nP', '-t', `-iTCP:${port}`, '-sTCP:LISTEN'], { timeout: 3000 }, (err, stdout) => {
+      if (err) return resolve(null);
+      const pid = Number(String(stdout).split('\n')[0]?.trim());
+      resolve(Number.isInteger(pid) && pid > 0 ? pid : null);
+    });
+  });
+}
+
+/** Is this process still alive? Signal 0 asks without sending anything. */
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+export type StopResult =
+  | { ok: true; how: 'term' | 'kill' }
+  | { ok: false; reason: string };
+
+/**
+ * Stops a service the crew started, and only that one. The pid recorded when
+ * it was exposed must still be the process holding the port: if something
+ * else took the port since, or the recorded process is gone, this refuses
+ * rather than guessing. SIGTERM first, so a dev server gets to clean up.
+ */
+export async function stopService(port: number, expectedPid: number | undefined, graceMs = 4000): Promise<StopResult> {
+  if (!expectedPid) return { ok: false, reason: 'Foreman did not record which process this was, so it will not kill anything.' };
+  const holder = await listeningPid(port);
+  if (holder === null) return { ok: false, reason: `nothing is listening on 127.0.0.1:${port} any more` };
+  if (holder !== expectedPid) {
+    return { ok: false, reason: `port ${port} is held by process ${holder} now, not the ${expectedPid} this run started — leaving it alone` };
+  }
+  try { process.kill(expectedPid, 'SIGTERM'); } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 150));
+    if (!alive(expectedPid)) return { ok: true, how: 'term' };
+  }
+  try { process.kill(expectedPid, 'SIGKILL'); } catch { /* already gone */ }
+  await new Promise((r) => setTimeout(r, 200));
+  return alive(expectedPid)
+    ? { ok: false, reason: `process ${expectedPid} did not stop` }
+    : { ok: true, how: 'kill' };
+}
+
 export class ServiceRegistry {
   private byRun = new Map<string, ExposedService[]>();
 
-  register(runId: string, port: number, label: string): ExposedService {
+  register(runId: string, port: number, label: string, pid?: number): ExposedService {
     const list = this.byRun.get(runId) ?? [];
     const existing = list.find((s) => s.port === port);
-    if (existing) { existing.label = label || existing.label; return existing; }
-    const svc: ExposedService = { port, label: label || `port ${port}`, path: servicePath(runId, port), since: Date.now() };
+    if (existing) { existing.label = label || existing.label; if (pid) existing.pid = pid; return existing; }
+    const svc: ExposedService = { port, label: label || `port ${port}`, path: servicePath(runId, port), since: Date.now(), pid };
     this.byRun.set(runId, [...list, svc]);
     return svc;
   }

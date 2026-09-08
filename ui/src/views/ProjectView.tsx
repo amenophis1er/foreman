@@ -260,6 +260,64 @@ function useMemory(projectId: string): { text: string; updatedAt?: number; loade
   return m;
 }
 
+export interface RunService { port: number; label: string; since: number; listening: boolean; ours: boolean }
+
+/**
+ * Servers this run exposed, and whether they are still up. Re-read when the
+ * run's status changes, because the interesting moment is after it ends:
+ * that is when a leftover dev server has nobody left to shut it down and
+ * quietly keeps its port for the rest of the day.
+ */
+function useRunServices(runId: string | null, runStatus: string | undefined) {
+  const [list, setList] = useState<RunService[]>([]);
+  const load = React.useCallback(() => {
+    if (!runId) { setList([]); return; }
+    void api.runServices(runId).then(async (r) => {
+      if (!r.ok) return;
+      const d = await r.json() as { services: RunService[] };
+      setList(d.services ?? []);
+    }).catch(() => {});
+  }, [runId]);
+  useEffect(load, [load, runStatus]);
+  return { list, refresh: load };
+}
+
+/**
+ * The leftovers, where the human will be when they notice: on the run that
+ * started them. Stop asks the server, which kills the recorded process only
+ * if it is still the one holding the port.
+ */
+function LeftoverServices({ runId, services, onDone }: { runId: string; services: RunService[]; onDone: () => void }) {
+  const [busy, setBusy] = useState<number | null>(null);
+  const [err, setErr] = useState('');
+  const up = services.filter((s) => s.listening);
+  if (!up.length) return null;
+  const stop = async (port: number) => {
+    setBusy(port); setErr('');
+    const r = await api.stopService(runId, port).finally(() => setBusy(null));
+    if (!r.ok) setErr((await r.json().catch(() => ({ error: 'could not stop it' }))).error);
+    onDone();
+  };
+  return (
+    <Banner tone="caution">
+      This run left {up.length === 1 ? 'a server' : `${up.length} servers`} running:{' '}
+      {up.map((s, i) => (
+        <span key={s.port}>
+          {i > 0 ? ', ' : ''}
+          <span style={{ fontFamily: 'var(--font-mono)' }}>{s.port}</span> ({s.label})
+          {s.ours ? (
+            <Button variant="ghost" size="sm" disabled={busy === s.port} style={{ marginLeft: 4 }}
+              onClick={() => void stop(s.port)}>{busy === s.port ? 'Stopping…' : 'Stop'}</Button>
+          ) : (
+            <span style={{ color: 'var(--ink-2)' }}> — held by another process now, left alone</span>
+          )}
+        </span>
+      ))}
+      {err && <div style={{ marginTop: 4, color: 'var(--ink-2)' }}>{err}</div>}
+    </Banner>
+  );
+}
+
 /**
  * What the project "believes": .foreman/MEMORY.md, as the crew keeps it.
  * Read-only here — the file is the human's to edit with any editor, and the
@@ -780,6 +838,7 @@ export function ProjectView({
   const heldBranch = activeRunId ? history.find((r) => r.id === activeRunId)?.git?.branch : undefined;
   const viewingLive = selectedRunId !== null && selectedRunId === activeRunId;
   const run = useRunView(selectedRunId, viewingLive);
+  const leftovers = useRunServices(selectedRunId, run.runStatus);
   const selectedRun = history.find((r) => r.id === selectedRunId);
   const isRunning = viewingLive && run.runStatus === 'running';
   const [filter, setFilter] = useState<string | null>(null);
@@ -1210,6 +1269,7 @@ export function ProjectView({
           This run stopped at its {selectedRun.stopReason === 'turns' ? 'turn' : selectedRun.stopReason === 'time' ? 'time' : 'token'} cap. Resume continues it with a fresh allowance.
         </Banner>
       )}
+      {selectedRunId && <LeftoverServices runId={selectedRunId} services={leftovers.list} onDone={leftovers.refresh} />}
       {heldBranch && (
         <Banner tone="caution">
           This checkout is held by the running mission, on{' '}

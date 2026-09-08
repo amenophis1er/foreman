@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { ServiceRegistry, parseServicePath, portOpen, proxyToService, servicePath, servicesHandler } from './services.js';
+import { ServiceRegistry, listeningPid, parseServicePath, portOpen, proxyToService, servicePath, servicesHandler, stopService } from './services.js';
+import { spawn } from 'node:child_process';
 import { requestAllowed } from './guard.js';
 
 test('service paths round-trip and reject junk', () => {
@@ -85,4 +86,48 @@ test('the services port serves only /svc/ — everything else is a 404', async (
   } finally {
     server.close();
   }
+});
+
+/** A child process holding a port, the way a crew's dev server does. */
+async function server(): Promise<{ pid: number; port: number; kill: () => void }> {
+  const child = spawn(process.execPath, ['-e',
+    "const s=require('http').createServer((_,r)=>r.end('ok'));s.listen(0,'127.0.0.1',()=>console.log(s.address().port));"],
+    { stdio: ['ignore', 'pipe', 'ignore'] });
+  const port = await new Promise<number>((resolve, reject) => {
+    child.stdout.once('data', (b) => resolve(Number(String(b).trim())));
+    child.once('error', reject);
+    setTimeout(() => reject(new Error('the test server never reported a port')), 5000);
+  });
+  return { pid: child.pid as number, port, kill: () => { try { child.kill('SIGKILL'); } catch { /* gone */ } } };
+}
+
+test('listeningPid names the process holding a port, and nobody for a free one', async () => {
+  const s = await server();
+  try {
+    assert.equal(await listeningPid(s.port), s.pid);
+  } finally { s.kill(); }
+  // Once it is gone the port is nobody's.
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(await listeningPid(s.port), null);
+});
+
+test('stopService stops the recorded process, and refuses every other case', async () => {
+  const s = await server();
+  try {
+    assert.deepEqual(await stopService(s.port, undefined), {
+      ok: false, reason: 'Foreman did not record which process this was, so it will not kill anything.',
+    }, 'no recorded pid means no killing');
+
+    const wrong = await stopService(s.port, s.pid + 100000);
+    assert.equal(wrong.ok, false, 'a port held by someone else is left alone');
+    assert.match((wrong as { reason: string }).reason, /not the/);
+    assert.equal(await portOpen(s.port), true, 'and the refusal really did leave it running');
+
+    const stopped = await stopService(s.port, s.pid);
+    assert.equal(stopped.ok, true);
+    assert.equal(await portOpen(s.port), false);
+
+    const gone = await stopService(s.port, s.pid);
+    assert.equal(gone.ok, false, 'stopping twice is not an error worth pretending about');
+  } finally { s.kill(); }
 });

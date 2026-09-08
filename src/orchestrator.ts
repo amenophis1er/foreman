@@ -720,6 +720,11 @@ directing worker agents. Non-negotiable rules, in priority order:
    (a dev server, a static preview), call mcp__foreman__expose_service with
    its port and put the URL it returns in your report — the human can open
    it from their phone. Keep that server up until the mission ends.
+   CLEAN UP WHAT YOU STARTED: before you finish, stop every server, watcher or
+   background process the crew started that you are not deliberately leaving
+   for the human, and name in your report any you left up and on which port.
+   A process that outlives the mission holds its port until somebody hunts it
+   down by hand.
 4. REPORT WHAT YOU SEE. Judge the work as a competent professional would, not
    only against the letter of the acceptance criteria. If you observe a defect
    the criteria did not name — tap targets too small to use, unreadable
@@ -914,7 +919,7 @@ export class MissionRun {
      * has no `expose_service` to offer.
      */
     private readonly host: {
-      exposeService?: (runId: string, port: number, label: string) => Promise<{ ok: true; url: string; path: string } | { ok: false; reason: string }>;
+      exposeService?: (runId: string, port: number, label: string) => Promise<{ ok: true; url: string; path: string; pid?: number } | { ok: false; reason: string }>;
       /** The browser channel detected at dispatch (src/browser.ts); Chrome when the host says nothing. */
       browserChannel?: string;
     } = {},
@@ -2457,7 +2462,7 @@ export class MissionRun {
         if (!fn) return { content: [{ type: 'text' as const, text: 'Exposing services is not available in this run.' }] };
         const r = await fn(this.meta.id, port, (label ?? '').trim() || `port ${port}`);
         if (!r.ok) return { content: [{ type: 'text' as const, text: `Not exposed: ${r.reason}` }] };
-        const entry = { port, label: (label ?? '').trim() || `port ${port}`, path: r.path, since: Date.now() };
+        const entry = { port, label: (label ?? '').trim() || `port ${port}`, path: r.path, since: Date.now(), pid: r.pid };
         this.meta.services = [...(this.meta.services ?? []).filter((s) => s.port !== port), entry];
         this.saveMeta(this.meta);
         this.emit('service_exposed', { ...entry, url: r.url });

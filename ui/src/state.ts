@@ -1240,6 +1240,10 @@ export const api = {
   openPr: (runId: string, title: string, body: string) => post(`/runs/${encodeURIComponent(runId)}/pr`, { title, body }),
   prState: (runId: string) => fetch(`/runs/${encodeURIComponent(runId)}/pr/state`),
   memory: (projectId: string) => fetch(`/projects/${encodeURIComponent(projectId)}/memory`),
+  /** What a run exposed and what of it is still listening. */
+  runServices: (runId: string) => fetch(`/runs/${encodeURIComponent(runId)}/services`),
+  /** Stops one of them — only ever the process Foreman watched the crew start. */
+  stopService: (runId: string, port: number) => post(`/runs/${encodeURIComponent(runId)}/services/${port}/stop`, {}),
   instances: () => fetch('/instances'),
   doctor: () => fetch('/doctor'),
   setupDone: () => post('/setup/done', {}),
