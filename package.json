@@ -1,6 +1,6 @@
 {
   "name": "@amenophis1er/foreman",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Autonomous mission runner on the Claude Agent SDK: a director plans, delegates to workers, verifies, and reports — from one dashboard, your phone, or the CLI.",
   "keywords": [
     "claude",
