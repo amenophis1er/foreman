@@ -222,6 +222,20 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
     },
   };
 
+  /**
+   * What a reader of run_status would notice changing. `until: 'any'` waits
+   * for THIS to move, not for the next event: a fresh run emits a cost frame
+   * per SDK message, and returning on those meant "changed: true" twice in a
+   * row with identical payloads — a client had to poll after all.
+   */
+  async function digestOf(id: string): Promise<string> {
+    const r = await findRun(id);
+    const needs = await needsOf(id);
+    const doc = await get<{ doc: string }>(`/missiondoc?run=${encodeURIComponent(id)}`).then((d) => d.doc ?? '').catch(() => '');
+    const dw = doneWhen(doc);
+    return JSON.stringify([r.status, r.stopReason ?? null, (r.costUsd ?? 0).toFixed(2), (r.workers ?? []).map((w) => `${w.id}:${w.status}`), dw.done.length, dw.open.length, needs.map((n) => n.id), r.git?.commits ?? 0, r.git?.pr ?? null]);
+  }
+
   /** What is pending on a run right now, from the fleet payload. */
   async function needsOf(id: string): Promise<Need[]> {
     const projects = (await get<{ projects: ProjectCard[] }>('/projects')).projects;
@@ -248,6 +262,7 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
         // round with the time that is left. The clock is the outer bound.
         const deadline = Date.now() + Number(wait_seconds) * 1000;
         changed = false;
+        const before = await digestOf(id);
         for (;;) {
           const now = await findRun(id);
           const satisfied = now.status !== 'running'
@@ -258,7 +273,8 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
           if (left <= 0) break;
           const got = await waitForRunEvent(base, id, left, f);
           if (!got) break;
-          changed = true;
+          // An event arrived; only count it when the picture it paints differs.
+          if ((await digestOf(id)) !== before) changed = true;
         }
       }
       const r = await findRun(id);

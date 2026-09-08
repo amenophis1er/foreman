@@ -17,7 +17,7 @@
  * not an archive of the repository.
  */
 import path from 'node:path';
-import { mkdir, readFile, writeFile, rename, stat } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, stat, unlink } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { deckFor, type Deck } from './deck.js';
 
@@ -87,6 +87,25 @@ export async function restoreMissionDoc(runDir: string, folder: string): Promise
   if (current === frozen) return 'same';
   await writeAtomic(missionDocPath(folder), frozen);
   return 'restored';
+}
+
+/**
+ * A new run starts with no mission doc in the folder. The previous run's
+ * MISSION.md would otherwise sit there until the new director rewrites it,
+ * and everything reading the folder — run_status, the fleet card, the rail —
+ * showed the old DONE WHEN, ticked, on a run that had just begun. The old doc
+ * is kept: copied into the previous run's record when that run has no copy
+ * yet (runs from before records were frozen), then removed from the folder.
+ */
+export async function parkMissionDoc(folder: string, previousRunDir: string | null): Promise<'parked' | 'none'> {
+  const file = missionDocPath(folder);
+  const text = await readFile(file, 'utf8').catch(() => null);
+  if (text === null) return 'none';
+  if (previousRunDir && (await frozenMissionDoc(previousRunDir)) === null) {
+    await writeAtomic(path.join(previousRunDir, SNAPSHOT_DOC), text).catch(() => {});
+  }
+  await unlink(file).catch(() => {});
+  return 'parked';
 }
 
 /** Does the run have a frozen record at all? */

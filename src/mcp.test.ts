@@ -58,8 +58,8 @@ test('run_status: crew, DONE WHEN from the mission doc, needs, and no wait on a 
   assert.ok(!calls.some((c) => c.path.startsWith('/events')), 'a finished run is never waited on');
 });
 
-test('run_status with a wait subscribes to /events and returns on the first event for that run', async () => {
-  const sse = new ReadableStream<Uint8Array>({
+test('run_status with a wait returns when the run\'s picture changes, not on a bare event', async () => {
+  const sse = () => new ReadableStream<Uint8Array>({
     start(c) {
       const enc = new TextEncoder();
       c.enqueue(enc.encode(': connected\n\n'));
@@ -67,27 +67,31 @@ test('run_status with a wait subscribes to /events and returns on the first even
       c.enqueue(enc.encode('event: worker_started\ndata: {"runId":"r1","projectId":"p1","data":{"id":"worker-2"}}\n\n'));
     },
   });
+  let rounds = 0;
   const { fetchImpl } = fakeServer({
-    'GET /runs': { runs: [run()] },
+    // First round: an event, but the same run — no change. Second: a new worker.
+    'GET /runs': () => ({ runs: [run(rounds >= 2 ? { workers: [{ id: 'worker-1', status: 'done', costUsd: 0.4, task: 'write tests' }, { id: 'worker-2', status: 'running', costUsd: 0, task: 'more' }] } : {})] }),
     'GET /projects': { projects: [{ id: 'p1', name: 'app', folder: '/x/app', activeRun: run(), needs: [{ kind: 'perm', id: 'a1', runId: 'r1', text: 'director wants Bash — rm -rf dist' }] }] },
     'GET /missiondoc': { doc: '' },
-    'GET /events': new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+    'GET /events': () => { rounds += 1; return new Response(sse(), { status: 200, headers: { 'content-type': 'text/event-stream' } }); },
   });
   const r = await tool(foremanTools({ base: 'http://f', fetchImpl }), 'run_status').run({ runId: 'r1', wait_seconds: 5 });
   assert.match(r.text, /changed: yes/);
+  assert.ok(rounds >= 2, 'the first event changed nothing visible, so it kept waiting');
+  assert.match(r.text, /worker-2 · running/);
   assert.match(r.text, /NEEDS YOU \(1\) — only a human can answer/);
   assert.match(r.text, /\[perm\] director wants Bash/);
 });
 
 test('run_status until=finished waits through events that are not the end, and stops at the end', async () => {
   // Two rounds: a cost tick (not finished) then the run turns done.
-  let reads = 0;
+  let rounds = 0;
   const sseOnce = () => new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode('event: cost\ndata: {"runId":"r1","projectId":"p1","data":{}}\n\n')); } });
   const { fetchImpl, calls } = fakeServer({
-    'GET /runs': () => { reads += 1; return { runs: [run({ status: reads >= 4 ? 'done' : 'running' })] }; },
+    'GET /runs': () => ({ runs: [run({ status: rounds >= 2 ? 'done' : 'running' })] }),
     'GET /projects': { projects: [{ id: 'p1', name: 'app', folder: '/x/app', activeRun: null, needs: [] }] },
     'GET /missiondoc': { doc: '' },
-    'GET /events': () => new Response(sseOnce(), { status: 200 }),
+    'GET /events': () => { rounds += 1; return new Response(sseOnce(), { status: 200 }); },
   });
   const r = await tool(foremanTools({ base: 'http://f', fetchImpl }), 'run_status').run({ runId: 'r1', wait_seconds: 10, until: 'finished' });
   assert.match(r.text, /r1 · done/);

@@ -70,7 +70,12 @@ export async function gitInfo(folder: string): Promise<GitInfo> {
 /** `foreman/<first words of the brief>-<id tail>`: readable in `git branch`, unique per run. */
 export function missionBranchName(mission: string, runId: string): string {
   const first = mission.split('\n').find((l) => l.trim())?.trim() ?? 'mission';
-  const slug = first.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').split('-').filter(Boolean).slice(0, 6).join('-').slice(0, 40).replace(/-+$/, '') || 'mission';
+  // Whole words up to six and forty characters: a name cut mid-word
+  // ("null-handli") reads worse than a shorter one.
+  const words = first.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').split('-').filter(Boolean).slice(0, 6);
+  let slug = '';
+  for (const w of words) { const next = slug ? `${slug}-${w}` : w; if (next.length > 40) break; slug = next; }
+  slug = slug || words[0]?.slice(0, 40) || 'mission';
   const tail = runId.replace(/[^a-z0-9]/gi, '').slice(-4).toLowerCase();
   return `foreman/${slug}-${tail}`;
 }
@@ -90,6 +95,27 @@ export async function startMissionBranch(folder: string, mission: string, runId:
     return { error: err instanceof Error ? err.message : String(err) };
   }
   return { branch, base: info.branch ?? 'HEAD', baseHead: info.head ?? null };
+}
+
+/**
+ * The branch takes the run's title once there is one. Branches are created
+ * before the title exists (the title is a model call that lands seconds
+ * later), so they started from the brief's first words — and briefs that all
+ * open with the same boilerplate gave every run the same name. Renamed in
+ * place, only while nothing has been committed on it and it is still checked
+ * out. Returns the new name, or null when it was left as it was.
+ */
+export async function renameMissionBranch(folder: string, from: string, title: string, runId: string): Promise<string | null> {
+  const to = missionBranchName(title, runId);
+  if (to === from) return null;
+  const info = await gitInfo(folder);
+  if (!info.repo || info.branch !== from) return null;
+  try {
+    await git(['branch', '-m', from, to], folder);
+    return to;
+  } catch {
+    return null;
+  }
 }
 
 /**

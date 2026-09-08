@@ -604,6 +604,8 @@ type AgentRole = 'director' | 'worker';
  * and which role's rates price the tokens.
  */
 interface WorkerOverrides {
+  /** Set on the one continuation a worker gets after the turn cap. */
+  continued?: boolean;
   env?: AgentEnv;
   model?: string;
   priceRole?: AgentRole;
@@ -745,6 +747,19 @@ const USAGE_LIMIT_RE = /out of usage credits|usage limit reached|upgrade to incr
 
 /** One worker's outcome, as runWorker hands it back. */
 interface WorkerOutcome { report: string; isError: boolean }
+
+/**
+ * Turns a worker gets before the SDK stops it. Raised from 60: five workers
+ * in four missions hit the cap mid-task on legitimate, brief-sized work
+ * (a hundred TypeScript errors in one package; a test-suite port), and each
+ * time the director paid to respawn one that re-read the same files.
+ */
+const WORKER_MAX_TURNS = 100;
+/** What a worker stopped by the cap is told when its session is picked back up. */
+const WORKER_CONTINUE_PROMPT =
+  'You were stopped by the turn cap, not by a failure. Your session and your files are as you left them; ' +
+  '`git status` and `git diff` show your uncommitted work. Continue the same task from where you were — do not ' +
+  'start over or re-read what you already know — finish it, report with report_progress, and end your turn.';
 
 /**
  * A worker record plus the in-process handles that must never be persisted:
@@ -1983,7 +1998,7 @@ export class MissionRun {
         permissionMode: 'default',
         resume: resumeSessionId,
         model: overrides?.model || this.meta.workerModel,
-        maxTurns: 60,
+        maxTurns: WORKER_MAX_TURNS,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: WORKER_CHARTER },
         ...(overrides?.env ?? this.agentEnv.worker),
         // Built per worker: the report_progress handler closes over this id,
@@ -1996,6 +2011,7 @@ export class MissionRun {
     w.q = q;
 
     let report = '';
+    let hitTurnCap = false;
     let isError = false;
 
     // The stall watchdog. A silent worker no longer blocks the director, but
@@ -2041,6 +2057,7 @@ export class MissionRun {
         if (m.type === 'result') {
           report = String(m.result ?? '');
           isError = Boolean(m.is_error);
+          hitTurnCap = m.subtype === 'error_max_turns' || /maximum number of turns/i.test(report);
           this.noteUsageLimit(report);
           // Same ordering rule as the director loop: the cost event carries
           // usage, so usage has to be current before it is emitted.
@@ -2058,6 +2075,16 @@ export class MissionRun {
     } finally {
       watchdog.stop();
       w.q = undefined;
+    }
+
+    // A worker stopped by the turn cap mid-task is not a failed worker. Its
+    // session is resumed once with a continue turn — the same context, the
+    // same files — instead of handing the director an error it can only
+    // answer by spawning a replacement that re-reads everything. Once: a
+    // worker that burns two allowances is stuck, and that IS the director's.
+    if (hitTurnCap && !overrides?.continued && w.sessionId && !stalled && !looping) {
+      this.emit('worker_progress', { id: workerId, status: `reached the ${WORKER_MAX_TURNS}-turn cap mid-task; continuing the same session once` });
+      return this.runWorker(workerId, WORKER_CONTINUE_PROMPT, w.sessionId, { ...overrides, continued: true });
     }
 
     // Told to the director as a fact plus its options, not as an order: it is

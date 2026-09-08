@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, writeFile } from 'node:fs/promises';
-import { closeMissionBranch, ensureMissionBranch, gitInfo, missionBranchName, startMissionBranch } from './gitwork.js';
+import { closeMissionBranch, ensureMissionBranch, gitInfo, missionBranchName, startMissionBranch, renameMissionBranch } from './gitwork.js';
 
 const sh = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).toString();
 
@@ -92,4 +92,19 @@ test('prDraft: the run title, the brief, the boxes as the mission left them, and
   assert.match(d.body, /## Mission\n\nAdd a footer to the page\.\nKeep it small\./);
   assert.match(d.body, /## Done when\n\n- \[x\] footer\.html exists\n- \[ \] linked from index/);
   assert.match(d.body, /branch `foreman\/add-a-footer-ab12` from `main` · spend \$0\.42/);
+});
+
+
+test('renameMissionBranch takes the run title once there is one, and leaves a branch that moved on', async () => {
+  const dir = await repo();
+  const g = await startMissionBranch(dir, 'Repo: this folder is a git worktree. Do the thing.', '1788713434983-226123af');
+  assert.ok(!('error' in g));
+  assert.equal(g.branch, 'foreman/repo-this-folder-is-a-git-23af');
+  const renamed = await renameMissionBranch(dir, g.branch, 'Studio data sanitization and null handling', '1788713434983-226123af');
+  assert.equal(renamed, 'foreman/studio-data-sanitization-and-null-23af');
+  assert.equal(sh(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), renamed);
+  // Same name again: nothing to do. Not on the branch any more: left alone.
+  assert.equal(await renameMissionBranch(dir, renamed!, 'Studio data sanitization and null handling', '1788713434983-226123af'), null);
+  sh(dir, 'checkout', '-q', 'main');
+  assert.equal(await renameMissionBranch(dir, renamed!, 'Another title', '1788713434983-226123af'), null);
 });

@@ -72,8 +72,8 @@ import { readMemory } from './memory.js';
 import { budgetAnchor, modelRecords, projectRecord, recordLine } from './track-record.js';
 import { reconcileRole } from './role-provider.js';
 import { detectBrowser, installChromium } from './browser.js';
-import { frozenDeck, frozenMissionDoc, restoreMissionDoc, snapshotRun } from './snapshot.js';
-import { closeMissionBranch, compareUrl, createPullRequest, ensureMissionBranch, ghReady, gitInfo, prDraft, pullRequestState, pushBranch, startMissionBranch, type GitInfo } from './gitwork.js';
+import { frozenDeck, frozenMissionDoc, parkMissionDoc, restoreMissionDoc, snapshotRun } from './snapshot.js';
+import { closeMissionBranch, compareUrl, createPullRequest, ensureMissionBranch, ghReady, gitInfo, missionBranchName, prDraft, pullRequestState, pushBranch, renameMissionBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
 import { ServiceRegistry, portOpen, servicesHandler } from './services.js';
@@ -594,6 +594,21 @@ function makeEmitter(runId: string, projectId: string) {
       runLabelCache.set(runId, { ...runLabelCache.get(runId), mission: String(d.mission ?? '') });
     } else if (event === 'run_titled') {
       runLabelCache.set(runId, { ...runLabelCache.get(runId), title: String(d.title ?? '') });
+      // The branch was named from the brief before the title existed; now it
+      // can carry the title. Only while it is still the brief-derived name and
+      // nothing is committed on it — the mission's first turns.
+      const run = activeRuns().find((r) => r.meta.id === runId);
+      const title = String(d.title ?? '').trim();
+      if (run?.meta.git && title && run.meta.git.branch === missionBranchName(run.meta.mission, runId) && !(run.meta.git.commits)) {
+        void renameMissionBranch(run.meta.folder, run.meta.git.branch, title, runId).then(async (renamed) => {
+          if (!renamed || !run.meta.git) return;
+          const was = run.meta.git.branch;
+          run.meta.git = { ...run.meta.git, branch: renamed };
+          await store.writeMeta(run.meta).catch(() => {});
+          gitInfoCache.delete(run.meta.folder);
+          makeEmitter(runId, projectId)('git_branch', { branch: renamed, base: run.meta.git.base, text: `Branch renamed to ${renamed} (was ${was}) now that the run has a title.` });
+        });
+      }
     }
     if (!projectsCache.has(projectId)) {
       void store.getProject(projectId).then((p) => { if (p) projectsCache.set(projectId, { name: p.name }); });
@@ -1710,6 +1725,14 @@ async function startRun(
     return;
   }
   await consumeProposal(projectId, meta.id, mission).catch(() => {});
+  // The folder's MISSION.md belongs to whichever run wrote it. Parked into
+  // that run's record (when it lacks one) and cleared, so this run's status
+  // reads empty until its own director writes the plan — not 13/14 done.
+  {
+    const previous = (await store.listRuns().catch(() => [] as RunMeta[]))
+      .find((r) => r.projectId === projectId && r.id !== meta.id && r.status !== 'running');
+    await parkMissionDoc(folder, previous ? store.runDirectory(previous.id) : null).catch(() => {});
+  }
   // In a repository, the mission gets a branch of its own before the crew
   // touches anything — so the deck's baseline, taken at the director's first
   // turn, is the branch point, and the diff is exactly the mission.

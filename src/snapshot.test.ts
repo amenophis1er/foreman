@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { frozenDeck, frozenMissionDoc, hasSnapshot, restoreMissionDoc, snapshotRun } from './snapshot.js';
+import { frozenDeck, frozenMissionDoc, hasSnapshot, parkMissionDoc, restoreMissionDoc, snapshotRun } from './snapshot.js';
 
 async function site() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'foreman-snap-'));
@@ -49,5 +49,20 @@ test('a run with no mission doc still freezes its deck; a missing folder freezes
   const gone = await snapshotRun(path.join(root, 'runs', 'r2'), path.join(root, 'nowhere'), 'r2');
   assert.equal(gone.doc, false);
   assert.equal(await hasSnapshot(path.join(root, 'runs', 'r2')), gone.deck);
+  await rm(root, { recursive: true, force: true });
+});
+
+
+test('parkMissionDoc clears the folder for a new run and keeps the old doc with the run that wrote it', async () => {
+  const { root, folder, runDir } = await site();
+  assert.equal(await parkMissionDoc(folder, runDir), 'none', 'nothing to park');
+  await writeFile(path.join(folder, '.foreman', 'MISSION.md'), '# Old mission\n- [x] all done\n');
+  assert.equal(await parkMissionDoc(folder, runDir), 'parked');
+  assert.equal(await readFile(path.join(folder, '.foreman', 'MISSION.md'), 'utf8').catch(() => null), null, 'the folder starts clean');
+  assert.equal(await frozenMissionDoc(runDir), '# Old mission\n- [x] all done\n', 'kept with the previous run');
+  // A previous run that already has its own copy is not overwritten by a later folder state.
+  await writeFile(path.join(folder, '.foreman', 'MISSION.md'), '# Something else\n');
+  await parkMissionDoc(folder, runDir);
+  assert.equal(await frozenMissionDoc(runDir), '# Old mission\n- [x] all done\n');
   await rm(root, { recursive: true, force: true });
 });
