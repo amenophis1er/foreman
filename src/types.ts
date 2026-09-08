@@ -333,6 +333,13 @@ export interface RunMeta {
   stopReason?: 'budget' | 'turns' | 'time' | 'tokens';
   /** When the run's record was frozen (MISSION.md and deck copied beside it); absent on older runs. */
   snapshotAt?: number;
+  /**
+   * The server process driving this run. The startup sweep that marks
+   * abandoned runs interrupted leaves a run alone while its owner is alive —
+   * a second Foreman on the same data directory (a dev server beside the
+   * installed one) once swept a live mission's record out from under it.
+   */
+  ownerPid?: number;
   folder: string;
   mission: string;
   budgetUsd: number;

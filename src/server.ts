@@ -1691,6 +1691,7 @@ async function startRun(
     // choosing a model chooses where that role runs.
     directorProviderId: roleProviders.director ?? settings.directorProviderId,
     workerProviderId: roleProviders.worker ?? settings.workerProviderId,
+    ownerPid: process.pid,
     browserTools: browserTools || undefined,
     toolPolicy: settings.toolPolicy,
     autoAllowReadOnly: settings.autoAllowReadOnly,
@@ -1771,6 +1772,7 @@ async function resumeRun(projectId: string, meta: RunMeta, pick: {
   meta.stopReason = undefined;
   meta.status = 'running';
   meta.endedAt = undefined;
+  meta.ownerPid = process.pid;
   meta.resumes = (meta.resumes ?? 0) + 1;
   if (meta.budgetUsd !== budgetWas) {
     makeEmitter(meta.id, projectId)('settings_changed', {

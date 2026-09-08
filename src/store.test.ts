@@ -135,3 +135,19 @@ test('archiveChat retires a conversation: gone from the project, kept on disk, a
   await store.archiveChat('p-abc', 'again');
   await rm(root, { recursive: true, force: true });
 });
+
+
+test('sweepOrphans leaves a running run alone while another live process owns it', async () => {
+  const { store, root } = await tmpStore();
+  const mine = newRunId(1000); const theirs = newRunId(2000); const dead = newRunId(3000);
+  await store.createRun(meta(mine, { ownerPid: process.pid }));
+  // The test runner's parent is alive and is not us.
+  await store.createRun(meta(theirs, { ownerPid: process.ppid }));
+  await store.createRun(meta(dead, { ownerPid: 2 ** 22 - 7 }));
+  const swept = await store.sweepOrphans();
+  assert.ok(swept.includes(mine), 'our own record from a previous life is swept');
+  assert.ok(swept.includes(dead), 'a dead owner is an orphan');
+  assert.ok(!swept.includes(theirs), 'a live foreign owner keeps its run');
+  assert.equal((await store.readMeta(theirs))!.status, 'running');
+  await rm(root, { recursive: true, force: true });
+});

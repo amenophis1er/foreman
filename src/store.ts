@@ -34,6 +34,14 @@ export function newRunId(now = Date.now()): string {
   return `${String(now).padStart(13, '0')}-${crypto.randomBytes(4).toString('hex')}`;
 }
 
+/** Is a process with this pid alive? Signal 0 checks without sending anything. */
+export function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (err) {
+    // EPERM means it exists but is not ours to signal — still alive.
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 export class RunStore {
   /** Absolute data root; exposed so startup checks can report and test it. */
   readonly root: string;
@@ -356,6 +364,10 @@ export class RunStore {
     const swept: string[] = [];
     for (const meta of await this.listRuns()) {
       if (meta.status !== 'running') continue;
+      // Another Foreman may be driving this run right now — the installed
+      // service while a dev server starts on the same data directory. Its
+      // record is not ours to close; only a run whose owner is gone is orphaned.
+      if (meta.ownerPid && meta.ownerPid !== process.pid && processAlive(meta.ownerPid)) continue;
       const ended: RunMeta = { ...meta, status: 'interrupted', endedAt: Date.now() };
       await this.append(meta.id, {
         ts: Date.now(),
