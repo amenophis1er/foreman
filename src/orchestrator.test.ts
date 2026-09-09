@@ -9,11 +9,13 @@ import {
   stalledWorkerReport, workerStatusBlock,
   watchRepeats, watchSilence, REPEAT_EXEMPT, observeToolUse,
   DEFAULT_ASK_TIMEOUT_MS, armAskTimeout, unattendedAnswer, unattendedDenyMessage,
-  tokenCapLabel, stopReasonOf, budgetWarnDue, doneAtCap,
+  tokenCapLabel, stopReasonOf, budgetWarnDue, doneAtCap, renderDeckDiff,
 } from './orchestrator.js';
 import { makePolicy, type PendingPermission } from './policy.js';
+import { REVIEWER_TOOL_POLICY, diffHash, type CrewPreset } from './crew.js';
+import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentEnv } from './provider.js';
-import type { RunMeta } from './types.js';
+import type { RunMeta, ToolPolicy } from './types.js';
 
 function meta(over: Partial<RunMeta> = {}): RunMeta {
   return {
@@ -1279,4 +1281,235 @@ test('doneAtCap: budget-stopped with every criterion ticked is done, and nothing
   assert.equal(doneAtCap({ ...budget, wasInterrupted: true }, []), false, 'a human stop is not a finish');
   assert.equal(doneAtCap({ ...budget, usageLimited: true }, []), false, 'a usage limit is not a finish');
   assert.equal(doneAtCap({ ...budget, budgetStopped: false }, []), false);
+});
+
+// ---------------------------------------------------------------------------
+// The reviewer: a read-only worker whose PASS the run cannot be done without
+// ---------------------------------------------------------------------------
+
+type ReviewSurface = ToolSurface & {
+  meta: RunMeta;
+  requestReviewTool(a: { presetId: string; notes?: string }): Promise<string>;
+  settleFinalStatus(): Promise<void>;
+  policyFor(agent: string, override?: ToolPolicy): CanUseTool;
+  budgetStopped: boolean;
+};
+
+/** The crew a human would pick: one required reviewer, read-only. */
+function reviewerPreset(over: Partial<CrewPreset> = {}): CrewPreset {
+  return {
+    id: 'reviewer', name: 'Reviewer', kind: 'reviewer', model: 'opus',
+    toolPolicy: 'read-only', requiredForDone: true, brief: 'Review it.',
+    ...over,
+  };
+}
+
+/**
+ * A run with a crew, whose workers are simulated. `seen` records what
+ * launchWorker passed down, which is how the reviewer's own model and tool
+ * policy are checked without an SDK behind them.
+ */
+function crewRun(
+  crew: CrewPreset[],
+  script: (id: string, prompt: string) => Promise<Outcome>,
+  over: Partial<RunMeta> = {},
+  crewEnv?: Record<string, AgentEnv>,
+) {
+  const events: Array<{ event: string; data: any }> = [];
+  const seen: Array<{ id: string; prompt: string; overrides?: { model?: string; toolPolicy?: ToolPolicy; reason?: string; env?: AgentEnv } }> = [];
+  const run = new MissionRun(
+    meta({ crew, workerModel: 'sonnet', ...over }),
+    (event, data) => events.push({ event, data }), () => {},
+    crewEnv ? { ...noopAgentEnv, crew: crewEnv } : noopAgentEnv,
+  );
+  const t = run as unknown as ReviewSurface;
+  t.runWorker = ((id: string, prompt: string, _resume?: string, overrides?: any) => {
+    seen.push({ id, prompt, overrides });
+    return script(id, prompt);
+  }) as ToolSurface['runWorker'];
+  return { run, t, events, seen };
+}
+
+/** The hash of a run whose folder has no baseline: an empty deck, but a stable one. */
+const EMPTY_DECK_HASH = diffHash({ files: [] });
+
+test('the reviewer cannot write, edit or run anything — and no other worker in the run is affected', async () => {
+  const run = new MissionRun(meta({ folder: '/Users/x/proj' }), () => {}, () => {}, noopAgentEnv);
+  const t = run as unknown as ReviewSurface;
+  const opts = { signal: new AbortController().signal, toolUseID: 'u1' } as any;
+  const ordinary = t.policyFor('worker-1');
+  const reviewer = t.policyFor('worker-2', REVIEWER_TOOL_POLICY);
+
+  const inputs: Record<string, Record<string, unknown>> = {
+    Write: { file_path: '/Users/x/proj/a.ts', content: 'x' },
+    Edit: { file_path: '/Users/x/proj/a.ts', old_string: 'a', new_string: 'b' },
+    Bash: { command: 'npm test' },
+  };
+  for (const toolName of ['Write', 'Edit', 'Bash']) {
+    const denied = await reviewer(toolName, inputs[toolName], opts);
+    assert.equal(denied?.behavior, 'deny', `${toolName} must be denied for the reviewer`);
+    const allowed = await ordinary(toolName, inputs[toolName], opts);
+    assert.equal(allowed?.behavior, 'allow', `${toolName} must still be allowed for an ordinary worker`);
+  }
+  // What it does need is untouched: the diff arrives in its brief, but it can
+  // still open the files the diff names.
+  assert.equal((await reviewer('Read', { file_path: '/Users/x/proj/a.ts' }, opts))?.behavior, 'allow');
+});
+
+test('request_review refuses a run with no crew, and an unknown preset id names the ones there are', async () => {
+  const { t: none } = crewRun([], slowWorker(1));
+  none.meta.crew = undefined;
+  assert.match(await none.requestReviewTool({ presetId: 'reviewer' }), /no crew/i);
+
+  const { t, seen } = crewRun([reviewerPreset(), reviewerPreset({ id: 'security-review', name: 'Security review' })], slowWorker(1));
+  const reply = await t.requestReviewTool({ presetId: 'nobody' });
+  assert.match(reply, /No crew preset "nobody"/);
+  assert.match(reply, /reviewer, security-review/);
+  assert.equal(seen.length, 0, 'a refused review must not spend a worker');
+});
+
+test('a PASS is recorded against the current diff, emitted, and pinned to it', async () => {
+  const { run, t, events, seen } = crewRun(
+    [reviewerPreset()],
+    async () => ({ report: 'I read it all.\nVERDICT: PASS\n- nothing worth blocking on', isError: false }),
+  );
+  const reply = await t.requestReviewTool({ presetId: 'reviewer', notes: 'look at the gate' });
+
+  assert.match(reply, /VERDICT: PASS/);
+  assert.match(reply, /nothing worth blocking on/);
+  assert.match(reply, /review last/);
+
+  // The reviewer is an ordinary worker in the worker-N sequence, on its own
+  // model, with the read-only policy attached to it alone.
+  assert.equal(seen[0].id, 'worker-1');
+  assert.equal(seen[0].overrides?.model, 'opus');
+  assert.deepEqual(seen[0].overrides?.toolPolicy, REVIEWER_TOOL_POLICY);
+  assert.match(seen[0].prompt, /Review it\./);
+  assert.match(seen[0].prompt, /look at the gate/, 'the director\'s note reaches the reviewer');
+
+  const v = run.meta.reviews?.[0];
+  assert.ok(v, 'the verdict is recorded on the run');
+  assert.equal(v!.pass, true);
+  assert.equal(v!.presetId, 'reviewer');
+  assert.equal(v!.workerId, 'worker-1');
+  assert.equal(v!.diffHash, EMPTY_DECK_HASH, 'pinned to the diff as it stands now');
+
+  const emitted = events.find((e) => e.event === 'review_verdict');
+  assert.ok(emitted, 'review_verdict is emitted');
+  assert.equal(emitted!.data.pass, true);
+  assert.equal(emitted!.data.name, 'Reviewer');
+  assert.equal(emitted!.data.diffHash, EMPTY_DECK_HASH);
+});
+
+test('a preset with a provider of its own reviews on that provider; without one it reviews on the workers\'', async () => {
+  const reviewerEnv = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9911', ANTHROPIC_API_KEY: 'crew' } as unknown as AgentEnv;
+  const pass = async () => ({ report: 'VERDICT: PASS', isError: false });
+
+  const pinned = crewRun(
+    [reviewerPreset({ providerId: 'kimi' })], pass, {}, { reviewer: reviewerEnv },
+  );
+  await pinned.t.requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(pinned.seen[0].overrides?.env, reviewerEnv, 'the reviewer runs on its preset\'s env');
+
+  // No providerId at all: nothing to resolve, so nothing overrides the role.
+  const plain = crewRun([reviewerPreset()], pass);
+  await plain.t.requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(plain.seen[0].overrides?.env, undefined, 'no override means the worker env applies');
+
+  // A providerId that dispatch could NOT resolve — deleted between compose and
+  // review — leaves no entry under this preset's id, and must degrade to the
+  // worker env rather than strand the run at its last step.
+  const gone = crewRun(
+    [reviewerPreset({ providerId: 'deleted' })], pass, {}, { 'some-other-preset': reviewerEnv },
+  );
+  const reply = await gone.t.requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(gone.seen[0].overrides?.env, undefined, 'an absent id falls back, it does not fail');
+  assert.match(reply, /VERDICT: PASS/, 'the review still happens');
+});
+
+test('a report with no verdict line is recorded as a FAIL, and the director is told so', async () => {
+  const { run, t, events } = crewRun(
+    [reviewerPreset()],
+    async () => ({ report: 'Looks broadly fine to me, I suppose.', isError: false }),
+  );
+  const reply = await t.requestReviewTool({ presetId: 'reviewer' });
+  assert.match(reply, /NO VERDICT/);
+  assert.match(reply, /recorded as a FAIL/i);
+  assert.equal(run.meta.reviews?.[0].pass, false);
+  assert.match(run.meta.reviews![0].findings, /never stated a verdict/);
+  assert.equal(events.find((e) => e.event === 'review_verdict')!.data.pass, false);
+});
+
+test('the gate: a required reviewer that never passed keeps the run out of "done"', async () => {
+  const { run, t, events } = crewRun([reviewerPreset()], slowWorker(1));
+  run.meta.status = 'done';
+  await t.settleFinalStatus();
+  assert.equal(run.meta.status, 'interrupted');
+  const ev = events.find((e) => e.event === 'mission_unreviewed');
+  assert.ok(ev, 'mission_unreviewed says which reviewer and why');
+  assert.equal(ev!.data.blockers[0].reason, 'missing');
+  assert.match(ev!.data.text, /not done/);
+});
+
+test('the gate opens on a PASS pinned to the diff the run ends with, and shuts again if it goes stale', async () => {
+  const { run, t, events } = crewRun([reviewerPreset()], slowWorker(1));
+  run.meta.reviews = [{
+    presetId: 'reviewer', name: 'Reviewer', pass: true, findings: '', diffHash: EMPTY_DECK_HASH,
+    workerId: 'worker-1', at: Date.now(),
+  }];
+  run.meta.status = 'done';
+  await t.settleFinalStatus();
+  assert.equal(run.meta.status, 'done');
+  assert.equal(events.filter((e) => e.event === 'mission_unreviewed').length, 0);
+
+  // The same PASS against a diff that has since moved on is not consent.
+  run.meta.reviews[0].diffHash = 'a-diff-that-no-longer-exists';
+  run.meta.status = 'done';
+  await t.settleFinalStatus();
+  assert.equal(run.meta.status, 'interrupted');
+  assert.equal(events.find((e) => e.event === 'mission_unreviewed')!.data.blockers[0].reason, 'stale');
+});
+
+test('a run stopped at its cap with every box ticked is still not done without its required PASS', async () => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'foreman-gate-'));
+  await mkdir(path.join(folder, '.foreman'), { recursive: true });
+  await writeFile(path.join(folder, '.foreman', 'MISSION.md'), '# M\n\n## DONE WHEN\n- [x] it works\n');
+  try {
+    for (const crew of [[reviewerPreset()], []]) {
+      const { run, t, events } = crewRun(crew, slowWorker(1), { folder });
+      run.meta.status = 'interrupted';
+      t.budgetStopped = true;
+      await t.settleFinalStatus();
+      if (crew.length) {
+        assert.equal(run.meta.status, 'interrupted', 'no PASS, no promotion at the cap');
+        assert.ok(events.some((e) => e.event === 'mission_unreviewed'));
+        assert.ok(!events.some((e) => e.event === 'mission_done_at_cap'));
+      } else {
+        assert.equal(run.meta.status, 'done', 'without a required reviewer the cap rule is unchanged');
+        assert.ok(events.some((e) => e.event === 'mission_done_at_cap'));
+      }
+    }
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+test('renderDeckDiff cuts a large diff and says it did', () => {
+  const file = (p: string, diff: string) => ({ path: p, status: 'modified' as const, additions: 1, deletions: 0, diff });
+  const small = renderDeckDiff({ files: [file('a.ts', '+one')], totals: { files: 1, additions: 1, deletions: 0 } } as any);
+  assert.equal(small.truncated, false);
+  assert.match(small.diff, /--- a\.ts \(modified \+1 -0\)\n\+one/);
+
+  const big = renderDeckDiff({ files: [file('a.ts', 'x'.repeat(200)), file('b.ts', 'y')], totals: { files: 2, additions: 2, deletions: 0 } } as any, 100);
+  assert.equal(big.truncated, true, 'the reviewer must be told it is not seeing everything');
+  // A file the deck itself already cut counts as truncated too.
+  const perFile = renderDeckDiff({
+    files: [{ ...file('a.ts', '+one'), truncated: true }], totals: { files: 1, additions: 1, deletions: 0 },
+  } as any);
+  assert.equal(perFile.truncated, true);
+});
+
+test('the charter tells the director to review last, and names the tool', () => {
+  assert.match(DIRECTOR_CHARTER, /request_review/);
+  assert.match(DIRECTOR_CHARTER, /review last/);
 });

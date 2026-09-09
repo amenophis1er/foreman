@@ -171,6 +171,37 @@ a human's judgement is required *and* being wrong is expensive.
   phone with buttons. The default is what happens when you truly cannot
   answer, not what happens because you never knew.
 
+## Crew, and the reviewer gate
+
+A mission's verification is normally the director's own word. A **crew preset**
+is a named role you can put on a mission instead — a worker with a fixed brief,
+a model of its own, and, for a reviewer, a read-only tool policy: it may read,
+grep and search, and it may not write, edit or run a command. Two ship with
+Foreman, a **Reviewer** and a **Security review**, and you edit them in
+Settings → Crew, globally or per project.
+
+You opt a mission in at compose time, with toggles under the model pickers.
+The presets you pick are frozen onto the run, so editing a preset afterwards
+cannot change a mission that already used it.
+
+A reviewer marked **required for done** is a gate Foreman enforces, not a
+request the director may skip:
+
+- The director calls `request_review`, which hands the reviewer the mission
+  brief, the DONE WHEN criteria and the run's diff, and takes back a verdict —
+  `PASS` or `FAIL` — with findings.
+- The verdict is pinned to a hash of the diff it actually read.
+- At the end of the run, Foreman recomputes that hash. A run may be recorded
+  **done** only if every required reviewer's latest verdict is a PASS on the
+  diff the run *ends with*. Missing, FAIL, or a PASS that went stale because
+  the code moved afterwards: the run is `interrupted`, and says which reviewer
+  and why. A run stopped at its budget cap obeys the same rule.
+
+So the reviewer goes last. It costs what a worker costs and comes out of the
+same budget. Its verdicts show up in the transcript, on the run, in the run
+report on your phone and over `foreman mcp`, and in the body of the pull
+request Foreman drafts.
+
 ## Schedules
 
 A schedule is a mission that starts itself. It lives in Foreman, not in the
@@ -268,7 +299,7 @@ result.
 ```sh
 npm ci && npm run setup      # dependencies, then the dashboard build
 npm start                    # serves http://localhost:4177
-npm test                     # 424 tests, node:test
+npm test                     # 466 tests, node:test
 npm run typecheck            # server and dashboard
 npm run dev                  # API + Vite together
 scripts/dev-restart.sh       # restarts the server only when nothing would be lost

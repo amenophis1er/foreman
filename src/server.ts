@@ -82,6 +82,8 @@ import { reconcileRole } from './role-provider.js';
 import { detectBrowser, installChromium } from './browser.js';
 import { frozenDeck, frozenMissionDoc, parkMissionDoc, restoreMissionDoc, snapshotRun } from './snapshot.js';
 import { closeMissionBranch, compareUrl, createPullRequest, dirtyPaths, ensureMissionBranch, ghReady, gitInfo, resolvePrBase, worktreeGrant, worktreeParent, missionBranchName, prDraft, pullRequestState, pushBranch, renameMissionBranch, startMissionBranch, type GitInfo } from './gitwork.js';
+import { crewPresetsFrom, type CrewPreset } from './crew.js';
+import { frozenCrewFor, reviewReportLines, reviewedByNames } from './run-crew.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
 import { ServiceRegistry, listeningPid, portOpen, servicesHandler, stopService } from './services.js';
@@ -703,6 +705,63 @@ async function agentEnvFor(
 }
 
 /**
+ * An agent env per crew preset that named a provider of its own, keyed by
+ * preset id — the third kind of env a run can need, after its two roles. A
+ * reviewer pinned to another provider is a real request: the point of a second
+ * opinion is partly that it comes from a different model, and a model carries
+ * its provider.
+ *
+ * Only presets that name a `providerId` get an entry, and only when that
+ * provider resolves cleanly. Anything else — no id, an id nothing resolves,
+ * a resolution `providerProblem` calls unusable — is LEFT OUT rather than
+ * reported, because a missing entry means the reviewer runs on the worker env
+ * and a thrown error means the run dies. A provider deleted between the moment
+ * a human chose the crew and the moment the director asks for the review must
+ * degrade to the worker's provider: the alternative is a mission stranded at
+ * the one step that would let it be recorded as done, over a credential its
+ * reviewer never strictly needed.
+ *
+ * Each preset's env carries the preset's own model for the same reason the two
+ * roles do — the SDK's aliases have to resolve to something this provider's
+ * gateway serves — and shares the run's ledger key, since the reviewer's
+ * tokens are accounted to the worker role. See the `env` comment in
+ * orchestrator.ts's requestReviewTool for why that approximation is chosen.
+ */
+async function crewEnvsFor(
+  meta: RunMeta, ledgerKey: string,
+): Promise<Record<string, ReturnType<typeof providerEnv>> | undefined> {
+  const wanted = (meta.crew ?? []).filter((p) => p.providerId);
+  if (!wanted.length) return undefined;
+  // One resolution per distinct provider, not per preset: two reviewers on the
+  // same endpoint are one credential and one gateway.
+  const bases = new Map<string, ResolvedProvider | null>();
+  const out: Record<string, ReturnType<typeof providerEnv>> = {};
+  for (const preset of wanted) {
+    const id = preset.providerId as string;
+    if (!bases.has(id)) {
+      const ref = providerForRole(meta, id);
+      // providerForRole answers with the RUN's provider when the id resolves to
+      // nothing it knows. That is the right answer for a role, which must run
+      // somewhere; here it would quietly pin the preset to a provider nobody
+      // asked for, so it counts as "no entry" instead.
+      const resolved = 'id' in ref && ref.id === id
+        ? await resolveProvider(ref, store.root).catch(() => null)
+        : null;
+      bases.set(id, resolved && !providerProblem(resolved) ? resolved : null);
+    }
+    const base = bases.get(id);
+    if (!base) continue;
+    const withModel = withRoleModel(base, preset.model ?? meta.workerModel);
+    if (providerProblem(withModel)) continue;
+    // A gateway that will not start is the same kind of nothing: the reviewer
+    // falls back rather than the run failing.
+    const env = await agentEnvFor(withModel, meta.id, ledgerKey).catch(() => null);
+    if (env) out[preset.id] = env;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
  * The ledger bucket for this attempt at a run.
  *
  * The attempt number is part of the key on purpose. A gateway can outlive the
@@ -1118,6 +1177,10 @@ const fleetHost: FleetHost = {
     ];
     if (words.error) lines.push(`it stopped with: ${clipText(words.error, 400)}`);
     if (last.workers.length) lines.push(`crew: ${last.workers.map((w) => `${w.id} ${w.status}`).join(', ')}`);
+    // Verdicts read out here and nowhere else on the phone: which reviewers
+    // ran is a fact about the run, while which presets exist is configuration,
+    // and configuration is edited on the dashboard.
+    lines.push(...reviewReportLines(last.crew, last.reviews));
     if (words.result) lines.push(`director's closing report:\n${clipText(words.result, 2500)}`);
     else if (words.last) lines.push(`director's last words:\n${clipText(words.last, 2500)}`);
     return lines.join('\n');
@@ -1662,6 +1725,7 @@ async function driveRun(
       worker: directorProvider === workerProvider
         ? await agentEnvFor(directorProvider, meta.id, key)
         : await agentEnvFor(workerProvider, meta.id, key),
+      crew: await crewEnvsFor(meta, key),
     };
     // Only roles that actually go through a gateway are counted there; a
     // native role's tokens arrive on the SDK's own result message, and adding
@@ -1799,6 +1863,8 @@ async function effectiveSettings(projectId: string): Promise<{
   budgetWarnAt: number;
   /** Ceiling on what this project's SCHEDULED runs may cost in one calendar month. */
   scheduledMonthlyCapUsd: number;
+  /** The crew presets a mission here may be started with (built-ins until edited). */
+  crewPresets: CrewPreset[];
 }> {
   const s = await store.readSettings()
     .catch(() => ({ global: {}, projects: {} as Record<string, object> }));
@@ -1831,6 +1897,9 @@ async function effectiveSettings(projectId: string): Promise<{
       const raw = Number(p.scheduledMonthlyCapUsd ?? g.scheduledMonthlyCapUsd);
       return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_SCHEDULED_MONTHLY_CAP_USD;
     })(),
+    // The project's list replaces the global one whole, like the rest of the
+    // overlay — merging would make "no reviewer on this project" unsayable.
+    crewPresets: crewPresetsFrom(g, p),
   };
 }
 
@@ -1912,6 +1981,12 @@ async function startRun(
     scheduleId?: string;
     scheduleName?: string;
   } = {},
+  /**
+   * Crew presets the human opted this mission into, by id. Resolved and copied
+   * onto the record here and nowhere else: the run is reviewed against the
+   * presets as they stood when it started, whatever Settings says later.
+   */
+  crewIds?: readonly string[],
 ): Promise<void> {
   const settings = await effectiveSettings(projectId);
   if (origin.scheduleId && origin.scheduleName) scheduleNames.set(origin.scheduleId, origin.scheduleName);
@@ -1937,6 +2012,13 @@ async function startRun(
     // must not silently move an in-flight or resumed run to another provider,
     // or another bill.
     provider,
+    // Frozen for the same reason as the provider, and against a stronger
+    // temptation: a preset edited next week must not change what a run that is
+    // still going — or one that finished in March — was reviewed against.
+    ...(() => {
+      const crew = frozenCrewFor(settings.crewPresets, crewIds);
+      return crew ? { crew } : {};
+    })(),
     status: 'running', costUsd: 0,
     createdAt: Date.now(), workers: [],
   };
@@ -2531,6 +2613,10 @@ const server = http.createServer(async (req, res) => {
             createdAt: lastRun.createdAt, costUsd: lastRun.costUsd,
             // The card may print a dollar only where the dollar was real.
             costBasis: costBasisOf(lastRun), usage: lastRun.usage,
+            // Not the verdicts themselves — see reviewedByNames. The tile
+            // renders a glyph and a name, and this projection is polled for
+            // every project every few seconds.
+            reviewedBy: reviewedByNames(lastRun),
           },
           // When this project last did anything, so the fleet can lead with it.
           // A planner parked on a question is doing something — waiting on
@@ -2680,7 +2766,7 @@ const server = http.createServer(async (req, res) => {
     } else if (req.method === 'POST' && url.pathname === '/run') {
       const {
         projectId, mission, budgetUsd, directorModel, workerModel, browserTools,
-        directorProviderId, workerProviderId, allowDirty, startedBy,
+        directorProviderId, workerProviderId, allowDirty, startedBy, crew,
       } = await readBody(req);
       if (typeof projectId !== 'string' || typeof mission !== 'string' || !mission.trim()) {
         return json(res, 400, { error: 'projectId and mission are required' });
@@ -2726,7 +2812,10 @@ const server = http.createServer(async (req, res) => {
         // 'schedule' is deliberately not accepted here: a caller must not be
         // able to forge a scheduled start and charge the month's unattended
         // allowance for a run no schedule asked for.
-        { startedBy: startedBy === 'phone' || startedBy === 'mcp' ? startedBy : 'human' });
+        { startedBy: startedBy === 'phone' || startedBy === 'mcp' ? startedBy : 'human' },
+        // The composer is the only place a crew is chosen, so it is the only
+        // dispatch path that carries one; unknown ids are dropped downstream.
+        Array.isArray(crew) ? crew as string[] : undefined);
       json(res, 200, { ok: true });
 
     } else if (url.pathname === '/notify' && req.method === 'GET') {
@@ -3195,7 +3284,7 @@ const server = http.createServer(async (req, res) => {
       // mission was branched from — see resolvePrBase.
       const target = await resolvePrBase(meta.folder, meta.git.base);
       json(res, 200, {
-        ...prDraft(meta, doc), branch: meta.git.branch, base: target.base, commits: meta.git.commits ?? null,
+        ...prDraft(meta, doc, meta.reviews), branch: meta.git.branch, base: target.base, commits: meta.git.commits ?? null,
         branchedFrom: meta.git.base, baseFellBack: target.fellBack,
         remote: info.remote, compareUrl: compareUrl(info.remote, target.base, meta.git.branch),
         gh, pr: meta.git.pr ?? null, onBranch: info.branch === meta.git.branch, dirty: Boolean(info.dirty),

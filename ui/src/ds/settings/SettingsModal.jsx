@@ -6,6 +6,8 @@ import { Icon } from '../core/Icon';
 import { Tabs } from '../core/Tabs';
 import { Switch } from '../forms/Switch';
 import { TextInput } from '../forms/TextInput';
+import { Textarea } from '../forms/Textarea';
+import { Field } from '../forms/Field';
 import { ModelSelect } from '../forms/ModelSelect';
 import { ProviderPicker } from './ProviderPicker';
 import { Empty } from '../core/Empty';
@@ -17,11 +19,32 @@ export const SETTINGS_SECTIONS = [
   // Projects, where nobody found it — including its author, twice.
   { id: 'provider', label: 'Provider', icon: 'provider' },
   { id: 'models', label: 'Models', icon: 'model' },
+  // Crew sits under Models because it is the same question one level up: not
+  // which model a role runs on, but which roles a mission gets at all.
+  { id: 'crew', label: 'Crew', icon: 'crew' },
   { id: 'budget', label: 'Budget', icon: 'budget' },
   { id: 'approvals', label: 'Approvals', icon: 'approval' },
   { id: 'appearance', label: 'Appearance', icon: 'sun' },
   { id: 'notifications', label: 'Notifications', icon: 'needsYou' },
   { id: 'projects', label: 'Projects', icon: 'folder' },
+];
+
+/**
+ * The crew a mission can be given before anyone has edited anything. Kept here
+ * as a literal rather than imported from `src/crew.ts`: the ui is a separate
+ * package and never imports the server's build. The ids, names, models and
+ * `requiredForDone` flags must stay identical to `BUILT_IN_PRESETS` there —
+ * they are what a stored preset is matched against.
+ */
+export const BUILT_IN_PRESETS = [
+  {
+    id: 'reviewer', name: 'Reviewer', kind: 'reviewer', model: 'opus', toolPolicy: 'read-only', requiredForDone: true,
+    brief: 'Review the mission’s diff against MISSION.md and the brief as a demanding senior engineer would. Look for correctness, missing tests, security, and anything the criteria did not name. Verdict PASS only when you would merge it yourself.',
+  },
+  {
+    id: 'security-review', name: 'Security review', kind: 'reviewer', model: 'opus', toolPolicy: 'read-only', requiredForDone: false,
+    brief: 'Review the mission’s diff for secrets committed or logged, injection of every kind, path handling that can escape its root, and permissions granted wider than the work needs. Verdict PASS only when none of those is present.',
+  },
 ];
 
 export const DEFAULT_SETTINGS = {
@@ -33,6 +56,9 @@ export const DEFAULT_SETTINGS = {
   // rather than sharing the per-run cap: five runs a night at $5 is a month
   // nobody agreed to.
   scheduledMonthlyCapUsd: 25,
+  // Standing crew. Absent from storage means the two built-ins; the first edit
+  // writes the whole list back, so what was shown is what gets saved.
+  crewPresets: BUILT_IN_PRESETS,
   autoAllowReadOnly: true, alwaysSurvivesResume: true,
   toolPolicy: { Bash: 'allow', Write: 'allow', Edit: 'allow', WebFetch: 'allow', spawn_worker: 'allow' },
   theme: 'light', textSize: 'default', density: 'comfortable', showTimestamps: true,
@@ -131,6 +157,19 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
       {row('workerModel', 'Workers', 'Implement scoped tasks. Cheaper models cut cost sharply.', <ModelSelect align="right" allowDefault={false} models={models} loading={modelsLoading} note={modelsNote} value={get('workerModel')} onChange={(v, m) => { set('workerModel', v); set('workerProviderId', m?.providerId); }} />)}
       {row('plannerModel', 'Planner', 'Talks the next mission through with you and reads the project. Conversation, not deep reasoning; Sonnet by default.', <ModelSelect align="right" allowDefault={false} models={models} loading={modelsLoading} note={modelsNote} value={get('plannerModel')} onChange={(v) => set('plannerModel', v)} />)}
       {!isProject && row('fleetPlannerModel', 'Fleet planner', 'The front desk on your phone: knows every project, opens planning, proposes, steers. Fast tool calls matter more than depth; follows the planner when unset.', <ModelSelect align="right" allowDefault={false} models={models} loading={modelsLoading} note={modelsNote} value={get('fleetPlannerModel') || get('plannerModel')} onChange={(v) => set('fleetPlannerModel', v)} />)}
+    </>,
+    crew: <>
+      <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-1)', lineHeight: 'var(--lh-prose)', paddingBottom: 'var(--sp-2)' }}>
+        A preset is a role you can add to a mission when you compose it: a fixed brief, its own model, and how much of the
+        machine it is allowed to touch. A reviewer marked
+        <b style={{ color: 'var(--ink-0)' }}> required</b> must return <b style={{ color: 'var(--ink-0)' }}>PASS</b> on the
+        run’s final diff before Foreman will record the run done.
+      </div>
+      <Row label="Presets" hint="Offered in the composer, in this order. Nothing here runs on its own."
+        overridden={overridden('crewPresets')} inherits={isProject && !overridden('crewPresets')} onReset={() => reset('crewPresets')} stacked>
+        <CrewPresets value={get('crewPresets') || BUILT_IN_PRESETS} onChange={(v) => set('crewPresets', v)}
+          models={models} modelsLoading={modelsLoading} modelsNote={modelsNote} />
+      </Row>
     </>,
     budget: <>
       {row('budgetCap', 'Default cap per run', 'The composer starts here; you can change it per mission.', <TextInput type="number" prefix="$" min={0} step={1} width={110} value={get('budgetCap')} onChange={(v) => set('budgetCap', v)} />)}
@@ -234,10 +273,116 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
 
 const SECTION_KEYS = {
   models: ['directorModel', 'workerModel', 'plannerModel', 'fleetPlannerModel', 'directorProviderId', 'workerProviderId'], budget: ['budgetCap', 'budgetWarnAt', 'budgetHardStop', 'scheduledMonthlyCapUsd'],
+  crew: ['crewPresets'],
   approvals: ['autoAllowReadOnly', 'alwaysSurvivesResume', 'toolPolicy'], appearance: ['theme', 'density', 'showTimestamps'],
   notifications: ['notifyNeedsYou', 'notifyDone', 'notifyBudget', 'sound'], projects: ['missionDir', 'gitBranchPerMission'],
 };
 function sectionHasOverride(id, p) { return (SECTION_KEYS[id] || []).some((k) => k in p); }
+
+const KINDS = [{ value: 'reviewer', label: 'Reviewer' }, { value: 'specialist', label: 'Specialist' }];
+const PRESET_TOOLS = [{ value: 'read-only', label: 'Read-only' }, { value: 'default', label: 'Default' }];
+
+/**
+ * The id is machine-facing — it is what a mission stores when it opts into a
+ * preset — so it is generated from the name once and never edited afterwards,
+ * and never collides with one already in the list.
+ */
+function presetId(name, taken) {
+  const base = String(name || 'preset').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'preset';
+  let id;
+  do { id = `${base}-${Math.random().toString(36).slice(2, 6)}`; } while (taken.includes(id));
+  return id;
+}
+
+/**
+ * The crew list, edited in place. One row per preset, expanded by clicking it;
+ * `onChange` gets the whole array back on every keystroke, because that is what
+ * the settings key is — an override replaces the list, it never merges into it.
+ */
+function CrewPresets({ value, onChange, models, modelsLoading, modelsNote }) {
+  const [open, setOpen] = useState(null);
+  const patch = (i, k, v) => onChange(value.map((c, j) => (j === i ? { ...c, [k]: v } : c)));
+  const modelLabel = (id) => (models || []).find((m) => m.id === id)?.label || id || 'Default';
+  const add = () => {
+    const id = presetId('preset', value.map((c) => c.id));
+    onChange([...value, { id, name: 'New preset', kind: 'reviewer', model: 'opus', toolPolicy: 'read-only', requiredForDone: false, brief: '' }]);
+    setOpen(id);
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%' }}>
+      {value.length === 0 && <Empty>No crew. Missions run with the director and its workers only.</Empty>}
+      {value.map((c, i) => {
+        const expanded = open === c.id;
+        return (
+          <div key={c.id} style={{ border: '1px solid var(--line)', borderRadius: 'var(--r-sm)', background: 'var(--bg-inset)' }}>
+            {/* Expanded, this preset is taller than the modal body, so scrolling
+                down to its Brief would carry the only line naming the preset off
+                the top — you would be editing a brief with nothing on screen
+                saying whose it is. Stuck to the top of the section's scroll area,
+                the name, kind, model and REQUIRED stay with the fields. */}
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px',
+              ...(expanded ? {
+                position: 'sticky', top: 0, zIndex: 1, background: 'var(--bg-inset)',
+                borderRadius: 'var(--r-sm) var(--r-sm) 0 0',
+              } : null),
+            }}>
+              <button type="button" onClick={() => setOpen(expanded ? null : c.id)} aria-expanded={expanded}
+                style={{
+                  flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8, padding: 0,
+                  background: 'none', border: 0, font: 'inherit', color: 'var(--ink-0)', cursor: 'pointer', textAlign: 'left',
+                }}>
+                <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={14} color="var(--ink-2)" />
+                <span style={{ fontWeight: 'var(--fw-medium)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                <Tag>{c.kind}</Tag>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>{modelLabel(c.model)}</span>
+                {c.kind === 'reviewer' && c.requiredForDone && <Tag brand>required</Tag>}
+              </button>
+              <IconButton icon="close" size="sm" label={`Remove ${c.name}`} onClick={() => onChange(value.filter((_, j) => j !== i))} />
+            </div>
+            {expanded && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)', padding: 'var(--sp-3)', borderTop: '1px solid var(--line)' }}>
+                <div style={{ display: 'flex', gap: 'var(--sp-3)', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                  <Field label="Name" layout="stacked" style={{ flex: '1 1 180px', minWidth: 0 }}>
+                    <TextInput value={c.name} onChange={(v) => patch(i, 'name', v)} />
+                  </Field>
+                  <Field label="Kind" layout="stacked" hint={c.kind === 'reviewer' ? 'Judges the finished diff.' : 'Works alongside the others.'}>
+                    <Tabs size="sm" tabs={KINDS} value={c.kind} onChange={(v) => patch(i, 'kind', v)} />
+                  </Field>
+                  <Field label="Model" layout="stacked">
+                    <ModelSelect allowDefault={false} models={models} loading={modelsLoading} note={modelsNote}
+                      value={c.model || ''} onChange={(v, m) => onChange(value.map((x, j) => (j === i ? { ...x, model: v, providerId: m?.providerId } : x)))} />
+                  </Field>
+                </div>
+                {/* No grabber: it is the one native-styled control in a modal
+                    that is otherwise entirely ours, and the box is already the
+                    height a brief wants. */}
+                <Field label="Brief" layout="stacked" hint="What it is for, and what it must say. A reviewer’s verdict is the word PASS or FAIL on its own line.">
+                  <Textarea size="answer" value={c.brief || ''} onChange={(v) => patch(i, 'brief', v)}
+                    placeholder="Review the diff for…" style={{ height: 120, resize: 'none' }} />
+                </Field>
+                <div style={{ display: 'flex', gap: 'var(--sp-4)', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                  <Field label="Tools" layout="stacked" hint="Read-only: Read, Grep, Glob, LS and nothing else.">
+                    <Tabs size="sm" tabs={PRESET_TOOLS} value={c.toolPolicy || 'read-only'} onChange={(v) => patch(i, 'toolPolicy', v)} />
+                  </Field>
+                  {/* Only a reviewer has a verdict to gate on, so a specialist
+                      is not shown a toggle it could never honour. */}
+                  {c.kind === 'reviewer' && (
+                    <Field label="Required for done" layout="stacked" hint="The run cannot be recorded done until this one passes.">
+                      <Switch checked={c.requiredForDone === true} onChange={(v) => patch(i, 'requiredForDone', v)} />
+                    </Field>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <div><Button size="sm" icon="add" onClick={add}>Add preset</Button></div>
+    </div>
+  );
+}
 
 function NavItem({ s, selected, dot, onClick }) {
   const [hover, setHover] = useState(false);

@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { closeMissionBranch, defaultBranch, worktreeGrant, worktreeParent, ensureMissionBranch, gitInfo, missionBranchName, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
 } from './gitwork.js';
+import type { ReviewVerdict } from './crew.js';
 
 const sh = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).toString();
 
@@ -93,6 +94,26 @@ test('prDraft: the run title, the brief, the boxes as the mission left them, and
   assert.match(d.body, /## Mission\n\nAdd a footer to the page\.\nKeep it small\./);
   assert.match(d.body, /## Done when\n\n- \[x\] footer\.html exists\n- \[ \] linked from index/);
   assert.match(d.body, /branch `foreman\/add-a-footer-ab12` from `main` · spend \$0\.42/);
+  assert.ok(!/## Review/.test(d.body), 'a run nobody reviewed says nothing about review');
+});
+
+test('prDraft: the reviewers and their verdicts, with the head of the findings', async () => {
+  const { prDraft } = await import('./gitwork.js');
+  const verdict = (over: Partial<ReviewVerdict>): ReviewVerdict => ({
+    presetId: 'reviewer', name: 'Reviewer', pass: true, findings: '', diffHash: 'h', workerId: 'w1', at: 1, ...over,
+  });
+  const d = prDraft(
+    { mission: 'Add a footer.', costUsd: 1, costBasis: 'priced', git: { branch: 'b', base: 'main', baseHead: null } },
+    null,
+    [
+      verdict({ findings: '- footer.html:12 the year is hard-coded' }),
+      verdict({ presetId: 'security-review', name: 'Security review', pass: false, findings: `x${'y'.repeat(2000)}` }),
+    ],
+  );
+  assert.match(d.body, /## Review\n\n\*\*Reviewer: PASS\*\*\n\n- footer\.html:12 the year is hard-coded/);
+  assert.match(d.body, /\*\*Security review: FAIL\*\*/);
+  assert.match(d.body, /… the rest is in the run's record\./, 'a long findings list is cut, not pasted whole');
+  assert.ok(d.body.length < 2000, 'the body stays a pull request, not an archive');
 });
 
 

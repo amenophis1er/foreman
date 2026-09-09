@@ -6,6 +6,7 @@ import { TextInput } from '../forms/TextInput';
 import { ModelSelect } from '../forms/ModelSelect';
 import { Switch } from '../forms/Switch';
 import { Banner } from '../status/Banner';
+import { CrewToggles } from './Composer';
 
 /**
  * The handoff: a mission the planner drafted, for the human to read, edit and
@@ -15,11 +16,11 @@ import { Banner } from '../status/Banner';
  * cost, and it never starts anything on its own.
  *
  * It carries every lever the composer has — budget, director, workers,
- * browser — because a mission committed without the browser it needs, or on
- * a model nobody chose, is the mistake that costs an hour to notice. The
- * planner pre-sets `browser` when the DONE WHEN criteria need one; the human
- * can still flip it. Models start at "inherit" (the project's Settings), the
- * same default the composer uses.
+ * browser, crew — because a mission committed without the browser it needs, or
+ * on a model nobody chose, is the mistake that costs an hour to notice. The
+ * planner pre-sets `browser` when the DONE WHEN criteria need one, and may
+ * suggest a `crew`; the human can still flip either. Models start at "inherit"
+ * (the project's Settings), the same default the composer uses.
  *
  * The brief and the budget are editable in place. To change the shape, say so
  * and let the planner redraft.
@@ -30,6 +31,7 @@ export function ProposalCard({
   directorProviderId: suggestedDirectorProvider, workerProviderId: suggestedWorkerProvider,
   modelRationale,
   models, modelsLoading, modelsNote, modelsInheritNote,
+  crewPresets = [], crew: suggestedCrew, onCrewChange,
   busy, error, errorAction, onStart, onDismiss, style,
 }) {
   const [brief, setBrief] = useState(mission);
@@ -41,6 +43,9 @@ export function ProposalCard({
   const [workerModel, setWorkerModel] = useState(suggestedWorker || '');
   const [directorProviderId, setDirectorProviderId] = useState(suggestedDirectorProvider);
   const [workerProviderId, setWorkerProviderId] = useState(suggestedWorkerProvider);
+  // Same rule as the models: the planner may suggest a crew, but the toggles
+  // decide. It only sets where they start.
+  const [crew, setCrew] = useState(suggestedCrew ?? []);
   const edited = brief !== mission || Number(budget) !== Number(budgetUsd);
 
   return (
@@ -129,6 +134,9 @@ export function ProposalCard({
         </Field>
       </div>
 
+      <CrewToggles presets={crewPresets} value={crew}
+        onChange={(ids) => { setCrew(ids); onCrewChange?.(ids); }} />
+
       {error && (
         <Banner tone="error" inline>
           {error}
@@ -149,6 +157,7 @@ export function ProposalCard({
           onClick={() => onStart?.({
             mission: brief.trim(), budget: Number(budget) || budgetUsd,
             directorModel, workerModel, directorProviderId, workerProviderId, browserTools,
+            crew: crewPresets.filter((p) => crew.includes(p.id)).map((p) => p.id),
           })}>
           {busy ? 'Starting…' : 'Start mission'}
         </Button>

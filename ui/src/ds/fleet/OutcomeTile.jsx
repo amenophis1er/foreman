@@ -28,6 +28,10 @@ export function OutcomeTile({ name, folder, lastRun, onOpen, onUnlink, style }) 
   const tokens = lastRun?.usage
     ? lastRun.usage.inputTokens + lastRun.usage.outputTokens
     : null;
+  // Every reviewer this run required, and got. The server decides it and
+  // sends names: the tile has no diff to hash, and it must not invent a rule
+  // of its own that could disagree with the run header's.
+  const reviewers = lastRun?.status === 'done' ? (lastRun.reviewedBy ?? []) : [];
   return (
     <article role="button" tabIndex={0} onClick={onOpen}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen?.(); } }}
@@ -61,6 +65,26 @@ export function OutcomeTile({ name, folder, lastRun, onOpen, onUnlink, style }) 
             fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums',
           }}>
             <StatusBadge status={lastRun.status} />
+            {/* Reviewed: an eye that checked out. Two icons the set already
+                has, tucked together — no new glyph, no icon dependency, and
+                it sits beside the badge because it qualifies the outcome.
+                It wears meta ink, not the badge's green, and comes after a
+                dot like every other fact on this row: abutting the pill in
+                the pill's own colour, at tile scale it read as a smudge on
+                the pill rather than a second thing being said. The pair is
+                one image with one name — the tooltip alone reached neither
+                keyboard nor touch. */}
+            {reviewers.length > 0 && (
+              <>
+                <Dot />
+                <span role="img" aria-label={`Reviewed by ${reviewers.join(', ')}`}
+                  title={`Reviewed by ${reviewers.join(', ')} — ${reviewers.length === 1 ? 'its' : 'their'} PASS on this run's final diff is what let Foreman record it done`}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 1, color: 'var(--ink-2)' }}>
+                  <Icon name="preview" size={12} />
+                  <Icon name="check" size={10} strokeWidth={2.5} />
+                </span>
+              </>
+            )}
             {lastRun.createdAt && <><Dot />{fmtDate(lastRun.createdAt)}</>}
             {lastRun.costBasis === 'priced'
               ? <><Dot />${(Number(lastRun.costUsd) || 0).toFixed(2)}</>

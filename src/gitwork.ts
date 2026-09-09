@@ -10,6 +10,7 @@
  */
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import type { ReviewVerdict } from './crew.js';
 
 export interface GitInfo {
   repo: boolean;
@@ -275,8 +276,22 @@ export function compareUrl(remote: string | undefined, base: string, branch: str
   return `${r.web}`;
 }
 
-/** The pull request as Foreman drafts it: the run's title, and a body a reviewer can read without opening Foreman. */
-export function prDraft(run: { title?: string; mission: string; costUsd: number; costBasis?: string; git?: MissionGit }, missionDoc: string | null): { title: string; body: string } {
+/** How much of a reviewer's findings go in the body; the rest is in the run's record. */
+const FINDINGS_HEAD = 800;
+
+/**
+ * The pull request as Foreman drafts it: the run's title, and a body a reviewer
+ * can read without opening Foreman.
+ *
+ * `reviews` is passed in rather than read from the run's record here, because
+ * this module knows about git and nothing else — and because the caller is the
+ * only one that knows which verdicts are the ones this branch was judged by.
+ */
+export function prDraft(
+  run: { title?: string; mission: string; costUsd: number; costBasis?: string; git?: MissionGit },
+  missionDoc: string | null,
+  reviews?: readonly ReviewVerdict[],
+): { title: string; body: string } {
   const first = run.mission.split('\n').find((l) => l.trim())?.trim() ?? 'Mission';
   const title = (run.title || first).slice(0, 120);
   const boxes = (missionDoc ?? '').split('\n').filter((l) => /^\s*[-*] \[[ xX]\]/.test(l)).map((l) => l.trim());
@@ -285,6 +300,20 @@ export function prDraft(run: { title?: string; mission: string; costUsd: number;
     '## Mission', '', run.mission.trim(), '',
   ];
   if (boxes.length) parts.push('## Done when', '', ...boxes, '');
+  // Who reviewed this before it was offered to a human, and what they said.
+  // The whole point of the reviewer gate is that the answer travels with the
+  // work; a PASS nobody outside Foreman can see is worth nothing on a branch.
+  if (reviews?.length) {
+    parts.push('## Review', '');
+    for (const v of reviews) {
+      parts.push(`**${v.name}: ${v.pass ? 'PASS' : 'FAIL'}**`);
+      const head = v.findings.trim();
+      if (head) {
+        parts.push('', head.length > FINDINGS_HEAD ? `${head.slice(0, FINDINGS_HEAD).trimEnd()}\n\n… the rest is in the run's record.` : head);
+      }
+      parts.push('');
+    }
+  }
   parts.push('---', `Run by [Foreman](https://github.com/amenophis1er/foreman) on branch \`${run.git?.branch ?? ''}\` from \`${run.git?.base ?? ''}\` · spend ${spend}.`);
   return { title, body: parts.join('\n') };
 }

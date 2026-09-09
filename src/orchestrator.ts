@@ -3,8 +3,8 @@
  *
  * Responsibilities:
  *  - Spawn the director session with its charter and in-process MCP tools
- *    (spawn_worker / check_workers / wait_for_worker / message_worker /
- *    ask_human).
+ *    (spawn_worker / request_review / check_workers / wait_for_worker /
+ *    message_worker / ask_human).
  *  - Run workers as separate, resumable SDK sessions, concurrently with the
  *    director's own turn: spawn_worker returns as soon as the worker exists,
  *    and the director reads progress and results back through check_workers
@@ -95,9 +95,13 @@ import type { AgentEnv } from './provider.js';
 import { generateRunTitle } from './title.js';
 import { combineBasis, costBasisOf, isPriced, type CostBasis } from './types.js';
 import { priceUsage, type ModelPrice } from './prices.js';
-import { captureBaseline } from './deck.js';
+import { captureBaseline, deckFor, type Deck } from './deck.js';
 import { memorySection, readMemory, writeMemory } from './memory.js';
-import type { RunMeta, TokenUsage, WorkerMeta, WorkerProgress } from './types.js';
+import {
+  REVIEWER_TOOL_POLICY, diffHash, parseVerdict, reviewBlockers, reviewBriefFor, unreviewedText,
+  type ReviewBlocker, type ReviewVerdict,
+} from './crew.js';
+import type { RunMeta, ToolPolicy, TokenUsage, WorkerMeta, WorkerProgress } from './types.js';
 
 /** A run's usage before its first `result` message. */
 function emptyUsage(): TokenUsage {
@@ -289,6 +293,64 @@ export function doneAtCap(
 ): boolean {
   if (!flags.budgetStopped || flags.wasInterrupted || flags.usageLimited) return false;
   return Array.isArray(unmet) && unmet.length === 0;
+}
+
+/**
+ * The lines under the mission doc's DONE WHEN heading, to the next heading —
+ * or null when the doc has no such section.
+ *
+ * One parse, two readers: the end-of-run check that counts unticked boxes, and
+ * the reviewer's brief, which quotes the criteria verbatim so the reviewer
+ * judges the diff against the same contract Foreman judges the run against.
+ * Two parsers would eventually disagree about what "the criteria" are, and the
+ * one place that must not happen is the gate.
+ */
+export function doneWhenSection(doc: string): string[] | null {
+  const lines = doc.split('\n');
+  const start = lines.findIndex((l) => /^#{1,6}\s*DONE\s*WHEN/i.test(l.trim()));
+  if (start === -1) return null;
+  const out: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    // The section ends at the next heading; checkboxes below it are the plan.
+    if (/^#{1,6}\s/.test(line)) break;
+    out.push(line);
+  }
+  return out;
+}
+
+/**
+ * How much of the run's diff fits in a reviewer's brief. The deck is already
+ * capped per file and per file count; this is the cap on the whole thing, so a
+ * mission that touched two hundred files does not hand its reviewer a prompt
+ * nothing will read to the end of. When it bites, the brief says so and the
+ * reviewer is told to open the files itself — it has Read, Glob and Grep.
+ */
+export const REVIEW_DIFF_MAX_CHARS = 120_000;
+
+/**
+ * A deck rendered as one diff text for the reviewer, with a header line per
+ * file so a truncated body is still attributable. `truncated` is true when
+ * this cut anything OR when the deck had already cut a file's own diff —
+ * either way the reviewer is looking at less than the whole change and must
+ * be told, because a reviewer that believes it saw everything passes on what
+ * it did not see.
+ */
+export function renderDeckDiff(deck: Deck, max = REVIEW_DIFF_MAX_CHARS): { diff: string; truncated: boolean } {
+  const files = deck.files ?? [];
+  let truncated = files.length < (deck.totals?.files ?? files.length);
+  const parts: string[] = [];
+  let used = 0;
+  for (const f of files) {
+    if (f.truncated) truncated = true;
+    const head = `--- ${f.path} (${f.status} +${f.additions} -${f.deletions})`;
+    const body = f.binary ? '(binary file)' : (f.diff ?? '(no diff available)');
+    const block = `${head}\n${body}`;
+    if (used + block.length > max) { truncated = true; break; }
+    parts.push(block);
+    used += block.length + 1;
+  }
+  const diff = parts.join('\n') || (files.length ? '' : '(this run changed no files)');
+  return { diff, truncated };
 }
 
 export function stopReasonOf(cap: string): 'budget' | 'turns' | 'time' | 'tokens' {
@@ -634,6 +696,16 @@ interface WorkerOverrides {
   env?: AgentEnv;
   model?: string;
   priceRole?: AgentRole;
+  /**
+   * Tool rules for THIS worker only, merged over the run's own policy.
+   *
+   * A reviewer is a worker that must not be able to change what it is
+   * judging, and the run's policy cannot say that — it applies to the whole
+   * crew, and tightening it for everyone would stop the workers doing the
+   * work. So the restriction travels with the one agent it is about; every
+   * other worker and the director are built from the run's policy unchanged.
+   */
+  toolPolicy?: ToolPolicy;
   /** For the transcript and the report: why this worker exists. */
   reason?: string;
 }
@@ -738,25 +810,31 @@ directing worker agents. Non-negotiable rules, in priority order:
    after that the task comes back to you half-done. So give a worker a task it
    can finish in that many steps — split the big ones — rather than one brief
    that has to be rescued twice.
-4. REPORT WHAT YOU SEE. Judge the work as a competent professional would, not
+4. GET THE REVIEW LAST. If this run has a crew reviewer marked required, call
+   mcp__foreman__request_review with its preset id AFTER your final change and
+   before you tick the last box. It reads the diff and answers PASS or FAIL;
+   Foreman will not record the run as done without that PASS, and a change made
+   after a PASS makes it stale — the reviewer would have passed code that no
+   longer exists — so review last, then stop.
+5. REPORT WHAT YOU SEE. Judge the work as a competent professional would, not
    only against the letter of the acceptance criteria. If you observe a defect
    the criteria did not name — tap targets too small to use, unreadable
    contrast, a broken layout, a hazard, an obviously wrong result — fix it
    when it is clearly in scope, and otherwise say so plainly in your final
    summary and in MISSION.md. Staying silent about a problem you could see is
    a failed mission even when every listed box is ticked.
-5. DECIDE AND RECORD, DON'T ASK. You are running unattended more often than
+6. DECIDE AND RECORD, DON'T ASK. You are running unattended more often than
    not. Make the reasonable call, write it and the reasoning into MISSION.md,
    and continue. Reserve mcp__foreman__ask_human for decisions that are
    irreversible or that spend money the mission was not given — those you ask
    and wait for. A question left unanswered for ${DEFAULT_ASK_TIMEOUT_MS / 60_000}
    minutes is auto-answered "decide yourself"; treat that answer as the
    human's, record what you decided, and do not ask it again.
-6. NEVER modify Foreman itself, its server, or any oversight tooling. Tooling
+7. NEVER modify Foreman itself, its server, or any oversight tooling. Tooling
    failure is an escalation, never a self-repair.
-7. When DONE WHEN is verified, update MISSION.md (all boxes ticked, final log
+8. When DONE WHEN is verified, update MISSION.md (all boxes ticked, final log
    entry) and end with a short summary of what was built and how you verified it.
-8. LEAVE NOTES FOR THE NEXT CREW. Before you finish, call mcp__foreman__remember
+9. LEAVE NOTES FOR THE NEXT CREW. Before you finish, call mcp__foreman__remember
    with the whole project memory as it should read now: how to run and test
    the project, ports and paths that matter, conventions and the reasons
    behind them, traps you fell into. Facts, one line each, a page at most.
@@ -882,8 +960,15 @@ export class MissionRun {
      * provider model, and it is decided by which model each role was given.
      * Passed in rather than derived here so exactly one module decides what an
      * agent can authenticate as; see provider.ts.
+     *
+     * `crew` is the same thing for a crew preset that named a provider of its
+     * own, keyed by preset id, and it is deliberately partial: a preset with no
+     * `providerId`, or one whose provider no longer resolves, simply has no
+     * entry and runs on the worker env. Optional on the argument rather than a
+     * parameter of its own so every existing call site — and every test that
+     * constructs a run with two roles — keeps working untouched.
      */
-    private readonly agentEnv: { director: AgentEnv; worker: AgentEnv },
+    private readonly agentEnv: { director: AgentEnv; worker: AgentEnv; crew?: Record<string, AgentEnv> },
     /**
      * Per-token rates per role, where the endpoint that will send the bill
      * published them (see prices.ts). Absent for an Anthropic-native role —
@@ -1362,22 +1447,57 @@ export class MissionRun {
       await this.ignoreLocalSettings();
       if (this.meta.status === 'running') this.meta.status = 'interrupted';
 
-      // A director's exit is not proof its mission succeeded. The charter makes
-      // it write DONE WHEN criteria and tick each one the moment it is actually
-      // verified, so criteria still unticked at exit are the director's own
-      // record that the work is unfinished — and reporting that as 'done' is
-      // the one lie a mission runner cannot afford. Downgrading to
-      // 'interrupted' is also the useful answer: it is what makes the run
-      // resumable rather than closed.
-      // A mission whose own record says every criterion is verified is done,
-      // even if the cap ended the turn it was writing its report in. Calling
-      // that 'interrupted' told the fleet a finished mission had failed, and
-      // invited a resume that spent more to rewrite a report already on disk.
-      // The stop reason stays on the record, so nothing is hidden.
-      if (this.meta.status === 'interrupted' && this.budgetStopped
-          && !this.wasInterrupted && !this.usageLimited) {
-        const unmet = await this.unmetCriteria();
-        if (doneAtCap({ budgetStopped: this.budgetStopped, wasInterrupted: this.wasInterrupted, usageLimited: this.usageLimited }, unmet)) {
+      await this.settleFinalStatus();
+      this.meta.endedAt = Date.now();
+      this.saveMeta(this.meta);
+      this.emit('run_finished', {
+        status: this.meta.status,
+        costUsd: this.meta.costUsd,
+        directorSessionId: this.meta.directorSessionId,
+      });
+    }
+  }
+
+  /**
+   * The last word on whether this run counts as done — the two records that
+   * outrank the director's own exit, applied in one place.
+   *
+   * A director's exit is not proof its mission succeeded. The charter makes
+   * it write DONE WHEN criteria and tick each one the moment it is actually
+   * verified, so criteria still unticked at exit are the director's own
+   * record that the work is unfinished — and reporting that as 'done' is
+   * the one lie a mission runner cannot afford. Downgrading to
+   * 'interrupted' is also the useful answer: it is what makes the run
+   * resumable rather than closed.
+   * A mission whose own record says every criterion is verified is done,
+   * even if the cap ended the turn it was writing its report in. Calling
+   * that 'interrupted' told the fleet a finished mission had failed, and
+   * invited a resume that spent more to rewrite a report already on disk.
+   * The stop reason stays on the record, so nothing is hidden.
+   *
+   * Separated from `start`'s `finally` because it is the rule, not the
+   * teardown: a test can drive it on a run whose status and crew are set by
+   * hand, which is the only way the gate below is provable without an SDK.
+   */
+  private async settleFinalStatus(): Promise<void> {
+    // The reviewer gate, computed once for the whole method: whether every
+    // reviewer the human marked required has passed the diff this run
+    // actually ends with. Null means nothing is outstanding — either no
+    // required reviewer, or all of them passed the current diff. It gates
+    // both routes to 'done' below, because a run that reached its cap with
+    // every box ticked is in exactly the position the gate exists for: the
+    // director says it is finished and nobody else has looked.
+    const gate = await this.reviewGate();
+    if (this.meta.status === 'interrupted' && this.budgetStopped
+        && !this.wasInterrupted && !this.usageLimited) {
+      const unmet = await this.unmetCriteria();
+      if (doneAtCap({ budgetStopped: this.budgetStopped, wasInterrupted: this.wasInterrupted, usageLimited: this.usageLimited }, unmet)) {
+        if (gate) {
+          // Ticked every box and ran out of budget, but the reviewer the
+          // human required never passed this diff: the run stays interrupted
+          // and resumable, and the event says which reviewer and why.
+          this.emit('mission_unreviewed', { blockers: gate.blockers, text: gate.text });
+        } else {
           this.meta.status = 'done';
           this.emit('mission_done_at_cap', {
             costUsd: this.meta.costUsd, budgetUsd: this.meta.budgetUsd, reason: this.meta.stopReason,
@@ -1386,25 +1506,24 @@ export class MissionRun {
           });
         }
       }
-      if (this.meta.status === 'done') {
-        const unmet = await this.unmetCriteria();
-        if (unmet?.length) {
-          this.meta.status = 'interrupted';
-          this.emit('mission_incomplete', {
-            unmet,
-            text: `The director ended with ${unmet.length} DONE WHEN criteri` +
-              `${unmet.length === 1 ? 'on' : 'a'} still unticked, so this run is not done. ` +
-              'Resume to continue it.',
-          });
-        }
+    }
+    if (this.meta.status === 'done') {
+      const unmet = await this.unmetCriteria();
+      if (unmet?.length) {
+        this.meta.status = 'interrupted';
+        this.emit('mission_incomplete', {
+          unmet,
+          text: `The director ended with ${unmet.length} DONE WHEN criteri` +
+            `${unmet.length === 1 ? 'on' : 'a'} still unticked, so this run is not done. ` +
+            'Resume to continue it.',
+        });
+      } else if (gate) {
+        // Every box ticked and the director says it is finished — and the
+        // reviewer the human required has not passed the diff it ends with.
+        // Foreman refuses the label rather than asking the director to.
+        this.meta.status = 'interrupted';
+        this.emit('mission_unreviewed', { blockers: gate.blockers, text: gate.text });
       }
-      this.meta.endedAt = Date.now();
-      this.saveMeta(this.meta);
-      this.emit('run_finished', {
-        status: this.meta.status,
-        costUsd: this.meta.costUsd,
-        directorSessionId: this.meta.directorSessionId,
-      });
     }
   }
 
@@ -1443,25 +1562,24 @@ export class MissionRun {
    * whose director never wrote a doc has already failed more visibly.
    */
   private async unmetCriteria(): Promise<string[] | null> {
-    const doc = await readFile(path.join(this.meta.folder, '.foreman', 'MISSION.md'), 'utf8')
-      .catch(() => null);
-    if (!doc) return null;
-
-    const lines = doc.split('\n');
-    const start = lines.findIndex((l) => /^#{1,6}\s*DONE\s*WHEN/i.test(l.trim()));
-    if (start === -1) return null;
+    const doc = await this.missionDoc();
+    const section = doc === null ? null : doneWhenSection(doc);
+    if (section === null) return null;
 
     const unmet: string[] = [];
     let sawAny = false;
-    for (const line of lines.slice(start + 1)) {
-      // The section ends at the next heading; checkboxes below it are the plan.
-      if (/^#{1,6}\s/.test(line)) break;
+    for (const line of section) {
       const box = line.match(/^\s*[-*]\s*\[( |x|X)\]\s*(.*)$/);
       if (!box) continue;
       sawAny = true;
       if (box[1] === ' ') unmet.push(box[2].trim());
     }
     return sawAny ? unmet : null;
+  }
+
+  /** The mission doc as text, or null when the director never wrote one. */
+  private missionDoc(): Promise<string | null> {
+    return readFile(path.join(this.meta.folder, '.foreman', 'MISSION.md'), 'utf8').catch(() => null);
   }
 
   /**
@@ -1483,7 +1601,14 @@ export class MissionRun {
     };
   }
 
-  private policyFor(agent: string) {
+  /**
+   * The permission callback for one agent. `override` tightens (or loosens)
+   * the run's tool policy for that agent alone — see
+   * {@link WorkerOverrides.toolPolicy}. Merged OVER the run's policy rather
+   * than replacing it, so a reviewer still inherits everything the run
+   * decided and only differs where the preset says it must.
+   */
+  private policyFor(agent: string, override?: ToolPolicy) {
     return makePolicy(agent, this.meta.folder, this.runAllowed, this.allowedRoots, {
       onAutoAllow: (a, toolName, reason) => this.emit('auto_allowed', { agent: a, toolName, reason }),
       onAutoDeny: (a, toolName, reason) => this.emit('auto_denied', { agent: a, toolName, reason }),
@@ -1514,7 +1639,10 @@ export class MissionRun {
         if (existed) this.emit('permission_resolved', { id, behavior: 'aborted' });
         return existed;
       },
-    }, { toolPolicy: this.meta.toolPolicy, autoAllowReadOnly: this.meta.autoAllowReadOnly });
+    }, {
+      toolPolicy: override ? { ...this.meta.toolPolicy, ...override } : this.meta.toolPolicy,
+      autoAllowReadOnly: this.meta.autoAllowReadOnly,
+    });
   }
 
   /**
@@ -2080,7 +2208,7 @@ export class MissionRun {
         // which is how a report lands on the right record without the worker
         // having to know its own name.
         mcpServers: { foreman: this.workerTools(workerId), ...this.browserServers() },
-        canUseTool: this.policyFor(workerId),
+        canUseTool: this.policyFor(workerId, overrides?.toolPolicy),
       },
     });
     w.q = q;
@@ -2304,6 +2432,135 @@ export class MissionRun {
       `to watch it, and wait_for_worker when you need its result.`;
   }
 
+  /**
+   * request_review — hand the run's diff to a crew reviewer and wait for its
+   * verdict.
+   *
+   * Unlike spawn_worker this AWAITS: the director asked a question and the
+   * answer is the whole point of the call. The reviewer is an ordinary worker
+   * in every other respect — same id sequence, same budget, same transcript —
+   * because a review that did not count against the run's spend would be a
+   * cost nobody could see, and a reviewer with a second kind of id would make
+   * every other surface learn a shape it does not need.
+   *
+   * What it is NOT is a way to ask nicely. The verdict is recorded on the run
+   * whatever the director does with it, and the gate in the end-of-run
+   * `finally` reads that record, not this conversation.
+   */
+  private async requestReviewTool({ presetId, notes }: { presetId: string; notes?: string }): Promise<string> {
+    const crew = this.meta.crew ?? [];
+    if (!crew.length) {
+      return 'This run has no crew: nobody was added as a reviewer when it was dispatched, so ' +
+        'there is nothing to request a review from. Verify the work yourself and say so in your report.';
+    }
+    const preset = crew.find((p) => p.id === presetId);
+    if (!preset) {
+      return `No crew preset "${presetId}" on this run. Available: ${crew.map((p) => p.id).join(', ')}.`;
+    }
+    const stop = this.overBudget();
+    if (stop) return stop;
+
+    // The diff as Foreman sees it — the same deck the gate will hash — so a
+    // PASS is about the change Foreman will check, not about whatever the
+    // reviewer happened to look at.
+    const deck = await deckFor(this.meta.folder, this.meta.id);
+    const { diff, truncated } = renderDeckDiff(deck);
+    const doc = await this.missionDoc();
+    const doneWhen = (doc === null ? null : doneWhenSection(doc))?.join('\n') ?? '';
+    let prompt = reviewBriefFor(preset, { mission: this.meta.mission, doneWhen, diff, truncated });
+    if (notes?.trim()) prompt += `\n\n## The director asks you to pay particular attention to\n\n${notes.trim()}`;
+
+    const id = `worker-${++this.workerSeq}`;
+    const w = this.launchWorker(id, prompt, undefined, {
+      model: preset.model || this.meta.workerModel,
+      // The preset's own provider, when dispatch managed to resolve one for it;
+      // undefined leaves runWorker on the worker env. A reviewer is still worth
+      // running on a fallback provider — refusing to review because a provider
+      // was deleted after the crew was chosen would strand the run at the one
+      // step that lets it be called done.
+      //
+      // Its tokens are still priced at the WORKER role's rates, deliberately.
+      // Per-preset pricing would mean a fourth rate card and a fourth gateway
+      // bucket for a handful of turns; a mixed run already resolves to the
+      // dearer basis rather than the cheaper one (see combineBasis in types.ts),
+      // so the error this leaves behind overstates spend, which is the side a
+      // cost cap should be wrong on.
+      env: this.agentEnv.crew?.[preset.id],
+      // 'default' is the preset saying this role needs to run things; anything
+      // else gets the flat deny, which is what makes "read-only" provable.
+      toolPolicy: preset.toolPolicy === 'default' ? undefined : REVIEWER_TOOL_POLICY,
+      reason: `review by ${preset.name} (${preset.id})`,
+    });
+    const outcome = await w.promise;
+
+    const parsed = parseVerdict(outcome?.report ?? '');
+    const verdict: ReviewVerdict = {
+      presetId: preset.id,
+      name: preset.name,
+      // No verdict line is not a pass. The reviewer may have run out of turns
+      // or answered in prose; either way nobody has said this diff is good,
+      // and the gate must not treat silence as consent.
+      pass: parsed?.pass ?? false,
+      findings: parsed?.findings
+        ?? `${preset.name} never stated a verdict. Its report ended without the required ` +
+           `\`VERDICT: PASS\`/\`VERDICT: FAIL\` line, so this counts as a FAIL.` +
+           (outcome?.report ? `\n\nWhat it did report:\n${outcome.report}` : ''),
+      diffHash: diffHash(deck),
+      workerId: id,
+      costUsd: this.workers.get(id)?.costUsd,
+      at: Date.now(),
+    };
+    this.meta.reviews = [...(this.meta.reviews ?? []), verdict];
+    this.saveMeta(this.meta);
+    this.emit('review_verdict', {
+      presetId: verdict.presetId, name: verdict.name, model: preset.model || this.meta.workerModel,
+      pass: verdict.pass, findings: verdict.findings, diffHash: verdict.diffHash,
+      workerId: verdict.workerId, costUsd: verdict.costUsd,
+    });
+
+    const head = parsed === null
+      ? `[${preset.name} (${id}) returned NO VERDICT — recorded as a FAIL]`
+      : `[${preset.name} (${id}) — VERDICT: ${verdict.pass ? 'PASS' : 'FAIL'}]`;
+    const tail = verdict.pass
+      ? 'This PASS is pinned to the diff as it stands right now. If you change anything after ' +
+        'this, the PASS goes stale and the run will not be recorded done — so review last.'
+      : 'This review must pass before the run can be recorded done. Fix what it names, then call ' +
+        'request_review again.';
+    return `${head}\n${verdict.findings || '(no findings given)'}\n\n${tail}${this.costFooter()}`;
+  }
+
+  /**
+   * THE GATE, as the end of the run sees it: null when nothing required is
+   * outstanding, otherwise the blockers and the sentence for the event.
+   *
+   * A deck that cannot be computed leaves the gate UNSATISFIED rather than
+   * open. "We could not work out what this run changed" is not evidence that
+   * what it changed was reviewed, and the failure mode of the other reading —
+   * a diff error quietly certifying a run as done — is the one this whole
+   * mechanism exists to prevent.
+   */
+  private async reviewGate(): Promise<{ blockers: ReviewBlocker[]; text: string } | null> {
+    const required = (this.meta.crew ?? []).filter((p) => p.requiredForDone);
+    if (!required.length) return null;
+    let deck: Deck | null = null;
+    try {
+      deck = await deckFor(this.meta.folder, this.meta.id);
+    } catch {
+      deck = null;
+    }
+    if (!deck) {
+      return {
+        blockers: required.map((p) => ({ presetId: p.id, name: p.name, reason: 'missing' as const })),
+        text: `This run's diff could not be computed, so no review can be matched to it. ` +
+          `${required.map((p) => p.name).join(', ')} ` +
+          `${required.length === 1 ? 'is' : 'are'} required to pass before this run is done, and ` +
+          'nothing here shows that happened. This run is not done. Resume to continue it.',
+      };
+    }
+    const blockers = reviewBlockers(this.meta.crew, this.meta.reviews, diffHash(deck));
+    return blockers.length ? { blockers, text: unreviewedText(blockers) } : null;
+  }
+
   private async messageWorkerTool({ worker_id, message }: { worker_id: string; message: string }): Promise<string> {
     const stop = this.overBudget();
     if (stop) return stop;
@@ -2384,6 +2641,20 @@ export class MissionRun {
       'worker needs: it does not see your conversation.',
       { task: z.string().describe('Full task description with context, paths, and the expected result') },
       async (args) => text(this.spawnWorkerTool(args)),
+    );
+
+    const requestReview = tool(
+      'request_review',
+      'Hand this run\'s diff to one of the crew\'s reviewers and get its verdict. Unlike ' +
+      'spawn_worker this WAITS and returns the findings. The reviewer reads only — it cannot ' +
+      'change your code — and its verdict is recorded on the run: a reviewer marked required ' +
+      'must return PASS on the FINAL diff before Foreman will record the run as done, so call ' +
+      'this after your last change, not before.',
+      {
+        presetId: z.string().describe('The crew preset id to review, e.g. "reviewer"'),
+        notes: z.string().optional().describe('Anything specific you want it to look at, beyond its standing brief'),
+      },
+      async (args) => text(await this.requestReviewTool(args)),
     );
 
     const checkWorkers = tool(
@@ -2495,7 +2766,7 @@ export class MissionRun {
     );
     return createSdkMcpServer({
       name: 'foreman',
-      tools: [spawnWorker, checkWorkers, waitForWorker, messageWorker, askHuman, exposeService, remember],
+      tools: [spawnWorker, requestReview, checkWorkers, waitForWorker, messageWorker, askHuman, exposeService, remember],
     });
   }
 }

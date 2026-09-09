@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  api, basisOf, providerHome, useChat, useRunHistory, useRunView, useSchedules,
+  api, basisOf, providerHome, reviewedByNames, useChat, useRunHistory, useRunView, useSchedules,
   type Cadence, type CostBasis, type Entry, type ProjectSummary, type RunSummary,
   type RunView as RunViewState, type Schedule, type ScheduleInput, type TokenUsage, withAttachments,
 } from '../state';
@@ -21,7 +21,7 @@ import { TranscriptEntry } from '../ds/mission/TranscriptEntry';
 import { PlanBoard } from '../ds/mission/PlanBoard';
 import { RichText } from '../ds/core/RichText';
 import { onSse } from '../sse';
-import { Composer } from '../ds/mission/Composer';
+import { Composer, type CrewPreset } from '../ds/mission/Composer';
 import { ChatBar } from '../ds/mission/ChatBar';
 import { QuestionPicker } from '../ds/mission/QuestionPicker';
 import { ProposalCard } from '../ds/mission/ProposalCard';
@@ -137,6 +137,41 @@ const RAIL_KEY = 'foreman.railWidth';
 const RAIL_MIN = 280;
 const RAIL_DEFAULT = 340;
 
+/** The crew toggled on last time, per project — a project habit, not a draft. */
+const crewKey = (projectId: string) => `foreman.crew.${projectId}`;
+
+/**
+ * The crew roles offered as toggles. Settings holds them under `crewPresets`,
+ * and a project's list replaces the global one whole rather than merging —
+ * a crew is a set, and half of somebody else's set is nobody's.
+ *
+ * The two built-ins below mirror `CREW_PRESETS` in src/crew.ts; the ui build
+ * cannot import from src/, so the ids and names are kept identical by hand.
+ */
+const BUILT_IN_CREW: CrewPreset[] = [
+  { id: 'reviewer', name: 'Reviewer', kind: 'reviewer', model: 'opus', brief: '', toolPolicy: 'read-only', requiredForDone: true },
+  { id: 'security-review', name: 'Security review', kind: 'reviewer', model: 'opus', brief: '', toolPolicy: 'read-only', requiredForDone: false },
+];
+
+/** The stored list, project's over global's; nothing stored anywhere = the built-ins. */
+function crewPresetsOf(settings: { global: Settings; project?: Settings }): unknown {
+  const pick = (s?: Settings) => (s as Record<string, unknown> | undefined)?.crewPresets;
+  return pick(settings.project) ?? pick(settings.global);
+}
+
+/** Ids no longer offered are dropped: a preset deleted in Settings is gone. */
+function readCrew(projectId: string, presets: CrewPreset[]): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(crewKey(projectId)) || 'null');
+    if (!Array.isArray(raw)) return [];
+    return presets.filter((p) => raw.includes(p.id)).map((p) => p.id);
+  } catch { return []; }
+}
+
+function writeCrew(projectId: string, ids: string[]): void {
+  try { localStorage.setItem(crewKey(projectId), JSON.stringify(ids)); } catch { /* private mode */ }
+}
+
 /**
  * Reading order for the transcript, remembered across runs and reloads.
  *
@@ -229,7 +264,8 @@ function Transcript({ run, filter, jump, order, header }: {
           {/* Tool calls as one quiet line; decisions, asks and the human's
               words keep their cards. Weight follows meaning. */}
           <TranscriptEntry agent={e.agent} title={e.title} dense
-            kind={e.kind} body={e.body} ts={e.ts} to={e.to} timing={e.timing} />
+            kind={e.kind} body={e.body} ts={e.ts} to={e.to} timing={e.timing}
+            review={e.review} costBasis={run.costBasis} />
         </div>
       ))}
       </div>
@@ -453,6 +489,7 @@ function PullRequestSheet({ runId, onClose, onDone }: { runId: string; onClose: 
 
 function PlanPane({
   chat, folder, starting, error, errorAction, models, modelsLoading, modelsNote, modelsInheritNote, onStart, onCompose, hasRuns, projectId, onSettings,
+  crewPresets = [], crew = [], onCrewChange,
   recent = [], runsOn, onOpenRun, onForkRun, forking = false,
 }: {
   /** Offered beside the error when the human can override the refusal. */
@@ -480,8 +517,14 @@ function PlanPane({
   onStart: (v: {
     mission: string; budget: number; directorModel?: string; workerModel?: string;
     directorProviderId?: string; workerProviderId?: string; browserTools?: boolean;
+    crew?: string[];
     attachments?: File[];
   }) => void;
+  /** The crew roles Settings offers, and the ones this project last used —
+   *  the proposal's own `crew` suggestion wins over the remembered set. */
+  crewPresets?: CrewPreset[];
+  crew?: string[];
+  onCrewChange?: (ids: string[]) => void;
   /** "Skip the talk": open the mission composer instead. */
   onCompose: () => void;
   /** The project has finished runs — the empty state can point at "Plan the next step". */
@@ -647,6 +690,9 @@ function PlanPane({
             directorProviderId={chat.proposal.directorProviderId}
             workerProviderId={chat.proposal.workerProviderId}
             modelRationale={chat.proposal.modelRationale}
+            crewPresets={crewPresets}
+            crew={chat.proposal.crew ?? crew}
+            onCrewChange={onCrewChange}
             models={models} modelsLoading={modelsLoading}
             modelsNote={modelsNote} modelsInheritNote={modelsInheritNote}
             busy={starting} error={error} errorAction={errorAction}
@@ -834,6 +880,18 @@ export function ProjectView({
   const effectiveSettings = { ...DEFAULT_SETTINGS, ...settings.global, ...(settings.project ?? {}) } as Settings;
   const settingOverrides = Object.keys(settings.project ?? {});
   const branchPerMission = (effectiveSettings as Record<string, unknown>).gitBranchPerMission !== false;
+  // The crew on offer, and the crew this project was last started with. The
+  // remembered ids are filtered against what Settings still offers on read.
+  // `settings` is rebuilt every render, so memoise on the stored array itself:
+  // the effect below must not fire on every render.
+  const storedCrewPresets = crewPresetsOf(settings);
+  const crewPresets = useMemo<CrewPreset[]>(
+    () => (Array.isArray(storedCrewPresets) ? storedCrewPresets as CrewPreset[] : BUILT_IN_CREW),
+    [storedCrewPresets],
+  );
+  const [crew, setCrew] = useState<string[]>(() => readCrew(p.id, crewPresets));
+  useEffect(() => { setCrew(readCrew(p.id, crewPresets)); }, [p.id, crewPresets]);
+  const rememberCrew = (ids: string[]) => { setCrew(ids); writeCrew(p.id, ids); };
   // What a mission here will run on, in one line. The rail's settings block
   // said the same in eight rows; the gear is the way to change it.
   const runsOnLine = (
@@ -998,6 +1056,8 @@ export function ProjectView({
   const startMission = async (v: {
     mission: string; budget: number; directorModel?: string; workerModel?: string;
     directorProviderId?: string; workerProviderId?: string; browserTools?: boolean;
+    /** Crew preset ids the human toggled on. Empty and absent both mean no crew. */
+    crew?: string[];
     attachments?: File[];
   }, allowDirty = false) => {
     setComposerErr('');
@@ -1011,7 +1071,8 @@ export function ProjectView({
       .run(p.id, mission, v.budget, {
         directorModel: v.directorModel, workerModel: v.workerModel,
         directorProviderId: v.directorProviderId, workerProviderId: v.workerProviderId,
-        browserTools: v.browserTools, allowDirty: allowDirty || undefined,
+        browserTools: v.browserTools, crew: v.crew,
+        allowDirty: allowDirty || undefined,
       })
       .finally(() => setStarting(false));
     if (r.ok) { refreshFleet(); return; }
@@ -1027,6 +1088,9 @@ export function ProjectView({
   };
 
   const idle = !activeRunId && selectedRunId === null;
+  // The reviewers whose PASS still stands on this run, if any.
+  const reviewers = reviewedByNames(selectedRun);
+
   const canResume = !activeRunId && selectedRunId
     && (selectedRun?.status === 'interrupted' || selectedRun?.status === 'error')
     && selectedRun?.directorSessionId;
@@ -1240,6 +1304,19 @@ export function ProjectView({
           <span title="Every DONE WHEN criterion was verified; the run stopped at its cap rather than finishing under it."
             style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', whiteSpace: 'nowrap' }}>at the cap</span>
         )}
+        {/* Who signed this off. Only on a finished run, and only when every
+            required reviewer passed — see `reviewedBy`, which is also what the
+            fleet tile's glyph asks. A stale PASS shows nothing. */}
+        {selectedRunId && reviewers.length > 0 && (
+          <span title={`Reviewed by ${reviewers.join(', ')} — ${reviewers.length === 1 ? 'its' : 'their'} PASS on this run's final diff is what let Foreman record it done`}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', whiteSpace: 'nowrap',
+            }}>
+            <Icon name="approval" size={11} color="var(--status-good)" />
+            reviewed by {reviewers.join(', ')}
+          </span>
+        )}
         {selectedRunId && (
           <BudgetMeter spent={run.costUsd} budget={run.budgetUsd} detail
             costBasis={run.costBasis} usage={run.usage} turns={selectedRun?.turns}
@@ -1408,6 +1485,7 @@ export function ProjectView({
                   busy={starting} models={models}
                   modelsLoading={modelsLoading} modelsNote={modelsNote}
                   modelsInheritNote={modelsInheritNote}
+                  crewPresets={crewPresets} crew={crew} onCrewChange={rememberCrew}
                   onStart={(v) => void startMission(v)}
                   style={{
                     background: 'var(--bg-panel)', border: '1px solid var(--line)',
@@ -1442,6 +1520,7 @@ export function ProjectView({
                 errorAction={dirtyRetry ? { label: 'Start anyway', onClick: () => void startMission(dirtyRetry.v, true) } : undefined}
                 models={models} modelsLoading={modelsLoading}
                 modelsNote={modelsNote} modelsInheritNote={modelsInheritNote}
+                crewPresets={crewPresets} crew={crew} onCrewChange={rememberCrew}
                 onStart={(v) => void startMission(v)}
                 onCompose={() => setComposeOpen(true)} hasRuns={history.length > 0}
                 recent={history} runsOn={runsOnLine} onOpenRun={(id) => setSelectedRunId(id)} onForkRun={(id) => void forkPlan(id)} forking={forking}

@@ -18,6 +18,13 @@ export interface OutcomeTileProps {
      */
     costBasis?: 'priced' | 'free' | 'unpriced';
     usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number };
+    /**
+     * The reviewers whose PASS let this run be recorded done, by name, decided
+     * by the server. Non-empty (with `status: 'done'`) draws the reviewed
+     * mark; the tile applies no rule of its own. Absent or empty on a run
+     * nothing required a review of.
+     */
+    reviewedBy?: string[];
   } | null;
   onOpen?: () => void;
   /** Should open a ConfirmDialog — unlinking is not a one-click action. */

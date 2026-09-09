@@ -62,6 +62,41 @@ function ToolbarButton({ icon, label, active, onClick }) {
   );
 }
 
+/**
+ * The crew row: named roles a mission opts into, as toggles. Off by default —
+ * a reviewer costs money and time, so it is always something the human asked
+ * for. Renders nothing when no presets are configured rather than an empty
+ * row, so a project that never set one up never sees the concept.
+ */
+export function CrewToggles({ presets = [], value = [], onChange, style }) {
+  if (!presets.length) return null;
+  const toggle = (id) => {
+    const next = value.includes(id) ? value.filter((x) => x !== id) : [...value, id];
+    onChange?.(presets.filter((p) => next.includes(p.id)).map((p) => p.id));
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, ...style }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', textTransform: 'uppercase', letterSpacing: 'var(--ls-caps)' }}>Crew</span>
+        {presets.map((p) => (
+          <span key={p.id}
+            title={`${p.brief ? `${p.brief}\n\n` : ''}${p.toolPolicy === 'read-only' ? 'Read-only. ' : ''}${p.requiredForDone ? 'Must return PASS before the run counts as done.' : 'Advisory — its verdict does not hold the run.'}`}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Switch size="sm" checked={value.includes(p.id)} onChange={() => toggle(p.id)} label={p.name} />
+            <span onClick={() => toggle(p.id)} style={{ fontSize: 'var(--fs-sm)', color: 'var(--ink-1)', cursor: 'pointer' }}>
+              {p.name}
+              {p.model && <span style={{ color: 'var(--ink-2)', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-xs)' }}> · {p.model}</span>}
+            </span>
+          </span>
+        ))}
+      </div>
+      <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+        A required reviewer must return PASS on the final diff before the run counts as done.
+      </span>
+    </div>
+  );
+}
+
 function ModeTab({ icon, label, active, onClick }) {
   return (
     <button type="button" onClick={onClick} aria-selected={active} role="tab" style={{
@@ -76,7 +111,7 @@ function ModeTab({ icon, label, active, onClick }) {
  * The mission composer: templates, an editor frame (Write / Preview, formatting, attachments), a parameter tray, one primary action.
  * Drafts persist per folder (text and settings; attachments are not persisted).
  */
-export function Composer({ folder, defaultBudgetUsd = 5, error, errorAction, busy, templates = MISSION_TEMPLATES, models, modelsLoading, modelsNote, modelsInheritNote, onStart, style }) {
+export function Composer({ folder, defaultBudgetUsd = 5, error, errorAction, busy, templates = MISSION_TEMPLATES, models, modelsLoading, modelsNote, modelsInheritNote, crewPresets = [], crew: initialCrew, onCrewChange, onStart, style }) {
   const stored = useMemo(() => {
     try { return JSON.parse(localStorage.getItem(draftKey(folder)) || 'null'); } catch { return null; }
   }, [folder]);
@@ -90,6 +125,9 @@ export function Composer({ folder, defaultBudgetUsd = 5, error, errorAction, bus
   const [directorProviderId, setDirectorProviderId] = useState(stored?.directorProviderId);
   const [workerProviderId, setWorkerProviderId] = useState(stored?.workerProviderId);
   const [browserTools, setBrowserTools] = useState(stored?.browserTools ?? false);
+  // The crew selection is remembered by the caller, per project, because it is
+  // a project habit rather than part of this draft's text.
+  const [crew, setCrew] = useState(initialCrew ?? []);
   const [savedAt, setSavedAt] = useState(stored ? 'restored' : null);
   const [mode, setMode] = useState('write');
   const [files, setFiles] = useState([]);
@@ -127,7 +165,9 @@ export function Composer({ folder, defaultBudgetUsd = 5, error, errorAction, bus
     if (!canStart) return;
     onStart?.({
       mission: mission.trim(), budget, directorModel, workerModel,
-      directorProviderId, workerProviderId, browserTools, attachments: files,
+      directorProviderId, workerProviderId, browserTools,
+      crew: crewPresets.filter((p) => crew.includes(p.id)).map((p) => p.id),
+      attachments: files,
     });
   };
 
@@ -222,6 +262,9 @@ export function Composer({ folder, defaultBudgetUsd = 5, error, errorAction, bus
           <Switch checked={browserTools} onChange={setBrowserTools} label={browserTools ? 'on' : 'off'} />
         </Field>
       </div>
+
+      <CrewToggles presets={crewPresets} value={crew}
+        onChange={(ids) => { setCrew(ids); onCrewChange?.(ids); }} />
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
         {error && (
