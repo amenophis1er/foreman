@@ -40,12 +40,28 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# On Linux the architecture is only half the answer: a glibc bundle's `claude`
+# binary will not run on a musl machine, and `uname` says nothing about which
+# this is. Ask ldd, and refuse to guess when it will not say.
+host_libc() {
+  if ldd --version 2>&1 | grep -qi musl; then echo musl
+  elif ldd --version 2>&1 | grep -qiE 'glibc|gnu libc'; then echo glibc
+  elif [ -e /lib/ld-musl-x86_64.so.1 ] || [ -e /lib/ld-musl-aarch64.so.1 ]; then echo musl
+  else echo unknown
+  fi
+}
+
 if [ -z "$targets" ]; then
   case "$(uname -s)-$(uname -m)" in
     Darwin-arm64) targets=darwin-arm64 ;;
     Darwin-x86_64) targets=darwin-x64 ;;
-    Linux-x86_64) targets=linux-x64 ;;
-    Linux-aarch64|Linux-arm64) targets=linux-arm64 ;;
+    Linux-x86_64|Linux-aarch64|Linux-arm64)
+      case "$(uname -m)" in x86_64) arch=x64 ;; *) arch=arm64 ;; esac
+      case "$(host_libc)" in
+        glibc) targets="linux-$arch" ;;
+        musl)  targets="linux-$arch-musl" ;;
+        *) echo "cannot tell whether this machine is glibc or musl; pass --target linux-$arch or --target linux-$arch-musl" >&2; exit 2 ;;
+      esac ;;
     *) echo "cannot guess this machine's target; pass --target" >&2; exit 2 ;;
   esac
 fi
