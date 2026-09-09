@@ -8,6 +8,7 @@
  * commits on it. It never merges, and it pushes only when the human presses
  * the button that says so — once, for that branch, to open the pull request.
  */
+import path from 'node:path';
 import { execFile } from 'node:child_process';
 
 export interface GitInfo {
@@ -92,6 +93,53 @@ export function missionBranchName(mission: string, runId: string): string {
  * own commit — so this is what a human stands to have committed under a
  * mission's name without noticing.
  */
+/**
+ * When this folder is a linked git worktree, the repository it was made from:
+ * the main worktree's root. Null when the folder is that main worktree, is
+ * not a repository, or git is too old to say.
+ *
+ * Worktrees are the reason a mission asks the human the same question all
+ * day. A worktree holds a branch's files but not the repository's shared
+ * scaffolding — the build config, the type declarations, the parent package's
+ * node_modules — so a crew working in one steps up to the parent constantly,
+ * and every step is a boundary crossing.
+ */
+export async function worktreeParent(folder: string): Promise<string | null> {
+  try {
+    const out = await git(['worktree', 'list', '--porcelain'], folder);
+    // The first entry is always the main worktree; the rest are the linked ones.
+    const roots = out.split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice('worktree '.length).trim());
+    const main = roots[0];
+    if (!main || roots.length < 2) return null;
+    const here = (await git(['rev-parse', '--show-toplevel'], folder)).trim();
+    if (!here || path.resolve(here) === path.resolve(main)) return null;
+    // Only the parent. Sibling worktrees are other people's workspaces —
+    // possibly another mission's — and are never opened automatically.
+    return path.resolve(main);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Should this run be given its parent repository, and why not when not.
+ * Pure so the rule is testable: the parent is opened unless another live run
+ * is working in it, because two crews in one checkout is the situation the
+ * dirty-checkout guard exists to prevent.
+ */
+export function worktreeGrant(
+  parent: string | null,
+  busyFolders: Iterable<string>,
+): { grant: string | null; reason?: string } {
+  if (!parent) return { grant: null };
+  for (const f of busyFolders) {
+    if (path.resolve(f) === parent) {
+      return { grant: null, reason: `its parent repository ${parent} is held by another running mission` };
+    }
+  }
+  return { grant: parent };
+}
+
 export async function dirtyPaths(folder: string, limit = 8): Promise<string[]> {
   try {
     const out = await git(['status', '--porcelain', '--untracked-files=normal'], folder);

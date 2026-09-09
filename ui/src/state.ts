@@ -628,7 +628,8 @@ function applyWire(s: RunView, e: WireEvent): RunView {
         ...s,
         entries: [...s.entries, {
           id: ++seq, ts, agent: String(d.agent ?? 'director'), kind: 'system',
-          title: 'path allowed for run', body: String(d.path ?? ''),
+          title: 'path allowed for run',
+          body: d.reason ? `${String(d.path ?? '')} — ${String(d.reason)}` : String(d.path ?? ''),
         }],
       };
     case 'auto_denied':

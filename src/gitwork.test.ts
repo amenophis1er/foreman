@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
-import { closeMissionBranch, defaultBranch, ensureMissionBranch, gitInfo, missionBranchName, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
+import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { closeMissionBranch, defaultBranch, worktreeGrant, worktreeParent, ensureMissionBranch, gitInfo, missionBranchName, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
 } from './gitwork.js';
 
 const sh = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).toString();
@@ -145,4 +145,27 @@ test('a pull request targets the default branch when the mission was branched fr
   // but here. gh would fail on it; the default branch is the honest target.
   sh(dir, 'checkout', '-q', '-b', 'foreman/earlier-1234');
   assert.deepEqual(await resolvePrBase(dir, 'foreman/earlier-1234'), { base: 'main', fellBack: true });
+});
+
+test('worktreeParent: a linked worktree knows its repository, and nothing else claims one', async () => {
+  const dir = await repo();
+  assert.equal(await worktreeParent(dir), null, 'the main worktree has no parent');
+  assert.equal(await worktreeParent(os.tmpdir()), null, 'a plain directory is not a worktree');
+
+  const wt = path.join(await mkdtemp(path.join(os.tmpdir(), 'gitwork-wt-')), 'feature');
+  sh(dir, 'worktree', 'add', '-q', '-b', 'feature', wt);
+  const parent = await worktreeParent(wt);
+  assert.equal(parent && await realpath(parent), await realpath(dir), 'the linked worktree points back at the repository');
+  assert.equal(await worktreeParent(dir), null, 'and the main worktree still has none');
+});
+
+test('worktreeGrant opens the parent unless a live run is working in it', () => {
+  assert.deepEqual(worktreeGrant('/repos/app', []), { grant: '/repos/app' });
+  assert.deepEqual(worktreeGrant('/repos/app', ['/repos/other']), { grant: '/repos/app' });
+  // Two crews in one checkout is the thing the dirty-checkout guard exists to
+  // prevent; opening the parent into a live mission would arrange it.
+  assert.deepEqual(worktreeGrant('/repos/app', ['/repos/app']), {
+    grant: null, reason: 'its parent repository /repos/app is held by another running mission',
+  });
+  assert.deepEqual(worktreeGrant(null, []), { grant: null }, 'not a worktree: nothing to say');
 });

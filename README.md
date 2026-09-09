@@ -151,6 +151,13 @@ a human's judgement is required *and* being wrong is expensive.
   temp directory is denied on the spot and redirected to `.foreman/work/`.
   A path that is knowably wrong is denied. A path only you can judge asks —
   with a default, because "no answer" is also an answer the run must survive.
+- **A worktree comes with its repository.** A mission whose folder is a git
+  worktree is given the repository it was made from, once, at the start — the
+  build config, the shared declarations and the parent's `node_modules` live
+  there, so without it the crew asks the same question all day and you learn
+  to click Allow without reading. The transcript records the grant. Sibling
+  worktrees stay closed, and so does a parent another mission is working in.
+  Turn it off per project with **Worktree parent** in Settings.
 - **Every ask has a deadline and a default.** An approval nobody answers is
   denied with a message that says where to go instead; a question nobody
   answers is handed back to the director with "decide and record". You set

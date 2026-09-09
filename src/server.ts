@@ -81,7 +81,7 @@ import { budgetAnchor, modelRecords, projectRecord, recordLine } from './track-r
 import { reconcileRole } from './role-provider.js';
 import { detectBrowser, installChromium } from './browser.js';
 import { frozenDeck, frozenMissionDoc, parkMissionDoc, restoreMissionDoc, snapshotRun } from './snapshot.js';
-import { closeMissionBranch, compareUrl, createPullRequest, dirtyPaths, ensureMissionBranch, ghReady, gitInfo, resolvePrBase, missionBranchName, prDraft, pullRequestState, pushBranch, renameMissionBranch, startMissionBranch, type GitInfo } from './gitwork.js';
+import { closeMissionBranch, compareUrl, createPullRequest, dirtyPaths, ensureMissionBranch, ghReady, gitInfo, resolvePrBase, worktreeGrant, worktreeParent, missionBranchName, prDraft, pullRequestState, pushBranch, renameMissionBranch, startMissionBranch, type GitInfo } from './gitwork.js';
 import { detectTailscale, tailnetUrl } from './tailscale.js';
 import { checkForUpdate, currentVersion, type UpdateInfo } from './update.js';
 import { ServiceRegistry, listeningPid, portOpen, servicesHandler, stopService } from './services.js';
@@ -1793,6 +1793,8 @@ async function effectiveSettings(projectId: string): Promise<{
   directorProviderId?: string; workerProviderId?: string;
   /** In a repository, each mission runs on a branch of its own (default on). */
   gitBranchPerMission: boolean;
+  /** A mission in a worktree may use its parent repository without asking (default on). */
+  allowWorktreeParent: boolean;
   /** Percent of the cap at which the director is told to start verifying (default 80). */
   budgetWarnAt: number;
   /** Ceiling on what this project's SCHEDULED runs may cost in one calendar month. */
@@ -1818,6 +1820,7 @@ async function effectiveSettings(projectId: string): Promise<{
     directorProviderId: str(p.directorProviderId ?? g.directorProviderId),
     workerProviderId: str(p.workerProviderId ?? g.workerProviderId),
     gitBranchPerMission: (p.gitBranchPerMission ?? g.gitBranchPerMission) !== false,
+    allowWorktreeParent: (p.allowWorktreeParent ?? g.allowWorktreeParent) !== false,
     budgetWarnAt: (() => {
       const raw = Number(p.budgetWarnAt ?? g.budgetWarnAt);
       return Number.isFinite(raw) && raw > 0 && raw < 100 ? raw : 60;
@@ -1845,6 +1848,41 @@ async function gitInfoCached(folder: string): Promise<GitInfo> {
   const value = await gitInfo(folder);
   gitInfoCache.set(folder, { at: Date.now(), value });
   return value;
+}
+
+/**
+ * A mission in a git worktree gets its parent repository without being asked.
+ *
+ * The worktree holds the branch's files; the build config, the shared type
+ * declarations and the parent's node_modules live up in the repository it was
+ * made from. A crew working in a worktree therefore crosses the boundary on
+ * almost every command, and answering the same question all day is not
+ * oversight — it is noise that trains the human to click Allow without
+ * reading. The parent is opened at the start instead, once, in the open: the
+ * transcript records it the same way it records a human's own grant.
+ *
+ * Only the parent. Sibling worktrees stay closed, because one of them may be
+ * another mission's workspace, and so does a parent that a live run is
+ * already working in.
+ */
+async function grantWorktreeParent(
+  meta: RunMeta, allowed: boolean, emit: ReturnType<typeof makeEmitter>,
+): Promise<void> {
+  if (!allowed) return;
+  const parent = await worktreeParent(meta.folder).catch(() => null);
+  const busy = activeRuns().filter((r) => r.meta.id !== meta.id).map((r) => r.meta.folder);
+  const decision = worktreeGrant(parent, busy);
+  if (decision.grant) {
+    if ((meta.allowedRoots ?? []).includes(decision.grant)) return;
+    meta.allowedRoots = [...(meta.allowedRoots ?? []), decision.grant];
+    await store.writeMeta(meta).catch(() => {});
+    emit('root_allowed', {
+      path: decision.grant, agent: 'foreman',
+      reason: 'this mission runs in a worktree of that repository',
+    });
+  } else if (decision.reason) {
+    emit('git_note', { text: `Left closed: ${decision.reason}. The crew will ask before it steps outside the mission folder.` });
+  }
 }
 
 async function startRun(
@@ -1947,6 +1985,7 @@ async function startRun(
       }
     }
   }
+  await grantWorktreeParent(meta, settings.allowWorktreeParent, makeEmitter(meta.id, projectId));
   await driveRun(projectId, meta);
 }
 
@@ -2007,6 +2046,7 @@ async function resumeRun(projectId: string, meta: RunMeta, pick: {
     if (back) makeEmitter(meta.id, projectId)('git_note', { text: `Could not return to ${meta.git.branch} (${back}); the resumed mission runs on whatever is checked out.` });
     gitInfoCache.delete(meta.folder);
   }
+  await grantWorktreeParent(meta, (await effectiveSettings(projectId)).allowWorktreeParent, makeEmitter(meta.id, projectId));
   // The director resumes from MISSION.md. If another mission ran here since,
   // the folder's copy is that mission's; this run's own goes back first.
   const restored = await restoreMissionDoc(store.runDirectory(meta.id), meta.folder).catch(() => 'none' as const);
