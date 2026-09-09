@@ -348,7 +348,14 @@ function CrewPresets({ value, onChange, models, modelsLoading, modelsNote }) {
                     <TextInput value={c.name} onChange={(v) => patch(i, 'name', v)} />
                   </Field>
                   <Field label="Kind" layout="stacked" hint={c.kind === 'reviewer' ? 'Judges the finished diff.' : 'Works alongside the others.'}>
-                    <Tabs size="sm" tabs={KINDS} value={c.kind} onChange={(v) => patch(i, 'kind', v)} />
+                    {/* Only a reviewer gates a run, and only a reviewer shows
+                        the switch that says so — so becoming a specialist has
+                        to drop the flag as well, or the run would still be
+                        held by a gate with nothing on screen to explain it. */}
+                    <Tabs size="sm" tabs={KINDS} value={c.kind}
+                      onChange={(v) => onChange(value.map((x, j) => (j === i
+                        ? { ...x, kind: v, requiredForDone: v === 'reviewer' ? x.requiredForDone : false }
+                        : x)))} />
                   </Field>
                   <Field label="Model" layout="stacked">
                     <ModelSelect allowDefault={false} models={models} loading={modelsLoading} note={modelsNote}

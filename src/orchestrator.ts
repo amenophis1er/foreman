@@ -1835,7 +1835,7 @@ export class MissionRun {
     };
   }
 
-  private addUsage(raw: unknown, role: AgentRole = 'director'): void {
+  private addUsage(raw: unknown, role: AgentRole = 'director', priced = false): void {
     // The real number for this turn just arrived; the estimate standing in
     // for it is now redundant, and the ledger must be re-baselined so the
     // same tokens are not offered again as growth.
@@ -1847,7 +1847,12 @@ export class MissionRun {
     // Where the endpoint published rates, this is the run's real cost: its
     // own tokens at its own prices, accumulated per role so a mixed run bills
     // each half correctly instead of applying one table to both.
-    const price = this.prices[role];
+    // `priced` means this agent's own provider is billing in dollars and
+    // those dollars are counted elsewhere (addCost's native path). Applying
+    // the role's rate card here as well would charge the same tokens twice
+    // and could stop the run early at a cap it never really reached — the
+    // tokens still count, the money does not.
+    const price = priced ? undefined : this.prices[role];
     if (price) { this.costParts.rated += priceUsage(price, delta); this.recomputeCost(); }
     this.saveMeta(this.meta);
     this.emitEconomics();
@@ -2342,7 +2347,7 @@ export class MissionRun {
           // usage, so usage has to be current before it is emitted.
           // A worker retried on the director's provider is priced with the
           // director's rates: the tokens went through that gateway.
-          this.addUsage(m.usage, overrides?.priceRole ?? 'worker');
+          this.addUsage(m.usage, overrides?.priceRole ?? 'worker', overrides?.nativeCost === true);
           this.addCost(m.total_cost_usd as number | undefined, overrides?.priceRole ?? 'worker', overrides?.nativeCost === true);
           w.costUsd += (m.total_cost_usd as number | undefined) ?? 0;
         }

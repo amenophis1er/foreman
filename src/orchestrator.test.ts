@@ -1698,3 +1698,25 @@ test('a paid reviewer makes the run priced before it runs, so the cap is live', 
   const said = events.find((e) => e.event === 'settings_changed');
   assert.match(said!.data.changes[0], /dollar cap is live/, 'and the change is announced, not silent');
 });
+
+test('a reviewer on its own paid provider is charged once, not twice', async () => {
+  const folder = await reviewableFolder();
+  // Workers with a published rate card AND a reviewer billing in dollars: the
+  // tokens used to be priced at the worker's rates and the SDK's dollars added
+  // on top, charging the same review twice and stopping runs early.
+  const run = new MissionRun(
+    meta({ crew: [reviewerPreset({ providerId: 'openai' })], workerModel: 'sonnet', folder, budgetUsd: 5 }),
+    () => {}, () => {},
+    { ...noopAgentEnv, crew: { reviewer: {} as AgentEnv } },
+    { worker: { inputPerMTok: 1000, outputPerMTok: 1000 } as any },
+    undefined,
+    { director: 'priced', worker: 'priced', crew: { reviewer: 'priced' } },
+  );
+  (run as any).runWorker = async (_id: string, _p: string, _r: string | undefined, overrides: any) => {
+    (run as any).addUsage({ input_tokens: 1_000_000, output_tokens: 1_000_000 }, overrides?.priceRole ?? 'worker', overrides?.nativeCost === true);
+    (run as any).addCost(0.25, overrides?.priceRole ?? 'worker', overrides?.nativeCost === true);
+    return { report: 'VERDICT: PASS', isError: false };
+  };
+  await (run as unknown as ReviewSurface).requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(run.meta.costUsd, 0.25, 'the provider\'s own figure, and only that');
+});
