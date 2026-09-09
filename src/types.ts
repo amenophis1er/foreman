@@ -371,6 +371,12 @@ export interface RunMeta {
    * human already answered.
    */
   allowedRoots?: string[];
+  /**
+   * The subset of `allowedRoots` Foreman opened by itself rather than the
+   * human (today: a worktree's parent repository). Kept apart so it can be
+   * withdrawn when the reason for it stops holding — a human's grant never is.
+   */
+  autoRoots?: string[];
   /** Dev servers the crew exposed through Foreman's proxy (see services.ts). */
   services?: Array<{ port: number; label: string; path: string; since: number; pid?: number }>;
   /**

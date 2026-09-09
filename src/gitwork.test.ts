@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
-import { closeMissionBranch, defaultBranch, ensureMissionBranch, gitInfo, missionBranchName, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
+import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { closeMissionBranch, defaultBranch, worktreeGrant, worktreeParent, ensureMissionBranch, gitInfo, missionBranchName, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
 } from './gitwork.js';
 
 const sh = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).toString();
@@ -145,4 +145,53 @@ test('a pull request targets the default branch when the mission was branched fr
   // but here. gh would fail on it; the default branch is the honest target.
   sh(dir, 'checkout', '-q', '-b', 'foreman/earlier-1234');
   assert.deepEqual(await resolvePrBase(dir, 'foreman/earlier-1234'), { base: 'main', fellBack: true });
+});
+
+test('worktreeParent: a linked worktree knows its repository, and nothing else claims one', async () => {
+  const dir = await repo();
+  assert.equal(await worktreeParent(dir), null, 'the main worktree has no parent');
+  assert.equal(await worktreeParent(os.tmpdir()), null, 'a plain directory is not a worktree');
+
+  const wt = path.join(await mkdtemp(path.join(os.tmpdir(), 'gitwork-wt-')), 'feature');
+  sh(dir, 'worktree', 'add', '-q', '-b', 'feature', wt);
+  const shape = await worktreeParent(wt);
+  assert.equal(shape && await realpath(shape.parent), await realpath(dir), 'the linked worktree points back at the repository');
+  assert.deepEqual(shape?.siblings, [], 'and it is the only linked worktree');
+  assert.equal(await worktreeParent(dir), null, 'and the main worktree still has none');
+});
+
+test('worktreeGrant opens the parent unless a live run is working in it', () => {
+  const shape = (siblings: string[] = []) => ({ parent: '/repos/app', siblings });
+  assert.deepEqual(worktreeGrant(shape(), []), { grant: '/repos/app' });
+  assert.deepEqual(worktreeGrant(shape(['/elsewhere/wt-a']), ['/repos/other']), { grant: '/repos/app' },
+    'a sibling outside the parent is not opened by opening the parent');
+  // Two crews in one checkout is the thing the dirty-checkout guard exists to
+  // prevent; opening the parent into a live mission would arrange it.
+  assert.deepEqual(worktreeGrant(shape(), ['/repos/app']), {
+    grant: null, reason: 'its parent repository /repos/app is held by another running mission',
+  });
+  // A grant is a subtree: worktrees kept inside the repository would ride
+  // along with it, so the parent is not opened at all.
+  const nested = worktreeGrant(shape(['/repos/app/.worktrees/a', '/repos/app/.worktrees/b']), []);
+  assert.equal(nested.grant, null);
+  assert.match(nested.reason ?? '', /would also open 2 other worktrees inside it/);
+  assert.deepEqual(worktreeGrant(null, []), { grant: null }, 'not a worktree: nothing to say');
+});
+
+test('a worktree kept inside the repository is not opened by opening the repository', async () => {
+  const dir = await repo();
+  // The common layout codex flagged: linked worktrees under the main checkout.
+  const inside = path.join(dir, '.worktrees', 'a');
+  sh(dir, 'worktree', 'add', '-q', '-b', 'inside-a', inside);
+  const other = path.join(dir, '.worktrees', 'b');
+  sh(dir, 'worktree', 'add', '-q', '-b', 'inside-b', other);
+
+  const shape = await worktreeParent(inside);
+  assert.ok(shape, 'it is a linked worktree');
+  assert.equal(await realpath(shape.parent), await realpath(dir));
+  assert.ok(shape.siblings.some((s) => s.endsWith(path.join('.worktrees', 'b'))), 'and it can see its sibling');
+
+  const decision = worktreeGrant(shape, []);
+  assert.equal(decision.grant, null, 'so the parent is not opened automatically');
+  assert.match(decision.reason ?? '', /would also open/);
 });

@@ -187,6 +187,8 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
     projects: <>
       {!isProject && row('projectsRoot', 'Projects root', 'Where the folder picker opens.', <TextInput mono width={260} value={get('projectsRoot')} onChange={(v) => set('projectsRoot', v)} />)}
       {row('missionDir', 'Mission folder', 'Relative to the project. Holds MISSION.md and run history.', <TextInput mono width={160} value={get('missionDir')} onChange={(v) => set('missionDir', v)} />)}
+      {row('allowWorktreeParent', 'Worktree parent', 'A mission in a git worktree may use the repository it was made from without asking. Sibling worktrees stay closed.',
+        <Switch checked={get('allowWorktreeParent') !== false} onChange={(v) => set('allowWorktreeParent', v)} />)}
       {row('gitBranchPerMission', 'Each mission on its own branch', 'In a git repository: Foreman creates foreman/<mission> from what is checked out, commits the work on it at the end, and never merges or pushes. Off: missions edit the current branch.', <Switch checked={get('gitBranchPerMission') !== false} onChange={(v) => set('gitBranchPerMission', v)} />)}
       {!isProject && row('showHidden', 'Show hidden folders in picker', null, <Switch checked={get('showHidden')} onChange={(v) => set('showHidden', v)} />)}
       {isProject && (
