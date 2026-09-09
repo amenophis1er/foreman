@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
-import { closeMissionBranch, defaultBranch, worktreeGrant, worktreeParent, ensureMissionBranch, gitInfo, missionBranchName, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
+import { mkdir, mkdtemp, realpath, symlink, unlink, writeFile } from 'node:fs/promises';
+import { changeFingerprint, closeMissionBranch, defaultBranch, worktreeGrant, worktreeParent, ensureMissionBranch, gitInfo, missionBranchName, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
 } from './gitwork.js';
+import type { ReviewVerdict } from './crew.js';
 
 const sh = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).toString();
 
@@ -93,6 +94,26 @@ test('prDraft: the run title, the brief, the boxes as the mission left them, and
   assert.match(d.body, /## Mission\n\nAdd a footer to the page\.\nKeep it small\./);
   assert.match(d.body, /## Done when\n\n- \[x\] footer\.html exists\n- \[ \] linked from index/);
   assert.match(d.body, /branch `foreman\/add-a-footer-ab12` from `main` · spend \$0\.42/);
+  assert.ok(!/## Review/.test(d.body), 'a run nobody reviewed says nothing about review');
+});
+
+test('prDraft: the reviewers and their verdicts, with the head of the findings', async () => {
+  const { prDraft } = await import('./gitwork.js');
+  const verdict = (over: Partial<ReviewVerdict>): ReviewVerdict => ({
+    presetId: 'reviewer', name: 'Reviewer', pass: true, findings: '', diffHash: 'h', workerId: 'w1', at: 1, ...over,
+  });
+  const d = prDraft(
+    { mission: 'Add a footer.', costUsd: 1, costBasis: 'priced', git: { branch: 'b', base: 'main', baseHead: null } },
+    null,
+    [
+      verdict({ findings: '- footer.html:12 the year is hard-coded' }),
+      verdict({ presetId: 'security-review', name: 'Security review', pass: false, findings: `x${'y'.repeat(2000)}` }),
+    ],
+  );
+  assert.match(d.body, /## Review\n\n\*\*Reviewer: PASS\*\*\n\n- footer\.html:12 the year is hard-coded/);
+  assert.match(d.body, /\*\*Security review: FAIL\*\*/);
+  assert.match(d.body, /… the rest is in the run's record\./, 'a long findings list is cut, not pasted whole');
+  assert.ok(d.body.length < 2000, 'the body stays a pull request, not an archive');
 });
 
 
@@ -194,4 +215,65 @@ test('a worktree kept inside the repository is not opened by opening the reposit
   const decision = worktreeGrant(shape, []);
   assert.equal(decision.grant, null, 'so the parent is not opened automatically');
   assert.match(decision.reason ?? '', /would also open/);
+});
+
+test('the fingerprint copes with awkward filenames and with a repository that has no commit', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'fingerprint-git-'));
+  sh(dir, 'init', '-q', '-b', 'main');
+  sh(dir, 'config', 'user.email', 'me@example.com');
+  sh(dir, 'config', 'user.name', 'Me');
+
+  // No commit yet: `git diff HEAD` has nothing to diff against, and a run that
+  // starts a repository from nothing is an ordinary mission.
+  await writeFile(path.join(dir, 'first.txt'), 'work\n');
+  const empty = await changeFingerprint(dir);
+  assert.ok(empty, 'a repository with no HEAD still has a fingerprint');
+
+  // A name git C-quotes in `ls-files`: a quoted path handed to hash-object
+  // fails, which used to silently drop the file's content from the hash.
+  const awkward = path.join(dir, 'répertoire "odd" name.txt');
+  await writeFile(awkward, 'one\n');
+  const withAwkward = await changeFingerprint(dir);
+  assert.ok(withAwkward);
+  assert.notEqual(withAwkward, empty);
+
+  await writeFile(awkward, 'two\n');
+  assert.notEqual(await changeFingerprint(dir), withAwkward, 'editing it moves the fingerprint');
+
+  // And once there is a commit, the same file is tracked and still counts.
+  sh(dir, 'add', '-A'); sh(dir, 'commit', '-q', '-m', 'one');
+  const committed = await changeFingerprint(dir);
+  await writeFile(awkward, 'three\n');
+  assert.notEqual(await changeFingerprint(dir), committed);
+});
+
+test('the fingerprint is scoped to the project folder, and sees a retargeted symlink', async () => {
+  // A project that is a subdirectory of a bigger repository: a sibling's
+  // changes are not this mission's, and must not invalidate its review.
+  const repoRoot = await repo();
+  const project = path.join(repoRoot, 'packages', 'app');
+  await mkdir(project, { recursive: true });
+  await writeFile(path.join(project, 'index.ts'), 'export const a = 1;\n');
+  await mkdir(path.join(repoRoot, 'packages', 'other'), { recursive: true });
+  await writeFile(path.join(repoRoot, 'packages', 'other', 'index.ts'), 'export const b = 1;\n');
+  sh(repoRoot, 'add', '-A'); sh(repoRoot, 'commit', '-q', '-m', 'two packages');
+
+  const reviewed = await changeFingerprint(project);
+  assert.ok(reviewed);
+  await writeFile(path.join(repoRoot, 'packages', 'other', 'index.ts'), 'export const b = 2;\n');
+  assert.equal(await changeFingerprint(project), reviewed, 'a sibling package is not this mission');
+  await writeFile(path.join(project, 'index.ts'), 'export const a = 2;\n');
+  assert.notEqual(await changeFingerprint(project), reviewed, 'its own change still counts');
+
+  // Non-git folder: a symlink is neither file nor directory, and retargeting
+  // one changes the project without changing any content.
+  const plain = await mkdtemp(path.join(os.tmpdir(), 'links-'));
+  await writeFile(path.join(plain, 'one.txt'), 'one\n');
+  await writeFile(path.join(plain, 'two.txt'), 'two\n');
+  await symlink('one.txt', path.join(plain, 'current'));
+  const linked = await changeFingerprint(plain);
+  assert.ok(linked);
+  await unlink(path.join(plain, 'current'));
+  await symlink('two.txt', path.join(plain, 'current'));
+  assert.notEqual(await changeFingerprint(plain), linked, 'a retargeted link moves the fingerprint');
 });

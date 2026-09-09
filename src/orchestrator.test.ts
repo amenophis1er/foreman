@@ -3,17 +3,22 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import {
   DEFAULT_REPEAT_LIMIT, DIRECTOR_CHARTER, MissionRun, RECENT_LINES, WORKER_CHARTER, WORK_DIR, accumulateUsage,
   activityHint, ensureIgnoreLines, loopingWorkerReport,
   stalledWorkerReport, workerStatusBlock,
   watchRepeats, watchSilence, REPEAT_EXEMPT, observeToolUse,
   DEFAULT_ASK_TIMEOUT_MS, armAskTimeout, unattendedAnswer, unattendedDenyMessage,
-  tokenCapLabel, stopReasonOf, budgetWarnDue, doneAtCap,
+  tokenCapLabel, stopReasonOf, budgetWarnDue, doneAtCap, renderDeckDiff,
 } from './orchestrator.js';
 import { makePolicy, type PendingPermission } from './policy.js';
+import { REVIEWER_TOOL_POLICY, type CrewPreset } from './crew.js';
+import { captureBaseline } from './deck.js';
+import { changeFingerprint } from './gitwork.js';
+import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import type { AgentEnv } from './provider.js';
-import type { RunMeta } from './types.js';
+import type { RunMeta, ToolPolicy } from './types.js';
 
 function meta(over: Partial<RunMeta> = {}): RunMeta {
   return {
@@ -1279,4 +1284,513 @@ test('doneAtCap: budget-stopped with every criterion ticked is done, and nothing
   assert.equal(doneAtCap({ ...budget, wasInterrupted: true }, []), false, 'a human stop is not a finish');
   assert.equal(doneAtCap({ ...budget, usageLimited: true }, []), false, 'a usage limit is not a finish');
   assert.equal(doneAtCap({ ...budget, budgetStopped: false }, []), false);
+});
+
+// ---------------------------------------------------------------------------
+// The reviewer: a read-only worker whose PASS the run cannot be done without
+// ---------------------------------------------------------------------------
+
+type ReviewSurface = ToolSurface & {
+  meta: RunMeta;
+  requestReviewTool(a: { presetId: string; notes?: string }): Promise<string>;
+  messageWorkerTool(a: { worker_id: string; message: string }): Promise<string>;
+  crewLine(): string;
+  settleFinalStatus(): Promise<void>;
+  policyFor(agent: string, override?: ToolPolicy): CanUseTool;
+  budgetStopped: boolean;
+  workers: Map<string, { id: string; status: string; sessionId?: string; costUsd: number; overrides?: any; crewPresetId?: string }>;
+};
+
+/** The crew a human would pick: one required reviewer, read-only. */
+function reviewerPreset(over: Partial<CrewPreset> = {}): CrewPreset {
+  return {
+    id: 'reviewer', name: 'Reviewer', kind: 'reviewer', model: 'opus',
+    toolPolicy: 'read-only', requiredForDone: true, brief: 'Review it.',
+    ...over,
+  };
+}
+
+/**
+ * A run with a crew, whose workers are simulated. `seen` records what
+ * launchWorker passed down, which is how the reviewer's own model and tool
+ * policy are checked without an SDK behind them.
+ */
+/**
+ * A folder a review can actually be about: real files, a captured baseline,
+ * and one edit since. Reviews are pinned to what changed, so a run whose
+ * changes cannot be read is a different test (and there is one below).
+ */
+async function reviewableFolder(): Promise<string> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'crew-'));
+  await writeFile(path.join(dir, 'a.txt'), 'before\n');
+  await captureBaseline(dir, 'run-1');
+  await writeFile(path.join(dir, 'a.txt'), 'after\n');
+  return dir;
+}
+
+function crewRun(
+  crew: CrewPreset[],
+  script: (id: string, prompt: string) => Promise<Outcome>,
+  over: Partial<RunMeta> = {},
+  crewEnv?: Record<string, AgentEnv>,
+) {
+  const events: Array<{ event: string; data: any }> = [];
+  const seen: Array<{ id: string; prompt: string; overrides?: { model?: string; toolPolicy?: ToolPolicy; reason?: string; env?: AgentEnv; nativeCost?: boolean; crewPresetId?: string } }> = [];
+  const run = new MissionRun(
+    meta({ crew, workerModel: 'sonnet', ...over }),
+    (event, data) => events.push({ event, data }), () => {},
+    crewEnv ? { ...noopAgentEnv, crew: crewEnv } : noopAgentEnv,
+  );
+  const t = run as unknown as ReviewSurface;
+  t.runWorker = ((id: string, prompt: string, _resume?: string, overrides?: any) => {
+    seen.push({ id, prompt, overrides });
+    return script(id, prompt);
+  }) as ToolSurface['runWorker'];
+  return { run, t, events, seen };
+}
+
+/** The hash of a run whose folder has no baseline: an empty deck, but a stable one. */
+/** What the gate will hash for a folder: the working tree itself, not the deck. */
+const fingerprintOf = (folder: string) => changeFingerprint(folder);
+
+test('the reviewer cannot write, edit or run anything — and no other worker in the run is affected', async () => {
+  const run = new MissionRun(meta({ folder: '/Users/x/proj' }), () => {}, () => {}, noopAgentEnv);
+  const t = run as unknown as ReviewSurface;
+  const opts = { signal: new AbortController().signal, toolUseID: 'u1' } as any;
+  const ordinary = t.policyFor('worker-1');
+  const reviewer = t.policyFor('worker-2', REVIEWER_TOOL_POLICY);
+
+  const inputs: Record<string, Record<string, unknown>> = {
+    Write: { file_path: '/Users/x/proj/a.ts', content: 'x' },
+    Edit: { file_path: '/Users/x/proj/a.ts', old_string: 'a', new_string: 'b' },
+    Bash: { command: 'npm test' },
+  };
+  for (const toolName of ['Write', 'Edit', 'Bash']) {
+    const denied = await reviewer(toolName, inputs[toolName], opts);
+    assert.equal(denied?.behavior, 'deny', `${toolName} must be denied for the reviewer`);
+    const allowed = await ordinary(toolName, inputs[toolName], opts);
+    assert.equal(allowed?.behavior, 'allow', `${toolName} must still be allowed for an ordinary worker`);
+  }
+  // What it does need is untouched: the diff arrives in its brief, but it can
+  // still open the files the diff names.
+  assert.equal((await reviewer('Read', { file_path: '/Users/x/proj/a.ts' }, opts))?.behavior, 'allow');
+});
+
+test('request_review refuses a run with no crew, and an unknown preset id names the ones there are', async () => {
+  const { t: none } = crewRun(
+[], slowWorker(1));
+  none.meta.crew = undefined;
+  assert.match(await none.requestReviewTool({ presetId: 'reviewer' }), /no crew/i);
+
+  const { t, seen } = crewRun(
+[reviewerPreset(), reviewerPreset({ id: 'security-review', name: 'Security review' })], slowWorker(1));
+  const reply = await t.requestReviewTool({ presetId: 'nobody' });
+  assert.match(reply, /No crew preset "nobody"/);
+  assert.match(reply, /reviewer, security-review/);
+  assert.equal(seen.length, 0, 'a refused review must not spend a worker');
+});
+
+test('a PASS is recorded against the current diff, emitted, and pinned to it', async () => {
+  const folder = await reviewableFolder();
+  const { run, t, events, seen } = crewRun(
+    [reviewerPreset()],
+    async () => ({ report: 'I read it all.\nVERDICT: PASS\n- nothing worth blocking on', isError: false }),
+    { folder },
+  );
+  const reply = await t.requestReviewTool({ presetId: 'reviewer', notes: 'look at the gate' });
+
+  assert.match(reply, /VERDICT: PASS/);
+  assert.match(reply, /nothing worth blocking on/);
+  assert.match(reply, /review last/);
+
+  // The reviewer is an ordinary worker in the worker-N sequence, on its own
+  // model, with the read-only policy attached to it alone.
+  assert.equal(seen[0].id, 'worker-1');
+  assert.equal(seen[0].overrides?.model, 'opus');
+  assert.deepEqual(seen[0].overrides?.toolPolicy, REVIEWER_TOOL_POLICY);
+  assert.match(seen[0].prompt, /Review it\./);
+  assert.match(seen[0].prompt, /look at the gate/, 'the director\'s note reaches the reviewer');
+
+  const v = run.meta.reviews?.[0];
+  assert.ok(v, 'the verdict is recorded on the run');
+  assert.equal(v!.pass, true);
+  assert.equal(v!.presetId, 'reviewer');
+  assert.equal(v!.workerId, 'worker-1');
+  assert.equal(v!.diffHash, await fingerprintOf(run.meta.folder), 'pinned to the work as it stands now');
+
+  const emitted = events.find((e) => e.event === 'review_verdict');
+  assert.ok(emitted, 'review_verdict is emitted');
+  assert.equal(emitted!.data.pass, true);
+  assert.equal(emitted!.data.name, 'Reviewer');
+  assert.equal(emitted!.data.diffHash, await fingerprintOf(run.meta.folder));
+});
+
+test('a preset with a provider of its own reviews on that provider; without one it reviews on the workers\'', async () => {
+  const reviewerEnv = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9911', ANTHROPIC_API_KEY: 'crew' } as unknown as AgentEnv;
+  const pass = async () => ({ report: 'VERDICT: PASS', isError: false });
+
+  const folder = await reviewableFolder();
+  const pinned = crewRun(
+    [reviewerPreset({ providerId: 'kimi' })], pass, { folder }, { reviewer: reviewerEnv },
+  );
+  await pinned.t.requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(pinned.seen[0].overrides?.env, reviewerEnv, 'the reviewer runs on its preset\'s env');
+
+  // No providerId at all: nothing to resolve, so nothing overrides the role.
+  const plain = crewRun([reviewerPreset()], pass, { folder: await reviewableFolder() });
+  await plain.t.requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(plain.seen[0].overrides?.env, undefined, 'no override means the worker env applies');
+
+  // A providerId that dispatch could NOT resolve — deleted between compose and
+  // review — leaves no entry under this preset's id, and must degrade to the
+  // worker env rather than strand the run at its last step.
+  const gone = crewRun(
+    [reviewerPreset({ providerId: 'deleted' })], pass, { folder: await reviewableFolder() }, { 'some-other-preset': reviewerEnv },
+  );
+  const reply = await gone.t.requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(gone.seen[0].overrides?.env, undefined, 'an absent id falls back, it does not fail');
+  assert.match(reply, /VERDICT: PASS/, 'the review still happens');
+});
+
+test('a report with no verdict line is recorded as a FAIL, and the director is told so', async () => {
+  const { run, t, events } = crewRun(
+    [reviewerPreset()],
+    async () => ({ report: 'Looks broadly fine to me, I suppose.', isError: false }),
+    { folder: await reviewableFolder() },
+  );
+  const reply = await t.requestReviewTool({ presetId: 'reviewer' });
+  assert.match(reply, /NO VERDICT/);
+  assert.match(reply, /recorded as a FAIL/i);
+  assert.equal(run.meta.reviews?.[0].pass, false);
+  assert.match(run.meta.reviews![0].findings, /never stated a verdict/);
+  assert.equal(events.find((e) => e.event === 'review_verdict')!.data.pass, false);
+});
+
+test('the gate: a required reviewer that never passed keeps the run out of "done"', async () => {
+  const { run, t, events } = crewRun(
+[reviewerPreset()], slowWorker(1));
+  run.meta.status = 'done';
+  await t.settleFinalStatus();
+  assert.equal(run.meta.status, 'interrupted');
+  const ev = events.find((e) => e.event === 'mission_unreviewed');
+  assert.ok(ev, 'mission_unreviewed says which reviewer and why');
+  assert.equal(ev!.data.blockers[0].reason, 'missing');
+  assert.match(ev!.data.text, /not done/);
+});
+
+test('the gate opens on a PASS pinned to the diff the run ends with, and shuts again if it goes stale', async () => {
+  const folder = await reviewableFolder();
+  const { run, t, events } = crewRun([reviewerPreset()], slowWorker(1), { folder });
+  const pinned = await fingerprintOf(folder);
+  assert.ok(pinned, 'the folder has a readable fingerprint');
+  run.meta.reviews = [{
+    presetId: 'reviewer', name: 'Reviewer', pass: true, findings: '', diffHash: pinned,
+    workerId: 'worker-1', at: Date.now(),
+  }];
+  run.meta.status = 'done';
+  await t.settleFinalStatus();
+  assert.equal(run.meta.status, 'done');
+  assert.equal(events.filter((e) => e.event === 'mission_unreviewed').length, 0);
+
+  // The same PASS against a diff that has since moved on is not consent.
+  run.meta.reviews![0].diffHash = 'a-diff-that-no-longer-exists';
+  run.meta.status = 'done';
+  await t.settleFinalStatus();
+  assert.equal(run.meta.status, 'interrupted');
+  assert.equal(events.find((e) => e.event === 'mission_unreviewed')!.data.blockers[0].reason, 'stale');
+});
+
+test('a run stopped at its cap with every box ticked is still not done without its required PASS', async () => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'foreman-gate-'));
+  await mkdir(path.join(folder, '.foreman'), { recursive: true });
+  await writeFile(path.join(folder, '.foreman', 'MISSION.md'), '# M\n\n## DONE WHEN\n- [x] it works\n');
+  try {
+    for (const crew of [[reviewerPreset()], []]) {
+      const { run, t, events } = crewRun(crew, slowWorker(1), { folder });
+      run.meta.status = 'interrupted';
+      t.budgetStopped = true;
+      await t.settleFinalStatus();
+      if (crew.length) {
+        assert.equal(run.meta.status, 'interrupted', 'no PASS, no promotion at the cap');
+        assert.ok(events.some((e) => e.event === 'mission_unreviewed'));
+        assert.ok(!events.some((e) => e.event === 'mission_done_at_cap'));
+      } else {
+        assert.equal(run.meta.status, 'done', 'without a required reviewer the cap rule is unchanged');
+        assert.ok(events.some((e) => e.event === 'mission_done_at_cap'));
+      }
+    }
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+test('renderDeckDiff cuts a large diff and says it did', () => {
+  const file = (p: string, diff: string) => ({ path: p, status: 'modified' as const, additions: 1, deletions: 0, diff });
+  const small = renderDeckDiff({ files: [file('a.ts', '+one')], totals: { files: 1, additions: 1, deletions: 0 } } as any);
+  assert.equal(small.truncated, false);
+  assert.match(small.diff, /--- a\.ts \(modified \+1 -0\)\n\+one/);
+
+  const big = renderDeckDiff({ files: [file('a.ts', 'x'.repeat(200)), file('b.ts', 'y')], totals: { files: 2, additions: 2, deletions: 0 } } as any, 100);
+  assert.equal(big.truncated, true, 'the reviewer must be told it is not seeing everything');
+  // A file the deck itself already cut counts as truncated too.
+  const perFile = renderDeckDiff({
+    files: [{ ...file('a.ts', '+one'), truncated: true }], totals: { files: 1, additions: 1, deletions: 0 },
+  } as any);
+  assert.equal(perFile.truncated, true);
+});
+
+test('the charter tells the director to review last, and names the tool', () => {
+  assert.match(DIRECTOR_CHARTER, /request_review/);
+  assert.match(DIRECTOR_CHARTER, /review last/);
+});
+
+// --- what the codex review of this branch found, and what now holds -------
+
+test('the fingerprint is of the work, not of the deck that displays it', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'fingerprint-'));
+  // The deck stops at 200 files and carries no binary content, so a hash
+  // derived from it would be blind to both of these.
+  for (let i = 0; i < 250; i++) await writeFile(path.join(dir, `f${i}.txt`), `file ${i}\n`);
+  await writeFile(path.join(dir, 'image.bin'), Buffer.from([0, 1, 2, 3]));
+  const first = await changeFingerprint(dir);
+  assert.ok(first);
+
+  await writeFile(path.join(dir, 'f240.txt'), 'changed well past the deck cap\n');
+  const afterLateFile = await changeFingerprint(dir);
+  assert.notEqual(afterLateFile, first, 'a change beyond the deck cap moves the fingerprint');
+
+  await writeFile(path.join(dir, 'image.bin'), Buffer.from([9, 9, 9, 9]));
+  const afterBinary = await changeFingerprint(dir);
+  assert.notEqual(afterBinary, afterLateFile, 'and so does a swapped binary of the same size');
+
+  // Foreman's own directory is not the work under review.
+  await mkdir(path.join(dir, '.foreman'), { recursive: true });
+  await writeFile(path.join(dir, '.foreman', 'MISSION.md'), 'churn\n');
+  assert.equal(await changeFingerprint(dir), afterBinary, '.foreman does not move it');
+});
+
+test('a run whose changes cannot be shown gets no review, rather than a review of nothing', async () => {
+  // No baseline captured: deckFor answers with an empty deck instead of
+  // throwing, which used to look exactly like "nothing changed".
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'nobaseline-'));
+  await writeFile(path.join(folder, 'a.txt'), 'work happened here\n');
+  const { t, seen } = crewRun([reviewerPreset()], async () => ({ report: 'VERDICT: PASS', isError: false }), { folder });
+  const reply = await t.requestReviewTool({ presetId: 'reviewer' });
+  assert.match(reply, /no baseline/i);
+  assert.equal(seen.length, 0, 'and no worker is spent reviewing an empty diff');
+});
+
+test('a reviewer stays read-only when the director follows up on it', async () => {
+  const folder = await reviewableFolder();
+  const { t, seen } = crewRun([reviewerPreset()], async () => ({ report: 'VERDICT: FAIL\n- one thing', isError: false }), { folder });
+  await t.requestReviewTool({ presetId: 'reviewer' });
+  const first = seen[0].overrides;
+  assert.ok(first?.toolPolicy, 'the review ran under the reviewer policy');
+
+  // message_worker resumes the same agent; without its overrides it would come
+  // back as an ordinary worker that can write, wearing the reviewer's id.
+  const w = t.workers.get('worker-1')!;
+  w.sessionId = 'session-1';
+  w.status = 'done';
+  await t.messageWorkerTool({ worker_id: 'worker-1', message: 'what exactly did you mean?' });
+  assert.deepEqual(seen[1].overrides?.toolPolicy, first!.toolPolicy, 'the follow-up keeps the read-only policy');
+  assert.equal(seen[1].overrides?.model, first!.model, 'and the preset\'s model');
+});
+
+test('a reviewer on its own priced provider has its dollars counted', async () => {
+  const reviewerEnv = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:9911' } as unknown as AgentEnv;
+  const folder = await reviewableFolder();
+  const pass = async () => ({ report: 'VERDICT: PASS', isError: false });
+
+  // Workers behind a free gateway, reviewer on a paid provider of its own: its
+  // bill arrives whatever the workers cost, so the cap has to see it.
+  const priced = new MissionRun(
+    meta({ crew: [reviewerPreset({ providerId: 'openai' })], workerModel: 'sonnet', folder }),
+    () => {}, () => {},
+    { ...noopAgentEnv, crew: { reviewer: reviewerEnv } },
+    {}, undefined, { director: 'free', worker: 'free', crew: { reviewer: { basis: 'priced', native: true } } },
+  );
+  const seen: any[] = [];
+  (priced as any).runWorker = (id: string, prompt: string, _r?: string, overrides?: any) => {
+    seen.push(overrides); return pass();
+  };
+  await (priced as unknown as ReviewSurface).requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(seen[0].nativeCost, true, 'the reviewer\'s spend is counted as real money');
+
+  // The same preset on a free provider is not suddenly priced.
+  const free = new MissionRun(
+    meta({ crew: [reviewerPreset({ providerId: 'ollama' })], workerModel: 'sonnet', folder }),
+    () => {}, () => {},
+    { ...noopAgentEnv, crew: { reviewer: reviewerEnv } },
+    {}, undefined, { director: 'free', worker: 'free', crew: { reviewer: { basis: 'free', native: true } } },
+  );
+  const seenFree: any[] = [];
+  (free as any).runWorker = (id: string, prompt: string, _r?: string, overrides?: any) => {
+    seenFree.push(overrides); return pass();
+  };
+  await (free as unknown as ReviewSurface).requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(seenFree[0].nativeCost, false);
+});
+
+test('the director is told which reviews it must get, by id', () => {
+  const run = new MissionRun(
+    meta({ crew: [reviewerPreset(), reviewerPreset({ id: 'security-review', name: 'Security review', requiredForDone: false })] }),
+    () => {}, () => {}, noopAgentEnv,
+  );
+  const line = (run as unknown as ReviewSurface).crewLine();
+  assert.match(line, /reviewer — Reviewer \(opus\): REQUIRED/);
+  assert.match(line, /security-review — Security review \(opus\): optional/);
+  assert.match(line, /request_review/, 'and how to call for one');
+  assert.match(line, /stale/, 'and that changing things afterwards undoes it');
+
+  // A run with no crew says nothing at all, rather than an empty heading.
+  const bare = new MissionRun(meta(), () => {}, () => {}, noopAgentEnv);
+  assert.equal((bare as unknown as ReviewSurface).crewLine(), '');
+});
+
+test('a commit is a change: a PASS does not survive one', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'committed-'));
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } });
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 'me@example.com');
+  git('config', 'user.name', 'Me');
+  await writeFile(path.join(dir, 'a.txt'), 'first\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'one');
+
+  const reviewed = await changeFingerprint(dir);
+  assert.ok(reviewed);
+
+  // The director keeps working and commits. `git diff HEAD` is empty again —
+  // which is exactly how a stale PASS used to look current.
+  await writeFile(path.join(dir, 'a.txt'), 'second\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'two');
+  assert.notEqual(await changeFingerprint(dir), reviewed, 'the committed change moves the fingerprint');
+});
+
+test('a reviewer resumed after a restart is rebuilt from the crew, not as a plain worker', async () => {
+  const folder = await reviewableFolder();
+  // A run that came back from disk: the worker record survived, the live
+  // overrides (which hold a credential) did not.
+  const { t, seen } = crewRun([reviewerPreset()], async () => ({ report: 'VERDICT: PASS', isError: false }), {
+    folder,
+    workers: [{ id: 'worker-1', status: 'done', costUsd: 0.1, task: 'review', sessionId: 'session-1', crewPresetId: 'reviewer' }],
+  });
+  await t.messageWorkerTool({ worker_id: 'worker-1', message: 'one more question' });
+  assert.ok(seen[0].overrides?.toolPolicy, 'the rebuilt launch is still read-only');
+  assert.equal(seen[0].overrides?.model, 'opus', 'and still on the preset\'s model');
+  assert.equal(seen[0].overrides?.crewPresetId, 'reviewer');
+});
+
+test('a paid reviewer makes the run priced before it runs, so the cap is live', async () => {
+  const folder = await reviewableFolder();
+  const events: Array<{ event: string; data: any }> = [];
+  const run = new MissionRun(
+    meta({ crew: [reviewerPreset({ providerId: 'openai' })], workerModel: 'sonnet', folder, costBasis: 'free' }),
+    (event, data) => events.push({ event, data }), () => {},
+    { ...noopAgentEnv, crew: { reviewer: {} as AgentEnv } },
+    {}, undefined, { director: 'free', worker: 'free', crew: { reviewer: { basis: 'priced', native: true } } },
+  );
+  (run as any).runWorker = async () => ({ report: 'VERDICT: PASS', isError: false });
+  await (run as unknown as ReviewSurface).requestReviewTool({ presetId: 'reviewer' });
+
+  assert.equal(run.meta.costBasis, 'priced', 'the run is priced from the moment the paid reviewer starts');
+  assert.equal(run.meta.metered, true, 'so enforceBudget and capReached stop standing down');
+  const said = events.find((e) => e.event === 'settings_changed');
+  assert.match(said!.data.changes[0], /dollar cap is live/, 'and the change is announced, not silent');
+});
+
+test('a reviewer on its own paid provider is charged once, not twice', async () => {
+  const folder = await reviewableFolder();
+  // Workers with a published rate card AND a reviewer billing in dollars: the
+  // tokens used to be priced at the worker's rates and the SDK's dollars added
+  // on top, charging the same review twice and stopping runs early.
+  const run = new MissionRun(
+    meta({ crew: [reviewerPreset({ providerId: 'openai' })], workerModel: 'sonnet', folder, budgetUsd: 5 }),
+    () => {}, () => {},
+    { ...noopAgentEnv, crew: { reviewer: {} as AgentEnv } },
+    { worker: { inputPerMTok: 1000, outputPerMTok: 1000 } as any },
+    undefined,
+    { director: 'priced', worker: 'priced', crew: { reviewer: { basis: 'priced', native: true } } },
+  );
+  (run as any).runWorker = async (_id: string, _p: string, _r: string | undefined, overrides: any) => {
+    (run as any).addUsage({ input_tokens: 1_000_000, output_tokens: 1_000_000 }, overrides?.priceRole ?? 'worker', overrides?.nativeCost === true);
+    (run as any).addCost(0.25, overrides?.priceRole ?? 'worker', overrides?.nativeCost === true);
+    return { report: 'VERDICT: PASS', isError: false };
+  };
+  await (run as unknown as ReviewSurface).requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(run.meta.costUsd, 0.25, 'the provider\'s own figure, and only that');
+});
+
+test('a priced gateway reviewer is not treated as a native bill, and never drives the browser', async () => {
+  const folder = await reviewableFolder();
+  // Priced, but through a gateway: the SDK's dollar figure is not the bill,
+  // the ledger's is. Counting both is how a review gets charged twice.
+  const gateway = new MissionRun(
+    meta({ crew: [reviewerPreset({ providerId: 'kimi' })], workerModel: 'sonnet', folder, browserTools: true, costBasis: 'free' }),
+    () => {}, () => {},
+    { ...noopAgentEnv, crew: { reviewer: {} as AgentEnv } },
+    {}, undefined, { director: 'free', worker: 'free', crew: { reviewer: { basis: 'priced', native: false } } },
+  );
+  const seen: any[] = [];
+  (gateway as any).runWorker = (_i: string, _p: string, _r: string | undefined, o: any) => {
+    seen.push(o); return Promise.resolve({ report: 'VERDICT: PASS', isError: false });
+  };
+  await (gateway as unknown as ReviewSurface).requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(seen[0].nativeCost, false, 'a gateway bill is not the SDK\'s figure');
+  assert.equal(gateway.meta.costBasis, 'priced', 'but it is still real money, so the cap is live');
+  assert.equal(seen[0].noBrowser, true, 'and a read-only reviewer is given no browser to click with');
+
+  // A specialist that is meant to run things keeps the browser.
+  const specialist = new MissionRun(
+    meta({ crew: [reviewerPreset({ id: 'runner', toolPolicy: 'default' })], workerModel: 'sonnet', folder, browserTools: true }),
+    () => {}, () => {}, noopAgentEnv,
+  );
+  const seenTwo: any[] = [];
+  (specialist as any).runWorker = (_i: string, _p: string, _r: string | undefined, o: any) => {
+    seenTwo.push(o); return Promise.resolve({ report: 'VERDICT: PASS', isError: false });
+  };
+  await (specialist as unknown as ReviewSurface).requestReviewTool({ presetId: 'runner' });
+  assert.equal(seenTwo[0].noBrowser, false);
+});
+
+test('a gateway reviewer is not priced with the workers\' rate card, and keeps its limits on a retry', async () => {
+  const folder = await reviewableFolder();
+  const run = new MissionRun(
+    meta({ crew: [reviewerPreset({ providerId: 'kimi' })], workerModel: 'sonnet', folder, browserTools: true }),
+    () => {}, () => {},
+    { ...noopAgentEnv, crew: { reviewer: {} as AgentEnv } },
+    { worker: { inputPerMTok: 1000, outputPerMTok: 1000 } as any },
+    undefined,
+    { director: 'priced', worker: 'priced', crew: { reviewer: { basis: 'priced', native: false } } },
+  );
+  const seen: any[] = [];
+  (run as any).runWorker = (_i: string, _p: string, _r: string | undefined, o: any) => {
+    seen.push(o);
+    (run as any).addUsage({ input_tokens: 1_000_000, output_tokens: 1_000_000 }, o?.priceRole ?? 'worker',
+      o?.nativeCost === true || o?.ownProvider === true);
+    return Promise.resolve({ report: 'VERDICT: FAIL\n- no', isError: false });
+  };
+  await (run as unknown as ReviewSurface).requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(seen[0].ownProvider, true);
+  assert.equal(run.meta.costUsd, 0, 'the workers\' rates do not describe another endpoint\'s tokens');
+  assert.ok((run.meta.usage?.inputTokens ?? 0) > 0, 'but the tokens are still counted');
+});
+
+test('an unreadable directory is not an empty one', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'unreadable-'));
+  await writeFile(path.join(dir, 'visible.txt'), 'hello\n');
+  const closed = path.join(dir, 'closed');
+  await mkdir(closed, { recursive: true });
+  await writeFile(path.join(closed, 'secret.txt'), 'work\n');
+  const before = await changeFingerprint(dir);
+  assert.ok(before);
+
+  // chmod 000: the walk cannot see inside, and must say so rather than
+  // hashing the part of the tree it managed to read.
+  execFileSync('chmod', ['000', closed]);
+  try {
+    assert.equal(await changeFingerprint(dir), null, 'cannot verify, so no fingerprint');
+  } finally {
+    execFileSync('chmod', ['755', closed]);
+  }
 });

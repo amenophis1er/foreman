@@ -24,6 +24,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { describeCadence, type Cadence } from './schedule.js';
+import type { CrewPreset, ReviewVerdict } from './crew.js';
+import { reviewReportLines } from './run-crew.js';
 
 export interface ToolResult {
   /** What the model reads. */
@@ -65,6 +67,9 @@ interface RunSummary {
   workers?: Array<{ id: string; status: string; costUsd: number; task: string }>;
   git?: { branch: string; base: string; commits?: number; pr?: string; prState?: string };
   usage?: { inputTokens: number; outputTokens: number };
+  /** Frozen at dispatch; read here only to say who was meant to review. */
+  crew?: CrewPreset[];
+  reviews?: ReviewVerdict[];
 }
 interface Need { kind: string; id: string; runId?: string; text: string; options?: string[]; toolName?: string; since?: number }
 interface ProjectCard {
@@ -339,7 +344,7 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
 
   const runReport: ToolDef = {
     name: 'run_report',
-    description: 'What a finished run produced, in one call: the director\'s final report, DONE WHEN ticks, the files it changed with +/− counts, the branch, commit and pull request, spend and crew. For a running run it reports the state so far.',
+    description: 'What a finished run produced, in one call: the director\'s final report, DONE WHEN ticks, the files it changed with +/− counts, the branch, commit and pull request, spend, crew and any review verdicts. For a running run it reports the state so far.',
     schema: { runId: z.string() },
     run: async ({ runId }) => {
       const id = String(runId);
@@ -369,9 +374,13 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
         deck ? `changed: ${own.length} file${own.length === 1 ? '' : 's'} · +${deck.totals.additions} −${deck.totals.deletions}${images ? ` · ${images} screenshot${images === 1 ? '' : 's'}` : ''}${files.length > own.length ? ` · ${files.length - own.length} already dirty before the run` : ''}` : null,
         fileLines.length ? fileLines.join('\n') + (own.length > 40 ? `\n  … ${own.length - 40} more` : '') : null,
         `crew: ${(r.workers ?? []).length} worker${(r.workers ?? []).length === 1 ? '' : 's'} · ${(r.workers ?? []).filter((w) => w.status === 'done').length} done`,
+        // The verdicts, and any required reviewer standing between this run and
+        // done. Read-only, like everything else here: presets are configuration
+        // and configuration is edited on the dashboard.
+        ...reviewReportLines(r.crew, r.reviews),
         report ? `\nDirector's report:\n${report.slice(0, 4000)}` : '\nNo final report from the director yet.',
       ].filter(Boolean);
-      return { text: lines.join('\n'), data: { run: r, doneWhen: dw, files: own, totals: deck?.totals, report } };
+      return { text: lines.join('\n'), data: { run: r, doneWhen: dw, files: own, totals: deck?.totals, report, reviews: r.reviews ?? [] } };
     },
   };
 

@@ -4,7 +4,26 @@ import type { ModelInfo } from '../forms/ModelSelect';
 import type { ProviderRef, DiscoveredInstance, OllamaInfo } from './ProviderPicker';
 
 export type SettingsScope = 'global' | 'project';
-export type SettingsSectionId = 'provider' | 'models' | 'budget' | 'approvals' | 'appearance' | 'notifications' | 'projects';
+export type SettingsSectionId = 'provider' | 'models' | 'crew' | 'budget' | 'approvals' | 'appearance' | 'notifications' | 'projects';
+
+/**
+ * A named role a mission can be given at compose time. `reviewer` returns a
+ * verdict on the run's final diff; with `requiredForDone` that verdict must be
+ * PASS before the run is recorded done. `id` is machine-facing and generated
+ * from the name — never edited.
+ */
+export interface CrewPreset {
+  id: string;
+  name: string;
+  kind: 'reviewer' | 'specialist';
+  model?: string;
+  /** Provider serving the model, from the picked model's row. */
+  providerId?: string;
+  brief: string;
+  toolPolicy?: 'read-only' | 'default';
+  /** Reviewers only; ignored for a specialist. */
+  requiredForDone: boolean;
+}
 
 export interface Settings {
   directorModel?: string; workerModel?: string;
@@ -14,6 +33,13 @@ export interface Settings {
   /** Provider serving each role, from the picked model's row. */
   directorProviderId?: string; workerProviderId?: string;
   budgetCap?: number; budgetWarnAt?: number; budgetHardStop?: boolean;
+  scheduledMonthlyCapUsd?: number;
+  /**
+   * The standing crew, in the order the composer offers it. Absent means the
+   * two built-ins; a project's list replaces the global one whole rather than
+   * merging into it, like every other key here.
+   */
+  crewPresets?: CrewPreset[];
   autoAllowReadOnly?: boolean; alwaysSurvivesResume?: boolean;
   toolPolicy?: Record<string, 'allow' | 'ask' | 'deny'>;
   theme?: 'system' | 'dark' | 'light';
@@ -84,3 +110,5 @@ export interface SettingsModalProps {
 export declare function SettingsModal(props: SettingsModalProps): JSX.Element;
 export declare const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; icon: string }[];
 export declare const DEFAULT_SETTINGS: Required<Settings>;
+/** The two crew presets shown until someone edits them. Mirrors `BUILT_IN_PRESETS` in `src/crew.ts`. */
+export declare const BUILT_IN_PRESETS: CrewPreset[];

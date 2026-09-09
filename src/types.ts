@@ -6,10 +6,16 @@
  * so replaying a log reproduces exactly what a live client observed.
  */
 import type { Cadence } from './schedule.js';
+import type { CrewPreset, ReviewVerdict } from './crew.js';
 
 /** Re-exported so callers can name a schedule's cadence without reaching past
  *  this module for it; the rules that interpret one live in schedule.ts. */
 export type { Cadence };
+
+/** Re-exported on the same principle: a record can be described without
+ *  reaching past this module, while crew.ts stays the definition site and
+ *  keeps the rules that read them. */
+export type { CrewPreset, ReviewVerdict };
 
 export type RunStatus = 'running' | 'done' | 'error' | 'interrupted';
 
@@ -249,6 +255,14 @@ export interface WorkerMeta {
   status: WorkerStatus;
   costUsd: number;
   sessionId?: string;
+  /**
+   * The crew preset this worker IS, when it is a reviewer rather than an
+   * ordinary worker. Persisted — unlike the launch overrides, which hold a
+   * live credential — so a resumed run can rebuild the read-only policy, the
+   * model and the provider from the frozen crew instead of resuming a
+   * reviewer as a worker that may write.
+   */
+  crewPresetId?: string;
   /** First 500 chars of the task brief, for run-history display. */
   task: string;
   /**
@@ -353,6 +367,19 @@ export interface RunMeta {
   provider?: ProviderRef;
   /** @deprecated Pre-provider pin, still read for runs recorded before providers. */
   claudeInstance?: ClaudeInstanceRef;
+  /**
+   * Crew presets frozen onto the run at dispatch: a later edit of a preset
+   * must not change a running or past run. Absent means the run was dispatched
+   * with no crew chosen — which is every run recorded before presets existed,
+   * and the reason the gate reads an absent field as "nothing required".
+   */
+  crew?: CrewPreset[];
+  /**
+   * Review verdicts this run collected, appended in order. Kept whole rather
+   * than reduced to a pass/fail: the gate needs the diff each verdict was
+   * about, and the human reading the record afterwards needs the findings.
+   */
+  reviews?: ReviewVerdict[];
   /** Number of times this run was resumed after an interruption. */
   resumes?: number;
   /**
@@ -526,6 +553,8 @@ export interface MissionProposal {
   directorProviderId?: string;
   workerProviderId?: string;
   modelRationale?: string;
+  /** Preset ids the planner may suggest; the human's toggles decide. */
+  crew?: string[];
   createdAt: number;
 }
 

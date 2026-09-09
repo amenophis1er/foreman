@@ -26,9 +26,9 @@ export type SseListener = (event: string, env: Envelope) => void;
 export const SSE_EVENTS = [
   // run lifecycle + economics
   'run_started', 'run_resumed', 'run_finished', 'run_error', 'run_titled', 'cost',
-  'budget_alert', 'budget_stop', 'usage_limit', 'mission_incomplete', 'mission_done_at_cap', 'settings_changed',
+  'budget_alert', 'budget_stop', 'usage_limit', 'mission_incomplete', 'mission_unreviewed', 'mission_done_at_cap', 'settings_changed',
   // transcript + crew
-  'message', 'steer', 'worker_started', 'worker_progress', 'worker_finished',
+  'message', 'steer', 'review_verdict', 'worker_started', 'worker_progress', 'worker_finished',
   'worker_stalled', 'worker_looping', 'director_looping', 'service_exposed',
   // governance: permissions and questions
   'auto_allowed', 'auto_denied', 'root_allowed',

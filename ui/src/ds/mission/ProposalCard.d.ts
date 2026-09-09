@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react';
 
 import type { ModelInfo } from '../forms/ModelSelect';
+import type { CrewPreset } from './Composer';
 
 /** The full start shape — identical to what the Composer submits. */
 export interface ProposalStart {
@@ -12,6 +13,8 @@ export interface ProposalStart {
   directorProviderId?: string;
   workerProviderId?: string;
   browserTools?: boolean;
+  /** Ids of the crew presets toggled on, in `crewPresets` order. Empty means no crew. */
+  crew: string[];
 }
 
 /**
@@ -19,7 +22,7 @@ export interface ProposalStart {
  * commitment — where a conversation that has only been reading becomes a crew that will write — so it
  * states the work, the completion criteria and the cap, and never starts anything on its own.
  *
- * It carries every lever the Composer has (budget, director, workers, browser): a mission committed
+ * It carries every lever the Composer has (budget, director, workers, browser, crew): a mission committed
  * without the browser it needs, or on a model nobody chose, is the mistake that costs an hour to notice.
  */
 export interface ProposalCardProps {
@@ -48,6 +51,12 @@ export interface ProposalCardProps {
   modelsLoading?: boolean;
   modelsNote?: string;
   modelsInheritNote?: string;
+  /** Crew roles offered as toggles, from Settings. Empty hides the row entirely. */
+  crewPresets?: CrewPreset[];
+  /** Preset ids the planner suggests — the toggles' starting state only; the human's toggles decide. */
+  crew?: string[];
+  /** Every change to the selection, so the caller can remember it. */
+  onCrewChange?: (ids: string[]) => void;
   /** The start request is in flight. */
   busy?: boolean;
   /** Server error from the start attempt (typically a 409). */

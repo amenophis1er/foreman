@@ -9,7 +9,10 @@
  * the button that says so — once, for that branch, to open the pull request.
  */
 import path from 'node:path';
+import { readdir, readFile, readlink, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import type { ReviewVerdict } from './crew.js';
 
 export interface GitInfo {
   repo: boolean;
@@ -160,6 +163,116 @@ export function worktreeGrant(
   return { grant: parent };
 }
 
+/**
+ * A fingerprint of everything this checkout has changed, for pinning a
+ * reviewer's PASS to the code it actually read.
+ *
+ * Deliberately not computed from the deck: the deck is a *view* — it stops at
+ * 200 files and carries no binary content — so a change to the 201st file, or
+ * a swapped image, would leave a deck-derived hash identical and a stale PASS
+ * looking current. This asks git instead: the full diff against HEAD including
+ * binary deltas, plus the blob hash of every untracked file. Null when the
+ * folder is not a repository or git will not answer, which callers must treat
+ * as "cannot verify", never as "nothing changed".
+ */
+/** git's empty tree, for diffing a repository that has no commit yet. */
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+const FINGERPRINT_FILE_CAP = 20_000;
+const FINGERPRINT_HASH_MAX_BYTES = 1024 * 1024;
+const FINGERPRINT_SKIP = new Set(['.git', '.foreman', 'node_modules']);
+
+/**
+ * The same fingerprint for a folder that is not a repository — Foreman links
+ * plain folders too, and a gate that only worked in git would make every
+ * mission in one impossible to finish.
+ *
+ * Content-hashed up to a megabyte a file, size and mtime beyond that, since
+ * reading a large binary on every gate check costs more than it proves.
+ * Dependency trees and Foreman's own directory are skipped: they are not the
+ * work under review. Null past the file cap, which the caller reads as
+ * "cannot verify" — the honest answer for a tree too large to pin.
+ */
+async function walkFingerprint(folder: string): Promise<string | null> {
+  const parts: string[] = [];
+  const walk = async (dir: string, rel: string): Promise<boolean> => {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => null);
+    // A directory we cannot read may be where the change is. Failing open
+    // would let a PASS stand over work nobody could see.
+    if (!entries) return false;
+    for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      if (FINGERPRINT_SKIP.has(e.name)) continue;
+      const full = path.join(dir, e.name);
+      const here = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        if (!await walk(full, here)) return false;
+        continue;
+      }
+      // A symlink is neither a file nor a directory to readdir, and retargeting
+      // one changes what the project is without touching a byte of content.
+      if (e.isSymbolicLink()) {
+        const target = await readlink(full).catch(() => null);
+        if (target === null) return false;
+        parts.push(`${here}\0link\0${target}`);
+        continue;
+      }
+      if (!e.isFile()) continue;
+      if (parts.length >= FINGERPRINT_FILE_CAP) return false;
+      const st = await stat(full).catch(() => null);
+      if (!st) continue;
+      if (st.size <= FINGERPRINT_HASH_MAX_BYTES) {
+        const buf = await readFile(full).catch(() => null);
+        parts.push(`${here}\0${st.size}\0${buf ? createHash('sha256').update(buf).digest('hex') : 'unreadable'}`);
+      } else {
+        parts.push(`${here}\0${st.size}\0${st.mtimeMs}`);
+      }
+    }
+    return true;
+  };
+  if (!await walk(folder, '')) return null;
+  return createHash('sha256').update(parts.join('\n')).digest('hex');
+}
+
+export async function changeFingerprint(folder: string): Promise<string | null> {
+  try {
+    const inside = await git(['rev-parse', '--is-inside-work-tree'], folder).catch(() => '');
+    if (inside.trim() !== 'true') return walkFingerprint(folder);
+    // HEAD is part of the fingerprint, not just the dirty tree: a director
+    // that commits its work after a PASS leaves `git diff HEAD` empty, and a
+    // fingerprint of the diff alone would call the new commit unchanged and
+    // let the old PASS stand.
+    // A repository with no commit yet has no HEAD to diff against, and a
+    // mission that starts one is ordinary — so the comparison falls back to
+    // git's empty tree rather than failing, which would make every run with a
+    // required reviewer impossible to finish until someone committed.
+    const head = (await git(['rev-parse', 'HEAD'], folder).catch(() => '')).trim();
+    // Scoped to this folder, like the deck: a project linked as a subdirectory
+    // of a bigger repository must not have its review invalidated because a
+    // sibling project changed. `ls-files` below is already limited to the cwd.
+    const tracked = await git(
+      ['diff', head || EMPTY_TREE, '--binary', '--no-color', '--no-ext-diff', '--', '.'], folder, 60_000,
+    );
+    // -z, because `ls-files` C-quotes any path with a quote, a tab or a
+    // non-ASCII character, and a quoted path handed back to `hash-object`
+    // fails — which used to leave those files with no content in the hash at
+    // all, so edits to them were invisible to the gate.
+    const untracked = (await git(['ls-files', '--others', '--exclude-standard', '-z'], folder))
+      .split('\0')
+      // The mission doc and the crew's scratch space are Foreman's own and
+      // change constantly; they are not the work under review.
+      .filter((p) => p && !p.startsWith('.foreman/'));
+    const parts: string[] = [`HEAD\0${head || 'none'}`, tracked];
+    for (const p of untracked.sort()) {
+      // No catch: a file whose hash cannot be read is a fingerprint that
+      // cannot be trusted, and the honest answer is "cannot verify".
+      const blob = await git(['hash-object', '--', p], folder);
+      parts.push(`${p}\0${blob.trim()}`);
+    }
+    return createHash('sha256').update(parts.join('\n')).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
 export async function dirtyPaths(folder: string, limit = 8): Promise<string[]> {
   try {
     const out = await git(['status', '--porcelain', '--untracked-files=normal'], folder);
@@ -275,8 +388,22 @@ export function compareUrl(remote: string | undefined, base: string, branch: str
   return `${r.web}`;
 }
 
-/** The pull request as Foreman drafts it: the run's title, and a body a reviewer can read without opening Foreman. */
-export function prDraft(run: { title?: string; mission: string; costUsd: number; costBasis?: string; git?: MissionGit }, missionDoc: string | null): { title: string; body: string } {
+/** How much of a reviewer's findings go in the body; the rest is in the run's record. */
+const FINDINGS_HEAD = 800;
+
+/**
+ * The pull request as Foreman drafts it: the run's title, and a body a reviewer
+ * can read without opening Foreman.
+ *
+ * `reviews` is passed in rather than read from the run's record here, because
+ * this module knows about git and nothing else — and because the caller is the
+ * only one that knows which verdicts are the ones this branch was judged by.
+ */
+export function prDraft(
+  run: { title?: string; mission: string; costUsd: number; costBasis?: string; git?: MissionGit },
+  missionDoc: string | null,
+  reviews?: readonly ReviewVerdict[],
+): { title: string; body: string } {
   const first = run.mission.split('\n').find((l) => l.trim())?.trim() ?? 'Mission';
   const title = (run.title || first).slice(0, 120);
   const boxes = (missionDoc ?? '').split('\n').filter((l) => /^\s*[-*] \[[ xX]\]/.test(l)).map((l) => l.trim());
@@ -285,6 +412,20 @@ export function prDraft(run: { title?: string; mission: string; costUsd: number;
     '## Mission', '', run.mission.trim(), '',
   ];
   if (boxes.length) parts.push('## Done when', '', ...boxes, '');
+  // Who reviewed this before it was offered to a human, and what they said.
+  // The whole point of the reviewer gate is that the answer travels with the
+  // work; a PASS nobody outside Foreman can see is worth nothing on a branch.
+  if (reviews?.length) {
+    parts.push('## Review', '');
+    for (const v of reviews) {
+      parts.push(`**${v.name}: ${v.pass ? 'PASS' : 'FAIL'}**`);
+      const head = v.findings.trim();
+      if (head) {
+        parts.push('', head.length > FINDINGS_HEAD ? `${head.slice(0, FINDINGS_HEAD).trimEnd()}\n\n… the rest is in the run's record.` : head);
+      }
+      parts.push('');
+    }
+  }
   parts.push('---', `Run by [Foreman](https://github.com/amenophis1er/foreman) on branch \`${run.git?.branch ?? ''}\` from \`${run.git?.base ?? ''}\` · spend ${spend}.`);
   return { title, body: parts.join('\n') };
 }

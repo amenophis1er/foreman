@@ -47,12 +47,44 @@ export type Entry = {
   id: number;
   ts: number;
   agent: string;
-  kind: 'text' | 'tool' | 'result' | 'system' | 'error' | 'steer';
+  kind: 'text' | 'tool' | 'result' | 'system' | 'error' | 'steer' | 'review';
   title: string;
   body: string;
   /** steer entries only: recipient and delivery timing. */
   to?: string;
   timing?: 'next' | 'now';
+  /** review entries only: the verdict itself, rendered as a card rather than prose. */
+  review?: ReviewVerdict;
+};
+
+/**
+ * A crew preset frozen onto a run at dispatch. Standing configuration — the
+ * mission opts in, Settings edits it, no run surface may change it.
+ */
+export type CrewPreset = {
+  id: string; name: string;
+  kind: 'reviewer' | 'specialist';
+  model?: string;
+  brief: string;
+  toolPolicy?: 'read-only' | 'default';
+  /** A reviewer Foreman will not record `done` without a passing verdict from. */
+  requiredForDone: boolean;
+};
+
+/**
+ * One reviewer's verdict on the diff it was shown. `diffHash` is what makes it
+ * current or stale; the UI never computes it — see {@link reviewedBy}.
+ */
+export type ReviewVerdict = {
+  presetId: string; name: string;
+  pass: boolean;
+  /** Markdown-ish, possibly long, possibly empty. */
+  findings: string;
+  diffHash: string;
+  workerId: string;
+  model?: string;
+  costUsd?: number;
+  at?: number;
 };
 
 export type Approval = {
@@ -135,7 +167,50 @@ export type RunSummary = {
   /** The schedule that started this run, when one did; the header names it. */
   scheduleId?: string;
   startedBy?: 'human' | 'phone' | 'schedule' | 'mcp';
+  /** The crew presets this mission opted into, frozen at dispatch. */
+  crew?: CrewPreset[];
+  /** Verdicts in the order they landed; read through {@link reviewedBy}. */
+  reviews?: ReviewVerdict[];
 };
+
+/**
+ * The reviewers whose PASS still stands, or an empty array — what the run
+ * header's "reviewed by …" mark reads. The mirror of `reviewedByNames` in
+ * src/run-crew.ts, which the fleet's project list computes server-side; this
+ * one exists because GET /runs hands the dashboard whole run metas and the
+ * run header has the crew and the verdicts in front of it already.
+ *
+ * The rule is deliberately not "the run has a passing verdict": a PASS is
+ * against one diff, and a verdict whose `diffHash` is not the run's latest is
+ * stale. The browser cannot hash a diff, so it does not try. Foreman's own
+ * gate does: it records `done` only when every required preset passed on the
+ * diff as it then stood, and downgrades the run to `interrupted` otherwise.
+ * So `status === 'done'` IS the currency check, and all that is left here is
+ * to name the reviewers. A running run shows nothing — there is no final diff
+ * yet for a verdict to be current against.
+ */
+export function reviewedByNames(r: {
+  status?: Status; crew?: CrewPreset[]; reviews?: ReviewVerdict[];
+} | null | undefined): string[] {
+  if (!r || r.status !== 'done') return [];
+  // `requiredForDone` alone, exactly as `reviewBlockers` in src/crew.ts reads
+  // it — the gate does not ask what kind the preset is, and neither may this.
+  const required = (r.crew ?? []).filter((c) => c.requiredForDone === true);
+  if (!required.length) return [];
+  const names: string[] = [];
+  for (const c of required) {
+    // The latest verdict per preset, as the gate reads them: a reviewer asked
+    // twice is answered by its second answer.
+    let latest: ReviewVerdict | undefined;
+    for (const v of r.reviews ?? []) {
+      if (v.presetId !== c.id) continue;
+      if (!latest || (v.at ?? 0) >= (latest.at ?? 0)) latest = v;
+    }
+    if (!latest?.pass) return [];
+    names.push(c.name);
+  }
+  return names;
+}
 
 /** How often a schedule fires. Mirrors `Cadence` in src/schedule.ts. */
 export type Cadence =
@@ -189,6 +264,13 @@ export type ProjectSummary = {
     mission: string; title?: string; status: Status; createdAt?: number; costUsd?: number;
     /** The card prints a dollar only when this is `priced`; otherwise tokens, or nothing. */
     costBasis?: CostBasis; usage?: TokenUsage;
+    /**
+     * The reviewers whose PASS let this run be recorded done — names only,
+     * computed by the server (`reviewedByNames` in src/run-crew.ts), because
+     * this projection is polled for every project every few seconds and the
+     * tile draws a glyph and a name. Empty when nothing required a review.
+     */
+    reviewedBy?: string[];
   } | null;
   /** The planner is parked on a question for this project — counted in pendingQuestions too. */
   plannerQuestion?: boolean;
@@ -245,6 +327,13 @@ const emptyRun: RunView = {
 
 type WireEvent = { ts?: number; event: string; data: any };
 let seq = 0;
+
+/** Why a required reviewer did not clear the run, in words the reader owes nothing to. */
+const REVIEW_BLOCKER: Record<string, string> = {
+  missing: 'never reviewed this run',
+  fail: 'reviewed and did not pass',
+  stale: 'passed an earlier diff; the work changed after',
+};
 
 function entriesFromSdkMessage(agent: string, msg: any, ts: number): Entry[] {
   const out: Entry[] = [];
@@ -384,6 +473,40 @@ function applyWire(s: RunView, e: WireEvent): RunView {
           id: ++seq, ts, agent: 'system', kind: 'error',
           title: 'not done',
           body: [d.text, '', ...(d.unmet ?? []).map((u: string) => `▢ ${u}`)].join('\n'),
+        }],
+      };
+    case 'mission_unreviewed':
+      // The exact sibling of mission_incomplete, and rendered as one: the run
+      // says interrupted although the director signed off, and the reason is
+      // that a required reviewer never passed on the diff that was left.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: 'system', kind: 'error',
+          title: 'not reviewed',
+          body: [d.text, '', ...(d.blockers ?? []).map(
+            (b: { name?: string; presetId?: string; reason?: string }) =>
+              `▢ ${b.name ?? b.presetId ?? 'reviewer'} — ${REVIEW_BLOCKER[String(b.reason)] ?? String(b.reason ?? '')}`,
+          )].join('\n'),
+        }],
+      };
+    case 'review_verdict':
+      // Its own kind, not prose: a verdict is the thing a human scrolls the
+      // transcript to find, and "PASS" buried in a paragraph is not findable.
+      return {
+        ...s,
+        entries: [...s.entries, {
+          id: ++seq, ts, agent: String(d.workerId ?? 'reviewer'), kind: 'review',
+          title: `review · ${String(d.name ?? '')}`,
+          body: String(d.findings ?? ''),
+          review: {
+            presetId: String(d.presetId ?? ''), name: String(d.name ?? 'reviewer'),
+            pass: Boolean(d.pass), findings: String(d.findings ?? ''),
+            diffHash: String(d.diffHash ?? ''), workerId: String(d.workerId ?? ''),
+            model: d.model ? String(d.model) : undefined,
+            costUsd: typeof d.costUsd === 'number' ? d.costUsd : undefined,
+            at: ts,
+          },
         }],
       };
     case 'run_error':
@@ -910,6 +1033,8 @@ export type MissionProposal = {
   workerProviderId?: string;
   /** The planner's one line on why those two, shown beside the pickers. */
   modelRationale?: string;
+  /** Crew preset ids the planner suggests; the card's toggles start there. */
+  crew?: string[];
   createdAt: number;
 };
 
@@ -1359,6 +1484,8 @@ export const api = {
     /** Where each role runs, from the picked model. Absent = the project's provider. */
     directorProviderId?: string; workerProviderId?: string;
     browserTools?: boolean;
+    /** Crew preset ids the human toggled on. Absent or empty means no crew. */
+    crew?: string[];
     /** Start even though the checkout has uncommitted changes (see the dirty-checkout refusal). */
     allowDirty?: boolean;
   } = {}) =>
@@ -1369,6 +1496,7 @@ export const api = {
       directorProviderId: opts.directorProviderId || undefined,
       workerProviderId: opts.workerProviderId || undefined,
       browserTools: opts.browserTools || undefined,
+      crew: opts.crew?.length ? opts.crew : undefined,
       allowDirty: opts.allowDirty || undefined,
     }),
   /** Resume; `on` names models for this resume ("Resume on…"), ahead of Settings. */
