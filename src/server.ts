@@ -738,11 +738,11 @@ async function agentEnvFor(
  * are dropped by design. Whether money is real is the provider's answer, not
  * the role's.
  */
-async function crewBasesFor(meta: RunMeta): Promise<Record<string, CostBasis> | undefined> {
+async function crewBasesFor(meta: RunMeta): Promise<Record<string, { basis: CostBasis; native: boolean }> | undefined> {
   const wanted = (meta.crew ?? []).filter((p) => p.providerId);
   if (!wanted.length) return undefined;
-  const out: Record<string, CostBasis> = {};
-  const seen = new Map<string, CostBasis | null>();
+  const out: Record<string, { basis: CostBasis; native: boolean }> = {};
+  const seen = new Map<string, { basis: CostBasis; native: boolean } | null>();
   for (const preset of wanted) {
     const id = preset.providerId as string;
     if (!seen.has(id)) {
@@ -751,11 +751,16 @@ async function crewBasesFor(meta: RunMeta): Promise<Record<string, CostBasis> | 
         ? await resolveProvider(ref, store.root).catch(() => null)
         : null;
       seen.set(id, resolved && !providerProblem(resolved)
-        ? (await roleCost(withRoleModel(resolved, preset.model ?? meta.workerModel), preset.model ?? meta.workerModel)).basis
+        ? {
+          basis: (await roleCost(withRoleModel(resolved, preset.model ?? meta.workerModel), preset.model ?? meta.workerModel)).basis,
+          // Whether the SDK's dollar figure for this preset IS the bill, or
+          // whether it is a gateway that reports through the run's ledger.
+          native: resolved.wire === 'anthropic-native',
+        }
         : null);
     }
-    const basis = seen.get(id);
-    if (basis) out[preset.id] = basis;
+    const cost = seen.get(id);
+    if (cost) out[preset.id] = cost;
   }
   return Object.keys(out).length ? out : undefined;
 }
@@ -1727,7 +1732,7 @@ async function driveRun(
   let agentEnv;
   let roleBasis = resolved.costBasis;
   let prices: { director?: ModelPrice; worker?: ModelPrice } = {};
-  let roleBases: { director: CostBasis; worker: CostBasis; crew?: Record<string, CostBasis> } | undefined;
+  let roleBases: { director: CostBasis; worker: CostBasis; crew?: Record<string, { basis: CostBasis; native: boolean }> } | undefined;
   let gatewayRoles = { director: false, worker: false };
   try {
     // Resolved per role. Where both roles share a provider this resolves once

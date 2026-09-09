@@ -696,6 +696,8 @@ interface WorkerOverrides {
   continued?: boolean;
   /** The crew preset this worker is, recorded on its meta so a resume can rebuild this. */
   crewPresetId?: string;
+  /** Withhold the browser from this worker, whatever the run allows. */
+  noBrowser?: boolean;
   /**
    * Count this agent's dollars as real spend whatever the role it is priced
    * under would normally do. Set for a crew preset on its own priced
@@ -1030,7 +1032,7 @@ export class MissionRun {
        * the preset's own basis is what counts its spend and what folds into
        * the run's.
        */
-      crew?: Record<string, CostBasis>;
+      crew?: Record<string, { basis: CostBasis; native: boolean }>;
     },
     /**
      * What the host lends the run beyond the model: today, putting a dev
@@ -2288,7 +2290,7 @@ export class MissionRun {
         // Built per worker: the report_progress handler closes over this id,
         // which is how a report lands on the right record without the worker
         // having to know its own name.
-        mcpServers: { foreman: this.workerTools(workerId), ...this.browserServers() },
+        mcpServers: { foreman: this.workerTools(workerId), ...(overrides?.noBrowser ? {} : this.browserServers()) },
         canUseTool: this.policyFor(workerId, overrides?.toolPolicy),
       },
     });
@@ -2542,7 +2544,10 @@ export class MissionRun {
       model: preset.model || this.meta.workerModel,
       env: this.agentEnv.crew?.[preset.id],
       toolPolicy: preset.toolPolicy === 'default' ? undefined : REVIEWER_TOOL_POLICY,
-      nativeCost: Boolean(this.agentEnv.crew?.[preset.id]) && this.roleBasis?.crew?.[preset.id] === 'priced',
+      nativeCost: this.roleBasis?.crew?.[preset.id]?.native === true
+        && this.roleBasis.crew[preset.id].basis === 'priced'
+        && Boolean(this.agentEnv.crew?.[preset.id]),
+      noBrowser: preset.toolPolicy !== 'default',
       crewPresetId: preset.id,
       reason: `follow-up to ${preset.name} (${preset.id})`,
     };
@@ -2591,9 +2596,9 @@ export class MissionRun {
     // all — enforceBudget and capReached both stand down on an unpriced run.
     // So the basis moves BEFORE the reviewer is launched, and says so, exactly
     // as the fallback path does when a human retries on the director's.
-    const presetBasis = this.agentEnv.crew?.[preset.id] ? this.roleBasis?.crew?.[preset.id] : undefined;
-    if (presetBasis) {
-      const nb = combineBasis(costBasisOf(this.meta), presetBasis);
+    const presetCost = this.agentEnv.crew?.[preset.id] ? this.roleBasis?.crew?.[preset.id] : undefined;
+    if (presetCost) {
+      const nb = combineBasis(costBasisOf(this.meta), presetCost.basis);
       if (nb !== costBasisOf(this.meta)) {
         this.meta.costBasis = nb;
         this.meta.metered = nb === 'priced';
@@ -2625,7 +2630,16 @@ export class MissionRun {
       env: this.agentEnv.crew?.[preset.id],
       // A preset with an env of its own is served by that provider, so its
       // basis — not the worker role's — decides whether its dollars are real.
-      nativeCost: presetBasis === 'priced',
+      // Only an Anthropic-native endpoint gives the SDK a dollar figure that
+      // IS the bill. A priced gateway publishes rates and reports through the
+      // shared ledger, so counting the SDK's number there as well would charge
+      // the review twice — the very thing the last fix was about.
+      nativeCost: presetCost?.native === true && presetCost.basis === 'priced',
+      // A reviewer that must not write must not drive the browser either:
+      // clicks, typing and injected script are automatically permitted once
+      // browser tools are on, so a read-only verdict could change the app it
+      // is judging. The restriction is about the job, not about the file system.
+      noBrowser: preset.toolPolicy !== 'default',
       // 'default' is the preset saying this role needs to run things; anything
       // else gets the flat deny, which is what makes "read-only" provable.
       toolPolicy: preset.toolPolicy === 'default' ? undefined : REVIEWER_TOOL_POLICY,

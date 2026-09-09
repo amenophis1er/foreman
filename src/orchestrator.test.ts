@@ -1608,7 +1608,7 @@ test('a reviewer on its own priced provider has its dollars counted', async () =
     meta({ crew: [reviewerPreset({ providerId: 'openai' })], workerModel: 'sonnet', folder }),
     () => {}, () => {},
     { ...noopAgentEnv, crew: { reviewer: reviewerEnv } },
-    {}, undefined, { director: 'free', worker: 'free', crew: { reviewer: 'priced' } },
+    {}, undefined, { director: 'free', worker: 'free', crew: { reviewer: { basis: 'priced', native: true } } },
   );
   const seen: any[] = [];
   (priced as any).runWorker = (id: string, prompt: string, _r?: string, overrides?: any) => {
@@ -1622,7 +1622,7 @@ test('a reviewer on its own priced provider has its dollars counted', async () =
     meta({ crew: [reviewerPreset({ providerId: 'ollama' })], workerModel: 'sonnet', folder }),
     () => {}, () => {},
     { ...noopAgentEnv, crew: { reviewer: reviewerEnv } },
-    {}, undefined, { director: 'free', worker: 'free', crew: { reviewer: 'free' } },
+    {}, undefined, { director: 'free', worker: 'free', crew: { reviewer: { basis: 'free', native: true } } },
   );
   const seenFree: any[] = [];
   (free as any).runWorker = (id: string, prompt: string, _r?: string, overrides?: any) => {
@@ -1688,7 +1688,7 @@ test('a paid reviewer makes the run priced before it runs, so the cap is live', 
     meta({ crew: [reviewerPreset({ providerId: 'openai' })], workerModel: 'sonnet', folder, costBasis: 'free' }),
     (event, data) => events.push({ event, data }), () => {},
     { ...noopAgentEnv, crew: { reviewer: {} as AgentEnv } },
-    {}, undefined, { director: 'free', worker: 'free', crew: { reviewer: 'priced' } },
+    {}, undefined, { director: 'free', worker: 'free', crew: { reviewer: { basis: 'priced', native: true } } },
   );
   (run as any).runWorker = async () => ({ report: 'VERDICT: PASS', isError: false });
   await (run as unknown as ReviewSurface).requestReviewTool({ presetId: 'reviewer' });
@@ -1710,7 +1710,7 @@ test('a reviewer on its own paid provider is charged once, not twice', async () 
     { ...noopAgentEnv, crew: { reviewer: {} as AgentEnv } },
     { worker: { inputPerMTok: 1000, outputPerMTok: 1000 } as any },
     undefined,
-    { director: 'priced', worker: 'priced', crew: { reviewer: 'priced' } },
+    { director: 'priced', worker: 'priced', crew: { reviewer: { basis: 'priced', native: true } } },
   );
   (run as any).runWorker = async (_id: string, _p: string, _r: string | undefined, overrides: any) => {
     (run as any).addUsage({ input_tokens: 1_000_000, output_tokens: 1_000_000 }, overrides?.priceRole ?? 'worker', overrides?.nativeCost === true);
@@ -1719,4 +1719,36 @@ test('a reviewer on its own paid provider is charged once, not twice', async () 
   };
   await (run as unknown as ReviewSurface).requestReviewTool({ presetId: 'reviewer' });
   assert.equal(run.meta.costUsd, 0.25, 'the provider\'s own figure, and only that');
+});
+
+test('a priced gateway reviewer is not treated as a native bill, and never drives the browser', async () => {
+  const folder = await reviewableFolder();
+  // Priced, but through a gateway: the SDK's dollar figure is not the bill,
+  // the ledger's is. Counting both is how a review gets charged twice.
+  const gateway = new MissionRun(
+    meta({ crew: [reviewerPreset({ providerId: 'kimi' })], workerModel: 'sonnet', folder, browserTools: true, costBasis: 'free' }),
+    () => {}, () => {},
+    { ...noopAgentEnv, crew: { reviewer: {} as AgentEnv } },
+    {}, undefined, { director: 'free', worker: 'free', crew: { reviewer: { basis: 'priced', native: false } } },
+  );
+  const seen: any[] = [];
+  (gateway as any).runWorker = (_i: string, _p: string, _r: string | undefined, o: any) => {
+    seen.push(o); return Promise.resolve({ report: 'VERDICT: PASS', isError: false });
+  };
+  await (gateway as unknown as ReviewSurface).requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(seen[0].nativeCost, false, 'a gateway bill is not the SDK\'s figure');
+  assert.equal(gateway.meta.costBasis, 'priced', 'but it is still real money, so the cap is live');
+  assert.equal(seen[0].noBrowser, true, 'and a read-only reviewer is given no browser to click with');
+
+  // A specialist that is meant to run things keeps the browser.
+  const specialist = new MissionRun(
+    meta({ crew: [reviewerPreset({ id: 'runner', toolPolicy: 'default' })], workerModel: 'sonnet', folder, browserTools: true }),
+    () => {}, () => {}, noopAgentEnv,
+  );
+  const seenTwo: any[] = [];
+  (specialist as any).runWorker = (_i: string, _p: string, _r: string | undefined, o: any) => {
+    seenTwo.push(o); return Promise.resolve({ report: 'VERDICT: PASS', isError: false });
+  };
+  await (specialist as unknown as ReviewSurface).requestReviewTool({ presetId: 'runner' });
+  assert.equal(seenTwo[0].noBrowser, false);
 });
