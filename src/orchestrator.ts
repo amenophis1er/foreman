@@ -698,6 +698,8 @@ interface WorkerOverrides {
   crewPresetId?: string;
   /** Withhold the browser from this worker, whatever the run allows. */
   noBrowser?: boolean;
+  /** This agent runs on a provider of its own, so no role's rate card applies to it. */
+  ownProvider?: boolean;
   /**
    * Count this agent's dollars as real spend whatever the role it is priced
    * under would normally do. Set for a crew preset on its own priced
@@ -1012,7 +1014,11 @@ export class MissionRun {
      */
     private readonly ledger?: {
       key: string;
-      roles: { director: boolean; worker: boolean };
+      roles: {
+        director: boolean; worker: boolean;
+        /** True when any crew preset runs on a gateway of its own — its tokens reach the same ledger. */
+        crew?: boolean;
+      };
       read: (key: string) => Promise<TokenUsage & { calls: number; costUsd?: number } | null>;
     },
     /**
@@ -1277,7 +1283,7 @@ export class MissionRun {
     // Only a run with a gatewayed role has anything to poll for. Three
     // seconds is chosen against what it is for — a person watching a turn
     // that has been silent for minutes — not against how fast tokens move.
-    if (this.ledger && (this.ledger.roles.director || this.ledger.roles.worker)) {
+    if (this.ledger && (this.ledger.roles.director || this.ledger.roles.worker || this.ledger.roles.crew)) {
       this.ledgerTimer = setInterval(() => void this.pollLedger(), 3000);
       this.ledgerTimer.unref?.();
     }
@@ -1849,11 +1855,12 @@ export class MissionRun {
     // Where the endpoint published rates, this is the run's real cost: its
     // own tokens at its own prices, accumulated per role so a mixed run bills
     // each half correctly instead of applying one table to both.
-    // `priced` means this agent's own provider is billing in dollars and
-    // those dollars are counted elsewhere (addCost's native path). Applying
-    // the role's rate card here as well would charge the same tokens twice
-    // and could stop the run early at a cap it never really reached — the
-    // tokens still count, the money does not.
+    // `priced` means this agent runs on a provider of its own: either an
+    // Anthropic-native one whose dollars addCost has already taken, or a
+    // gateway that reports through the run's ledger. Either way the ROLE's
+    // rate card is the wrong table — it belongs to a different endpoint — and
+    // applying it would charge tokens that are already accounted for. The
+    // tokens themselves still count.
     const price = priced ? undefined : this.prices[role];
     if (price) { this.costParts.rated += priceUsage(price, delta); this.recomputeCost(); }
     this.saveMeta(this.meta);
@@ -2189,6 +2196,9 @@ export class MissionRun {
       // provider serves it must not hand it Write, Edit and Bash: the
       // restriction belongs to the job, not to the endpoint.
       toolPolicy: this.workers.get(workerId)?.overrides?.toolPolicy,
+      // Including the browser: a reviewer retried elsewhere must not gain
+      // clicks and injected script by changing endpoint.
+      noBrowser: this.workers.get(workerId)?.overrides?.noBrowser,
       crewPresetId: this.workers.get(workerId)?.crewPresetId,
       reason: `retry of ${workerId} on the director's provider, at the human's request`,
     });
@@ -2349,7 +2359,8 @@ export class MissionRun {
           // usage, so usage has to be current before it is emitted.
           // A worker retried on the director's provider is priced with the
           // director's rates: the tokens went through that gateway.
-          this.addUsage(m.usage, overrides?.priceRole ?? 'worker', overrides?.nativeCost === true);
+          this.addUsage(m.usage, overrides?.priceRole ?? 'worker',
+            overrides?.nativeCost === true || overrides?.ownProvider === true);
           this.addCost(m.total_cost_usd as number | undefined, overrides?.priceRole ?? 'worker', overrides?.nativeCost === true);
           w.costUsd += (m.total_cost_usd as number | undefined) ?? 0;
         }
@@ -2548,6 +2559,7 @@ export class MissionRun {
         && this.roleBasis.crew[preset.id].basis === 'priced'
         && Boolean(this.agentEnv.crew?.[preset.id]),
       noBrowser: preset.toolPolicy !== 'default',
+      ownProvider: Boolean(this.agentEnv.crew?.[preset.id]),
       crewPresetId: preset.id,
       reason: `follow-up to ${preset.name} (${preset.id})`,
     };
@@ -2635,6 +2647,9 @@ export class MissionRun {
       // shared ledger, so counting the SDK's number there as well would charge
       // the review twice — the very thing the last fix was about.
       nativeCost: presetCost?.native === true && presetCost.basis === 'priced',
+      // Its tokens go through its own endpoint, so the worker's rate card
+      // does not describe them whatever the wire is.
+      ownProvider: Boolean(this.agentEnv.crew?.[preset.id]),
       // A reviewer that must not write must not drive the browser either:
       // clicks, typing and injected script are automatically permitted once
       // browser tools are on, so a read-only verdict could change the app it

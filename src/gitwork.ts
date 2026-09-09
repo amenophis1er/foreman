@@ -196,7 +196,9 @@ async function walkFingerprint(folder: string): Promise<string | null> {
   const parts: string[] = [];
   const walk = async (dir: string, rel: string): Promise<boolean> => {
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => null);
-    if (!entries) return true;
+    // A directory we cannot read may be where the change is. Failing open
+    // would let a PASS stand over work nobody could see.
+    if (!entries) return false;
     for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
       if (FINGERPRINT_SKIP.has(e.name)) continue;
       const full = path.join(dir, e.name);

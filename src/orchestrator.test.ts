@@ -1752,3 +1752,45 @@ test('a priced gateway reviewer is not treated as a native bill, and never drive
   await (specialist as unknown as ReviewSurface).requestReviewTool({ presetId: 'runner' });
   assert.equal(seenTwo[0].noBrowser, false);
 });
+
+test('a gateway reviewer is not priced with the workers\' rate card, and keeps its limits on a retry', async () => {
+  const folder = await reviewableFolder();
+  const run = new MissionRun(
+    meta({ crew: [reviewerPreset({ providerId: 'kimi' })], workerModel: 'sonnet', folder, browserTools: true }),
+    () => {}, () => {},
+    { ...noopAgentEnv, crew: { reviewer: {} as AgentEnv } },
+    { worker: { inputPerMTok: 1000, outputPerMTok: 1000 } as any },
+    undefined,
+    { director: 'priced', worker: 'priced', crew: { reviewer: { basis: 'priced', native: false } } },
+  );
+  const seen: any[] = [];
+  (run as any).runWorker = (_i: string, _p: string, _r: string | undefined, o: any) => {
+    seen.push(o);
+    (run as any).addUsage({ input_tokens: 1_000_000, output_tokens: 1_000_000 }, o?.priceRole ?? 'worker',
+      o?.nativeCost === true || o?.ownProvider === true);
+    return Promise.resolve({ report: 'VERDICT: FAIL\n- no', isError: false });
+  };
+  await (run as unknown as ReviewSurface).requestReviewTool({ presetId: 'reviewer' });
+  assert.equal(seen[0].ownProvider, true);
+  assert.equal(run.meta.costUsd, 0, 'the workers\' rates do not describe another endpoint\'s tokens');
+  assert.ok((run.meta.usage?.inputTokens ?? 0) > 0, 'but the tokens are still counted');
+});
+
+test('an unreadable directory is not an empty one', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'unreadable-'));
+  await writeFile(path.join(dir, 'visible.txt'), 'hello\n');
+  const closed = path.join(dir, 'closed');
+  await mkdir(closed, { recursive: true });
+  await writeFile(path.join(closed, 'secret.txt'), 'work\n');
+  const before = await changeFingerprint(dir);
+  assert.ok(before);
+
+  // chmod 000: the walk cannot see inside, and must say so rather than
+  // hashing the part of the tree it managed to read.
+  execFileSync('chmod', ['000', closed]);
+  try {
+    assert.equal(await changeFingerprint(dir), null, 'cannot verify, so no fingerprint');
+  } finally {
+    execFileSync('chmod', ['755', closed]);
+  }
+});

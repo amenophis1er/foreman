@@ -1733,7 +1733,7 @@ async function driveRun(
   let roleBasis = resolved.costBasis;
   let prices: { director?: ModelPrice; worker?: ModelPrice } = {};
   let roleBases: { director: CostBasis; worker: CostBasis; crew?: Record<string, { basis: CostBasis; native: boolean }> } | undefined;
-  let gatewayRoles = { director: false, worker: false };
+  let gatewayRoles: { director: boolean; worker: boolean; crew?: boolean } = { director: false, worker: false };
   try {
     // Resolved per role. Where both roles share a provider this resolves once
     // and starts one gateway; where they differ, the supervisor already runs a
@@ -1769,6 +1769,9 @@ async function driveRun(
     // native role's tokens arrive on the SDK's own result message, and adding
     // both would double every one of them.
     gatewayRoles = {
+      // A crew preset on a gateway sends its tokens to the same ledger, so
+      // polling has to run even when both ordinary roles are native.
+      crew: Object.values(await crewBasesFor(meta) ?? {}).some((c) => !c.native),
       director: directorProvider.wire !== 'anthropic-native',
       worker: workerProvider.wire !== 'anthropic-native',
     };
