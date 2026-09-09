@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import {
   DEFAULT_REPEAT_LIMIT, DIRECTOR_CHARTER, MissionRun, RECENT_LINES, WORKER_CHARTER, WORK_DIR, accumulateUsage,
   activityHint, ensureIgnoreLines, loopingWorkerReport,
@@ -1297,7 +1298,7 @@ type ReviewSurface = ToolSurface & {
   settleFinalStatus(): Promise<void>;
   policyFor(agent: string, override?: ToolPolicy): CanUseTool;
   budgetStopped: boolean;
-  workers: Map<string, { id: string; status: string; sessionId?: string; costUsd: number; overrides?: unknown }>;
+  workers: Map<string, { id: string; status: string; sessionId?: string; costUsd: number; overrides?: any; crewPresetId?: string }>;
 };
 
 /** The crew a human would pick: one required reviewer, read-only. */
@@ -1334,7 +1335,7 @@ function crewRun(
   crewEnv?: Record<string, AgentEnv>,
 ) {
   const events: Array<{ event: string; data: any }> = [];
-  const seen: Array<{ id: string; prompt: string; overrides?: { model?: string; toolPolicy?: ToolPolicy; reason?: string; env?: AgentEnv; nativeCost?: boolean } }> = [];
+  const seen: Array<{ id: string; prompt: string; overrides?: { model?: string; toolPolicy?: ToolPolicy; reason?: string; env?: AgentEnv; nativeCost?: boolean; crewPresetId?: string } }> = [];
   const run = new MissionRun(
     meta({ crew, workerModel: 'sonnet', ...over }),
     (event, data) => events.push({ event, data }), () => {},
@@ -1645,4 +1646,55 @@ test('the director is told which reviews it must get, by id', () => {
   // A run with no crew says nothing at all, rather than an empty heading.
   const bare = new MissionRun(meta(), () => {}, () => {}, noopAgentEnv);
   assert.equal((bare as unknown as ReviewSurface).crewLine(), '');
+});
+
+test('a commit is a change: a PASS does not survive one', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'committed-'));
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } });
+  git('init', '-q', '-b', 'main');
+  git('config', 'user.email', 'me@example.com');
+  git('config', 'user.name', 'Me');
+  await writeFile(path.join(dir, 'a.txt'), 'first\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'one');
+
+  const reviewed = await changeFingerprint(dir);
+  assert.ok(reviewed);
+
+  // The director keeps working and commits. `git diff HEAD` is empty again —
+  // which is exactly how a stale PASS used to look current.
+  await writeFile(path.join(dir, 'a.txt'), 'second\n');
+  git('add', '-A'); git('commit', '-q', '-m', 'two');
+  assert.notEqual(await changeFingerprint(dir), reviewed, 'the committed change moves the fingerprint');
+});
+
+test('a reviewer resumed after a restart is rebuilt from the crew, not as a plain worker', async () => {
+  const folder = await reviewableFolder();
+  // A run that came back from disk: the worker record survived, the live
+  // overrides (which hold a credential) did not.
+  const { t, seen } = crewRun([reviewerPreset()], async () => ({ report: 'VERDICT: PASS', isError: false }), {
+    folder,
+    workers: [{ id: 'worker-1', status: 'done', costUsd: 0.1, task: 'review', sessionId: 'session-1', crewPresetId: 'reviewer' }],
+  });
+  await t.messageWorkerTool({ worker_id: 'worker-1', message: 'one more question' });
+  assert.ok(seen[0].overrides?.toolPolicy, 'the rebuilt launch is still read-only');
+  assert.equal(seen[0].overrides?.model, 'opus', 'and still on the preset\'s model');
+  assert.equal(seen[0].overrides?.crewPresetId, 'reviewer');
+});
+
+test('a paid reviewer makes the run priced before it runs, so the cap is live', async () => {
+  const folder = await reviewableFolder();
+  const events: Array<{ event: string; data: any }> = [];
+  const run = new MissionRun(
+    meta({ crew: [reviewerPreset({ providerId: 'openai' })], workerModel: 'sonnet', folder, costBasis: 'free' }),
+    (event, data) => events.push({ event, data }), () => {},
+    { ...noopAgentEnv, crew: { reviewer: {} as AgentEnv } },
+    {}, undefined, { director: 'free', worker: 'free', crew: { reviewer: 'priced' } },
+  );
+  (run as any).runWorker = async () => ({ report: 'VERDICT: PASS', isError: false });
+  await (run as unknown as ReviewSurface).requestReviewTool({ presetId: 'reviewer' });
+
+  assert.equal(run.meta.costBasis, 'priced', 'the run is priced from the moment the paid reviewer starts');
+  assert.equal(run.meta.metered, true, 'so enforceBudget and capReached stop standing down');
+  const said = events.find((e) => e.event === 'settings_changed');
+  assert.match(said!.data.changes[0], /dollar cap is live/, 'and the change is announced, not silent');
 });

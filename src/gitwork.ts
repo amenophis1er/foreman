@@ -224,13 +224,18 @@ export async function changeFingerprint(folder: string): Promise<string | null> 
   try {
     const inside = await git(['rev-parse', '--is-inside-work-tree'], folder).catch(() => '');
     if (inside.trim() !== 'true') return walkFingerprint(folder);
+    // HEAD is part of the fingerprint, not just the dirty tree: a director
+    // that commits its work after a PASS leaves `git diff HEAD` empty, and a
+    // fingerprint of the diff alone would call the new commit unchanged and
+    // let the old PASS stand.
+    const head = (await git(['rev-parse', 'HEAD'], folder).catch(() => 'no-head')).trim();
     const tracked = await git(['diff', 'HEAD', '--binary', '--no-color', '--no-ext-diff'], folder, 60_000);
     const untracked = (await git(['ls-files', '--others', '--exclude-standard'], folder))
       .split('\n').map((l) => l.trim())
       // The mission doc and the crew's scratch space are Foreman's own and
       // change constantly; they are not the work under review.
       .filter((l) => l && !l.startsWith('.foreman/'));
-    const parts: string[] = [tracked];
+    const parts: string[] = [`HEAD\0${head}`, tracked];
     for (const p of untracked.sort()) {
       const blob = await git(['hash-object', '--', p], folder).catch(() => '');
       parts.push(`${p}\0${blob.trim()}`);

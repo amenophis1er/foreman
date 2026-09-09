@@ -694,6 +694,8 @@ type AgentRole = 'director' | 'worker';
 interface WorkerOverrides {
   /** Set on the one continuation a worker gets after the turn cap. */
   continued?: boolean;
+  /** The crew preset this worker is, recorded on its meta so a resume can rebuild this. */
+  crewPresetId?: string;
   /**
    * Count this agent's dollars as real spend whatever the role it is priced
    * under would normally do. Set for a crew preset on its own priced
@@ -2176,6 +2178,11 @@ export class MissionRun {
     const nextId = `worker-${++this.workerSeq}`;
     this.launchWorker(nextId, prompt, undefined, {
       env: this.agentEnv.director, model: this.meta.directorModel || undefined, priceRole: 'director',
+      // A reviewer retried elsewhere is still a reviewer. Changing which
+      // provider serves it must not hand it Write, Edit and Bash: the
+      // restriction belongs to the job, not to the endpoint.
+      toolPolicy: this.workers.get(workerId)?.overrides?.toolPolicy,
+      crewPresetId: this.workers.get(workerId)?.crewPresetId,
       reason: `retry of ${workerId} on the director's provider, at the human's request`,
     });
     return {
@@ -2221,6 +2228,7 @@ export class MissionRun {
     // Kept for the resume path: see WorkerRuntime.overrides. A resume passes
     // these back in, so `overrides ?? w.overrides` is what a follow-up uses.
     if (overrides) w.overrides = overrides;
+    if (overrides?.crewPresetId) w.crewPresetId = overrides.crewPresetId;
     w.recent ??= [];
     w.done = new Promise<void>((resolve) => { w.settle = resolve; });
     this.workers.set(workerId, w);
@@ -2515,6 +2523,26 @@ export class MissionRun {
    * whatever the director does with it, and the gate in the end-of-run
    * `finally` reads that record, not this conversation.
    */
+  /**
+   * The launch overrides for a worker that is a crew preset, rebuilt from the
+   * run's frozen crew. Used when the record survived a resume but the live
+   * overrides did not: they hold a credential and are deliberately not
+   * persisted, while the restriction they carry must not lapse.
+   */
+  private overridesForPreset(presetId?: string): WorkerOverrides | undefined {
+    if (!presetId) return undefined;
+    const preset = (this.meta.crew ?? []).find((p) => p.id === presetId);
+    if (!preset) return undefined;
+    return {
+      model: preset.model || this.meta.workerModel,
+      env: this.agentEnv.crew?.[preset.id],
+      toolPolicy: preset.toolPolicy === 'default' ? undefined : REVIEWER_TOOL_POLICY,
+      nativeCost: Boolean(this.agentEnv.crew?.[preset.id]) && this.roleBasis?.crew?.[preset.id] === 'priced',
+      crewPresetId: preset.id,
+      reason: `follow-up to ${preset.name} (${preset.id})`,
+    };
+  }
+
   private async requestReviewTool({ presetId, notes }: { presetId: string; notes?: string }): Promise<string> {
     const crew = this.meta.crew ?? [];
     if (!crew.length) {
@@ -2553,6 +2581,27 @@ export class MissionRun {
     let prompt = reviewBriefFor(preset, { mission: this.meta.mission, doneWhen, diff, truncated });
     if (notes?.trim()) prompt += `\n\n## The director asks you to pay particular attention to\n\n${notes.trim()}`;
 
+    // A reviewer on a priced provider spends real money even when the rest of
+    // the run does not, and a dollar cap that is not "live" is not enforced at
+    // all — enforceBudget and capReached both stand down on an unpriced run.
+    // So the basis moves BEFORE the reviewer is launched, and says so, exactly
+    // as the fallback path does when a human retries on the director's.
+    const presetBasis = this.agentEnv.crew?.[preset.id] ? this.roleBasis?.crew?.[preset.id] : undefined;
+    if (presetBasis) {
+      const nb = combineBasis(costBasisOf(this.meta), presetBasis);
+      if (nb !== costBasisOf(this.meta)) {
+        this.meta.costBasis = nb;
+        this.meta.metered = nb === 'priced';
+        this.emit('settings_changed', {
+          changes: [`${preset.name} reviews on its own provider — this run is now ${nb}`
+            + (nb === 'priced' ? ' and the dollar cap is live' : '')],
+          browserTools: Boolean(this.meta.browserTools), budgetUsd: this.meta.budgetUsd,
+        });
+        this.saveMeta(this.meta);
+        this.emitEconomics();
+      }
+    }
+
     const id = `worker-${++this.workerSeq}`;
     const w = this.launchWorker(id, prompt, undefined, {
       model: preset.model || this.meta.workerModel,
@@ -2571,10 +2620,11 @@ export class MissionRun {
       env: this.agentEnv.crew?.[preset.id],
       // A preset with an env of its own is served by that provider, so its
       // basis — not the worker role's — decides whether its dollars are real.
-      nativeCost: Boolean(this.agentEnv.crew?.[preset.id]) && this.roleBasis?.crew?.[preset.id] === 'priced',
+      nativeCost: presetBasis === 'priced',
       // 'default' is the preset saying this role needs to run things; anything
       // else gets the flat deny, which is what makes "read-only" provable.
       toolPolicy: preset.toolPolicy === 'default' ? undefined : REVIEWER_TOOL_POLICY,
+      crewPresetId: preset.id,
       reason: `review by ${preset.name} (${preset.id})`,
     });
     const outcome = await w.promise;
@@ -2661,7 +2711,7 @@ export class MissionRun {
     // director a worker that may now write, on whatever model the run's
     // workers use — the restriction would quietly expire at the first
     // follow-up question.
-    const run = this.launchWorker(worker_id, message, w.sessionId, w.overrides);
+    const run = this.launchWorker(worker_id, message, w.sessionId, w.overrides ?? this.overridesForPreset(w.crewPresetId));
     await run.promise;
     return `${this.reportLine(run)}${this.costFooter()}`;
   }

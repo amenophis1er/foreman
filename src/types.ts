@@ -255,6 +255,14 @@ export interface WorkerMeta {
   status: WorkerStatus;
   costUsd: number;
   sessionId?: string;
+  /**
+   * The crew preset this worker IS, when it is a reviewer rather than an
+   * ordinary worker. Persisted — unlike the launch overrides, which hold a
+   * live credential — so a resumed run can rebuild the read-only policy, the
+   * model and the provider from the frozen crew instead of resuming a
+   * reviewer as a worker that may write.
+   */
+  crewPresetId?: string;
   /** First 500 chars of the task brief, for run-history display. */
   task: string;
   /**
