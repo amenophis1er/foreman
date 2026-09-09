@@ -107,6 +107,22 @@ An interrupted run restores the director's session and re-verifies before it
 continues. `.foreman/` git-ignores itself, so missions in real repositories
 leave no trace but the work.
 
+### A machine that cannot reach npm
+
+`scripts/pack-offline.sh` builds one tarball with the package, its runtime
+dependencies, the prebuilt dashboard and a chosen architecture's binaries
+inside — nothing is fetched on the target machine:
+
+    scripts/pack-offline.sh                      # this machine's platform
+    scripts/pack-offline.sh --target linux-arm64
+    scripts/pack-offline.sh --all                # every supported target
+
+Targets: `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`,
+`linux-x64-musl`, `linux-arm64-musl`. Copy the tarball over, unpack it, run
+`./install.sh`, and the only thing the target still needs is Node 20 or newer
+and the Claude CLI's credentials in `~/.claude`. `foreman update` still wants
+the registry, so a newer version arrives as a newer bundle.
+
 ## Providers, and what a dollar means
 
 A provider is one choice, not three: **who is billed, which credential, and
