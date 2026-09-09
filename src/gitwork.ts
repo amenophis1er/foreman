@@ -175,6 +175,8 @@ export function worktreeGrant(
  * folder is not a repository or git will not answer, which callers must treat
  * as "cannot verify", never as "nothing changed".
  */
+/** git's empty tree, for diffing a repository that has no commit yet. */
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const FINGERPRINT_FILE_CAP = 20_000;
 const FINGERPRINT_HASH_MAX_BYTES = 1024 * 1024;
 const FINGERPRINT_SKIP = new Set(['.git', '.foreman', 'node_modules']);
@@ -228,16 +230,28 @@ export async function changeFingerprint(folder: string): Promise<string | null> 
     // that commits its work after a PASS leaves `git diff HEAD` empty, and a
     // fingerprint of the diff alone would call the new commit unchanged and
     // let the old PASS stand.
-    const head = (await git(['rev-parse', 'HEAD'], folder).catch(() => 'no-head')).trim();
-    const tracked = await git(['diff', 'HEAD', '--binary', '--no-color', '--no-ext-diff'], folder, 60_000);
-    const untracked = (await git(['ls-files', '--others', '--exclude-standard'], folder))
-      .split('\n').map((l) => l.trim())
+    // A repository with no commit yet has no HEAD to diff against, and a
+    // mission that starts one is ordinary — so the comparison falls back to
+    // git's empty tree rather than failing, which would make every run with a
+    // required reviewer impossible to finish until someone committed.
+    const head = (await git(['rev-parse', 'HEAD'], folder).catch(() => '')).trim();
+    const tracked = await git(
+      ['diff', head || EMPTY_TREE, '--binary', '--no-color', '--no-ext-diff'], folder, 60_000,
+    );
+    // -z, because `ls-files` C-quotes any path with a quote, a tab or a
+    // non-ASCII character, and a quoted path handed back to `hash-object`
+    // fails — which used to leave those files with no content in the hash at
+    // all, so edits to them were invisible to the gate.
+    const untracked = (await git(['ls-files', '--others', '--exclude-standard', '-z'], folder))
+      .split('\0')
       // The mission doc and the crew's scratch space are Foreman's own and
       // change constantly; they are not the work under review.
-      .filter((l) => l && !l.startsWith('.foreman/'));
-    const parts: string[] = [`HEAD\0${head}`, tracked];
+      .filter((p) => p && !p.startsWith('.foreman/'));
+    const parts: string[] = [`HEAD\0${head || 'none'}`, tracked];
     for (const p of untracked.sort()) {
-      const blob = await git(['hash-object', '--', p], folder).catch(() => '');
+      // No catch: a file whose hash cannot be read is a fingerprint that
+      // cannot be trusted, and the honest answer is "cannot verify".
+      const blob = await git(['hash-object', '--', p], folder);
       parts.push(`${p}\0${blob.trim()}`);
     }
     return createHash('sha256').update(parts.join('\n')).digest('hex');

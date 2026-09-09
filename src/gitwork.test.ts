@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
-import { closeMissionBranch, defaultBranch, worktreeGrant, worktreeParent, ensureMissionBranch, gitInfo, missionBranchName, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
+import { changeFingerprint, closeMissionBranch, defaultBranch, worktreeGrant, worktreeParent, ensureMissionBranch, gitInfo, missionBranchName, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
 } from './gitwork.js';
 import type { ReviewVerdict } from './crew.js';
 
@@ -215,4 +215,34 @@ test('a worktree kept inside the repository is not opened by opening the reposit
   const decision = worktreeGrant(shape, []);
   assert.equal(decision.grant, null, 'so the parent is not opened automatically');
   assert.match(decision.reason ?? '', /would also open/);
+});
+
+test('the fingerprint copes with awkward filenames and with a repository that has no commit', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'fingerprint-git-'));
+  sh(dir, 'init', '-q', '-b', 'main');
+  sh(dir, 'config', 'user.email', 'me@example.com');
+  sh(dir, 'config', 'user.name', 'Me');
+
+  // No commit yet: `git diff HEAD` has nothing to diff against, and a run that
+  // starts a repository from nothing is an ordinary mission.
+  await writeFile(path.join(dir, 'first.txt'), 'work\n');
+  const empty = await changeFingerprint(dir);
+  assert.ok(empty, 'a repository with no HEAD still has a fingerprint');
+
+  // A name git C-quotes in `ls-files`: a quoted path handed to hash-object
+  // fails, which used to silently drop the file's content from the hash.
+  const awkward = path.join(dir, 'répertoire "odd" name.txt');
+  await writeFile(awkward, 'one\n');
+  const withAwkward = await changeFingerprint(dir);
+  assert.ok(withAwkward);
+  assert.notEqual(withAwkward, empty);
+
+  await writeFile(awkward, 'two\n');
+  assert.notEqual(await changeFingerprint(dir), withAwkward, 'editing it moves the fingerprint');
+
+  // And once there is a commit, the same file is tracked and still counts.
+  sh(dir, 'add', '-A'); sh(dir, 'commit', '-q', '-m', 'one');
+  const committed = await changeFingerprint(dir);
+  await writeFile(awkward, 'three\n');
+  assert.notEqual(await changeFingerprint(dir), committed);
 });
