@@ -9,6 +9,8 @@
  * the button that says so — once, for that branch, to open the pull request.
  */
 import path from 'node:path';
+import { readdir, readFile, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import type { ReviewVerdict } from './crew.js';
 
@@ -159,6 +161,84 @@ export function worktreeGrant(
     };
   }
   return { grant: parent };
+}
+
+/**
+ * A fingerprint of everything this checkout has changed, for pinning a
+ * reviewer's PASS to the code it actually read.
+ *
+ * Deliberately not computed from the deck: the deck is a *view* — it stops at
+ * 200 files and carries no binary content — so a change to the 201st file, or
+ * a swapped image, would leave a deck-derived hash identical and a stale PASS
+ * looking current. This asks git instead: the full diff against HEAD including
+ * binary deltas, plus the blob hash of every untracked file. Null when the
+ * folder is not a repository or git will not answer, which callers must treat
+ * as "cannot verify", never as "nothing changed".
+ */
+const FINGERPRINT_FILE_CAP = 20_000;
+const FINGERPRINT_HASH_MAX_BYTES = 1024 * 1024;
+const FINGERPRINT_SKIP = new Set(['.git', '.foreman', 'node_modules']);
+
+/**
+ * The same fingerprint for a folder that is not a repository — Foreman links
+ * plain folders too, and a gate that only worked in git would make every
+ * mission in one impossible to finish.
+ *
+ * Content-hashed up to a megabyte a file, size and mtime beyond that, since
+ * reading a large binary on every gate check costs more than it proves.
+ * Dependency trees and Foreman's own directory are skipped: they are not the
+ * work under review. Null past the file cap, which the caller reads as
+ * "cannot verify" — the honest answer for a tree too large to pin.
+ */
+async function walkFingerprint(folder: string): Promise<string | null> {
+  const parts: string[] = [];
+  const walk = async (dir: string, rel: string): Promise<boolean> => {
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => null);
+    if (!entries) return true;
+    for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
+      if (FINGERPRINT_SKIP.has(e.name)) continue;
+      const full = path.join(dir, e.name);
+      const here = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        if (!await walk(full, here)) return false;
+        continue;
+      }
+      if (!e.isFile()) continue;
+      if (parts.length >= FINGERPRINT_FILE_CAP) return false;
+      const st = await stat(full).catch(() => null);
+      if (!st) continue;
+      if (st.size <= FINGERPRINT_HASH_MAX_BYTES) {
+        const buf = await readFile(full).catch(() => null);
+        parts.push(`${here}\0${st.size}\0${buf ? createHash('sha256').update(buf).digest('hex') : 'unreadable'}`);
+      } else {
+        parts.push(`${here}\0${st.size}\0${st.mtimeMs}`);
+      }
+    }
+    return true;
+  };
+  if (!await walk(folder, '')) return null;
+  return createHash('sha256').update(parts.join('\n')).digest('hex');
+}
+
+export async function changeFingerprint(folder: string): Promise<string | null> {
+  try {
+    const inside = await git(['rev-parse', '--is-inside-work-tree'], folder).catch(() => '');
+    if (inside.trim() !== 'true') return walkFingerprint(folder);
+    const tracked = await git(['diff', 'HEAD', '--binary', '--no-color', '--no-ext-diff'], folder, 60_000);
+    const untracked = (await git(['ls-files', '--others', '--exclude-standard'], folder))
+      .split('\n').map((l) => l.trim())
+      // The mission doc and the crew's scratch space are Foreman's own and
+      // change constantly; they are not the work under review.
+      .filter((l) => l && !l.startsWith('.foreman/'));
+    const parts: string[] = [tracked];
+    for (const p of untracked.sort()) {
+      const blob = await git(['hash-object', '--', p], folder).catch(() => '');
+      parts.push(`${p}\0${blob.trim()}`);
+    }
+    return createHash('sha256').update(parts.join('\n')).digest('hex');
+  } catch {
+    return null;
+  }
 }
 
 export async function dirtyPaths(folder: string, limit = 8): Promise<string[]> {

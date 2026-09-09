@@ -727,6 +727,39 @@ async function agentEnvFor(
  * tokens are accounted to the worker role. See the `env` comment in
  * orchestrator.ts's requestReviewTool for why that approximation is chosen.
  */
+/**
+ * Each crew preset's own cost basis, by preset id — for the presets that name
+ * a provider Foreman can resolve, which are the ones that will run somewhere
+ * other than the worker role.
+ *
+ * The run needs this to count a review's spend honestly. A reviewer pinned to
+ * a paid provider beside workers on a free gateway had its dollars discarded,
+ * because cost was attributed to the worker role and a gateway role's figures
+ * are dropped by design. Whether money is real is the provider's answer, not
+ * the role's.
+ */
+async function crewBasesFor(meta: RunMeta): Promise<Record<string, CostBasis> | undefined> {
+  const wanted = (meta.crew ?? []).filter((p) => p.providerId);
+  if (!wanted.length) return undefined;
+  const out: Record<string, CostBasis> = {};
+  const seen = new Map<string, CostBasis | null>();
+  for (const preset of wanted) {
+    const id = preset.providerId as string;
+    if (!seen.has(id)) {
+      const ref = providerForRole(meta, id);
+      const resolved = 'id' in ref && ref.id === id
+        ? await resolveProvider(ref, store.root).catch(() => null)
+        : null;
+      seen.set(id, resolved && !providerProblem(resolved)
+        ? (await roleCost(withRoleModel(resolved, preset.model ?? meta.workerModel), preset.model ?? meta.workerModel)).basis
+        : null);
+    }
+    const basis = seen.get(id);
+    if (basis) out[preset.id] = basis;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 async function crewEnvsFor(
   meta: RunMeta, ledgerKey: string,
 ): Promise<Record<string, ReturnType<typeof providerEnv>> | undefined> {
@@ -1694,7 +1727,7 @@ async function driveRun(
   let agentEnv;
   let roleBasis = resolved.costBasis;
   let prices: { director?: ModelPrice; worker?: ModelPrice } = {};
-  let roleBases: { director: CostBasis; worker: CostBasis } | undefined;
+  let roleBases: { director: CostBasis; worker: CostBasis; crew?: Record<string, CostBasis> } | undefined;
   let gatewayRoles = { director: false, worker: false };
   try {
     // Resolved per role. Where both roles share a provider this resolves once
@@ -1740,7 +1773,7 @@ async function driveRun(
       : await roleCost(workerProvider, meta.workerModel);
     roleBasis = combineBasis(directorCost.basis, workerCost.basis);
     prices = { director: directorCost.price, worker: workerCost.price };
-    roleBases = { director: directorCost.basis, worker: workerCost.basis };
+    roleBases = { director: directorCost.basis, worker: workerCost.basis, crew: await crewBasesFor(meta) };
   } catch (err) {
     meta.status = 'error';
     meta.endedAt = Date.now();

@@ -96,6 +96,7 @@ import { generateRunTitle } from './title.js';
 import { combineBasis, costBasisOf, isPriced, type CostBasis } from './types.js';
 import { priceUsage, type ModelPrice } from './prices.js';
 import { captureBaseline, deckFor, type Deck } from './deck.js';
+import { changeFingerprint } from './gitwork.js';
 import { memorySection, readMemory, writeMemory } from './memory.js';
 import {
   REVIEWER_TOOL_POLICY, diffHash, parseVerdict, reviewBlockers, reviewBriefFor, unreviewedText,
@@ -693,6 +694,13 @@ type AgentRole = 'director' | 'worker';
 interface WorkerOverrides {
   /** Set on the one continuation a worker gets after the turn cap. */
   continued?: boolean;
+  /**
+   * Count this agent's dollars as real spend whatever the role it is priced
+   * under would normally do. Set for a crew preset on its own priced
+   * provider: its bill arrives regardless of how the run's workers are
+   * served, and a cap that cannot see it is not a cap.
+   */
+  nativeCost?: boolean;
   env?: AgentEnv;
   model?: string;
   priceRole?: AgentRole;
@@ -883,6 +891,13 @@ const WORKER_CONTINUE_PROMPT =
  */
 interface WorkerRuntime extends WorkerMeta {
   q?: Query;
+  /**
+   * The overrides this worker was launched with, kept so a follow-up message
+   * resumes the same agent rather than an ordinary worker wearing its id — a
+   * reviewer's read-only policy, model and provider must outlive its first
+   * turn.
+   */
+  overrides?: WorkerOverrides;
   promise?: Promise<WorkerOutcome>;
   done?: Promise<void>;
   settle?: () => void;
@@ -890,7 +905,7 @@ interface WorkerRuntime extends WorkerMeta {
   reportShown?: boolean;
 }
 
-const RUNTIME_ONLY: ReadonlyArray<keyof WorkerRuntime> = ['q', 'promise', 'done', 'settle', 'reportShown'];
+const RUNTIME_ONLY: ReadonlyArray<keyof WorkerRuntime> = ['q', 'promise', 'done', 'settle', 'reportShown', 'overrides'];
 
 export class MissionRun {
   readonly meta: RunMeta;
@@ -1002,7 +1017,19 @@ export class MissionRun {
      * before another token is spent. Absent means "unknown", which leaves the
      * run's basis alone.
      */
-    private readonly roleBasis?: { director: CostBasis; worker: CostBasis },
+    private readonly roleBasis?: {
+      director: CostBasis; worker: CostBasis;
+      /**
+       * A crew preset that runs on a provider of its own, by preset id. Its
+       * review is not free just because the run's workers are: a paid
+       * reviewer beside a free gateway worker had its dollars dropped, because
+       * cost was attributed to the worker role and that role's figures are
+       * discarded. What a provider will bill is decided by the provider, so
+       * the preset's own basis is what counts its spend and what folds into
+       * the run's.
+       */
+      crew?: Record<string, CostBasis>;
+    },
     /**
      * What the host lends the run beyond the model: today, putting a dev
      * server the crew started behind Foreman's own address so the human can
@@ -1289,10 +1316,12 @@ export class MissionRun {
         'satisfy their milestone. Update the doc to match reality, then continue ' +
         'the mission to DONE WHEN. ' +
         this.gitLine() +
+        this.crewLine() +
         this.budgetNote() +
         memorySection((await readMemory(this.meta.folder)).text, 'director')
       : `MISSION: ${this.meta.mission}\n\n${this.budgetLine()} ` +
         `Working directory: ${this.meta.folder}. ${this.gitLine()}Begin by writing .foreman/MISSION.md, then execute the plan.` +
+        this.crewLine() +
         memorySection((await readMemory(this.meta.folder)).text, 'director');
 
     try {
@@ -1697,8 +1726,19 @@ export class MissionRun {
     this.meta.costParts = { ...p };
   }
 
-  private addCost(usd: number | undefined, role: AgentRole = 'director'): void {
+  private addCost(usd: number | undefined, role: AgentRole = 'director', native = false): void {
     if (typeof usd !== 'number') return;
+    // `native` is for an agent that runs somewhere else entirely — a crew
+    // preset on its own priced provider — where the role's treatment is the
+    // wrong answer and the SDK's dollars are a fact about this run.
+    if (native) {
+      this.costParts.native += usd;
+      this.recomputeCost();
+      this.saveMeta(this.meta);
+      this.emitEconomics();
+      this.enforceBudget();
+      return;
+    }
     // Two cases where the SDK's dollar figure is not a fact about this run:
     // a role Foreman prices itself, and a role behind a gateway at all. The
     // second is the one that leaked — Anthropic's table applied to 5.8M
@@ -1873,6 +1913,31 @@ export class MissionRun {
   }
 
   /** The mission's branch, when it has one: stay on it, and leave merging and pushing alone. */
+  /**
+   * Who is on this run's crew, by id, and which of them must pass before the
+   * mission can be recorded as done.
+   *
+   * Without this the charter asks for a review the director has no way to
+   * name: the ids live in `meta.crew`, which no prompt showed, so the only
+   * route to them was calling the tool with a wrong id and reading the error.
+   * A gate the director cannot see is a gate it fails by accident.
+   */
+  private crewLine(): string {
+    const crew = this.meta.crew ?? [];
+    if (!crew.length) return '';
+    const rows = crew.map((p) => `  - ${p.id} — ${p.name}${p.model ? ` (${p.model})` : ''}: `
+      + (p.requiredForDone
+        ? 'REQUIRED. This run cannot be recorded as done until it returns VERDICT: PASS on the work as it finally stands.'
+        : 'optional; ask for it when its subject is in play.')).join('\n');
+    const required = crew.filter((p) => p.requiredForDone);
+    return `\n\nYOUR CREW — call mcp__foreman__request_review with one of these ids:\n${rows}\n`
+      + (required.length
+        ? 'Request the required review AFTER your last change and before you tick the final box: a PASS is '
+          + 'pinned to the work as it was reviewed, so anything you change afterwards makes it stale and the '
+          + 'run reads as not done. If a review comes back FAIL, fix what it found and request it again.\n'
+        : '');
+  }
+
   private gitLine(): string {
     const g = this.meta.git;
     if (!g) return '';
@@ -2153,6 +2218,9 @@ export class MissionRun {
     w.isError = undefined;
     w.reportShown = false;
     w.toolCalls ??= 0;
+    // Kept for the resume path: see WorkerRuntime.overrides. A resume passes
+    // these back in, so `overrides ?? w.overrides` is what a follow-up uses.
+    if (overrides) w.overrides = overrides;
     w.recent ??= [];
     w.done = new Promise<void>((resolve) => { w.settle = resolve; });
     this.workers.set(workerId, w);
@@ -2267,7 +2335,7 @@ export class MissionRun {
           // A worker retried on the director's provider is priced with the
           // director's rates: the tokens went through that gateway.
           this.addUsage(m.usage, overrides?.priceRole ?? 'worker');
-          this.addCost(m.total_cost_usd as number | undefined, overrides?.priceRole ?? 'worker');
+          this.addCost(m.total_cost_usd as number | undefined, overrides?.priceRole ?? 'worker', overrides?.nativeCost === true);
           w.costUsd += (m.total_cost_usd as number | undefined) ?? 0;
         }
         this.emit('message', { agent: workerId, msg });
@@ -2463,7 +2531,22 @@ export class MissionRun {
     // The diff as Foreman sees it — the same deck the gate will hash — so a
     // PASS is about the change Foreman will check, not about whatever the
     // reviewer happened to look at.
+    // What the reviewer READS is the deck, which is a capped view. What the
+    // PASS is PINNED TO is the working tree itself — see changeFingerprint.
+    // A review that cannot be pinned is not worth having: it would clear the
+    // gate for a diff nobody can prove was the one read.
+    const fingerprint = await changeFingerprint(this.meta.folder);
+    if (fingerprint === null) {
+      return 'Foreman cannot read what this run has changed (the folder is not a git repository, or git ' +
+        'would not answer), so a review cannot be pinned to it and would not clear the gate. Verify the ' +
+        'work yourself, say so plainly in your report, and record in MISSION.md that no review was possible.';
+    }
     const deck = await deckFor(this.meta.folder, this.meta.id);
+    if (deck.baseline?.kind === 'none') {
+      return 'Foreman has no baseline for this run, so it cannot show a reviewer what changed — the deck ' +
+        'is empty whatever the crew did. A PASS on nothing would clear the gate on nothing, so no review ' +
+        'is requested. Say this in your report.';
+    }
     const { diff, truncated } = renderDeckDiff(deck);
     const doc = await this.missionDoc();
     const doneWhen = (doc === null ? null : doneWhenSection(doc))?.join('\n') ?? '';
@@ -2486,6 +2569,9 @@ export class MissionRun {
       // so the error this leaves behind overstates spend, which is the side a
       // cost cap should be wrong on.
       env: this.agentEnv.crew?.[preset.id],
+      // A preset with an env of its own is served by that provider, so its
+      // basis — not the worker role's — decides whether its dollars are real.
+      nativeCost: Boolean(this.agentEnv.crew?.[preset.id]) && this.roleBasis?.crew?.[preset.id] === 'priced',
       // 'default' is the preset saying this role needs to run things; anything
       // else gets the flat deny, which is what makes "read-only" provable.
       toolPolicy: preset.toolPolicy === 'default' ? undefined : REVIEWER_TOOL_POLICY,
@@ -2505,7 +2591,7 @@ export class MissionRun {
         ?? `${preset.name} never stated a verdict. Its report ended without the required ` +
            `\`VERDICT: PASS\`/\`VERDICT: FAIL\` line, so this counts as a FAIL.` +
            (outcome?.report ? `\n\nWhat it did report:\n${outcome.report}` : ''),
-      diffHash: diffHash(deck),
+      diffHash: fingerprint,
       workerId: id,
       costUsd: this.workers.get(id)?.costUsd,
       at: Date.now(),
@@ -2542,13 +2628,12 @@ export class MissionRun {
   private async reviewGate(): Promise<{ blockers: ReviewBlocker[]; text: string } | null> {
     const required = (this.meta.crew ?? []).filter((p) => p.requiredForDone);
     if (!required.length) return null;
-    let deck: Deck | null = null;
-    try {
-      deck = await deckFor(this.meta.folder, this.meta.id);
-    } catch {
-      deck = null;
-    }
-    if (!deck) {
+    // deckFor never throws: a missing baseline comes back as a deck with
+    // `baseline.kind === 'none'` and no files, which would hash like a clean
+    // tree and let any PASS stand. So the gate asks git directly, and treats
+    // "cannot tell" as "not reviewed" rather than as "unchanged".
+    const fingerprint = await changeFingerprint(this.meta.folder);
+    if (fingerprint === null) {
       return {
         blockers: required.map((p) => ({ presetId: p.id, name: p.name, reason: 'missing' as const })),
         text: `This run's diff could not be computed, so no review can be matched to it. ` +
@@ -2557,7 +2642,7 @@ export class MissionRun {
           'nothing here shows that happened. This run is not done. Resume to continue it.',
       };
     }
-    const blockers = reviewBlockers(this.meta.crew, this.meta.reviews, diffHash(deck));
+    const blockers = reviewBlockers(this.meta.crew, this.meta.reviews, fingerprint);
     return blockers.length ? { blockers, text: unreviewedText(blockers) } : null;
   }
 
@@ -2571,7 +2656,12 @@ export class MissionRun {
     if (w.status === 'running') {
       return `${worker_id} is still running — wait_for_worker it first, then send the follow-up.`;
     }
-    const run = this.launchWorker(worker_id, message, w.sessionId);
+    // A reviewer's read-only policy, model and provider live in the overrides
+    // its first launch was given. Resuming without them would hand the
+    // director a worker that may now write, on whatever model the run's
+    // workers use — the restriction would quietly expire at the first
+    // follow-up question.
+    const run = this.launchWorker(worker_id, message, w.sessionId, w.overrides);
     await run.promise;
     return `${this.reportLine(run)}${this.costFooter()}`;
   }
