@@ -9,7 +9,7 @@
  * the button that says so — once, for that branch, to open the pull request.
  */
 import path from 'node:path';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile, readlink, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import type { ReviewVerdict } from './crew.js';
@@ -207,6 +207,14 @@ async function walkFingerprint(folder: string): Promise<string | null> {
         if (!await walk(full, here)) return false;
         continue;
       }
+      // A symlink is neither a file nor a directory to readdir, and retargeting
+      // one changes what the project is without touching a byte of content.
+      if (e.isSymbolicLink()) {
+        const target = await readlink(full).catch(() => null);
+        if (target === null) return false;
+        parts.push(`${here}\0link\0${target}`);
+        continue;
+      }
       if (!e.isFile()) continue;
       if (parts.length >= FINGERPRINT_FILE_CAP) return false;
       const st = await stat(full).catch(() => null);
@@ -237,8 +245,11 @@ export async function changeFingerprint(folder: string): Promise<string | null> 
     // git's empty tree rather than failing, which would make every run with a
     // required reviewer impossible to finish until someone committed.
     const head = (await git(['rev-parse', 'HEAD'], folder).catch(() => '')).trim();
+    // Scoped to this folder, like the deck: a project linked as a subdirectory
+    // of a bigger repository must not have its review invalidated because a
+    // sibling project changed. `ls-files` below is already limited to the cwd.
     const tracked = await git(
-      ['diff', head || EMPTY_TREE, '--binary', '--no-color', '--no-ext-diff'], folder, 60_000,
+      ['diff', head || EMPTY_TREE, '--binary', '--no-color', '--no-ext-diff', '--', '.'], folder, 60_000,
     );
     // -z, because `ls-files` C-quotes any path with a quote, a tab or a
     // non-ASCII character, and a quoted path handed back to `hash-object`

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, symlink, unlink, writeFile } from 'node:fs/promises';
 import { changeFingerprint, closeMissionBranch, defaultBranch, worktreeGrant, worktreeParent, ensureMissionBranch, gitInfo, missionBranchName, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
 } from './gitwork.js';
 import type { ReviewVerdict } from './crew.js';
@@ -245,4 +245,35 @@ test('the fingerprint copes with awkward filenames and with a repository that ha
   const committed = await changeFingerprint(dir);
   await writeFile(awkward, 'three\n');
   assert.notEqual(await changeFingerprint(dir), committed);
+});
+
+test('the fingerprint is scoped to the project folder, and sees a retargeted symlink', async () => {
+  // A project that is a subdirectory of a bigger repository: a sibling's
+  // changes are not this mission's, and must not invalidate its review.
+  const repoRoot = await repo();
+  const project = path.join(repoRoot, 'packages', 'app');
+  await mkdir(project, { recursive: true });
+  await writeFile(path.join(project, 'index.ts'), 'export const a = 1;\n');
+  await mkdir(path.join(repoRoot, 'packages', 'other'), { recursive: true });
+  await writeFile(path.join(repoRoot, 'packages', 'other', 'index.ts'), 'export const b = 1;\n');
+  sh(repoRoot, 'add', '-A'); sh(repoRoot, 'commit', '-q', '-m', 'two packages');
+
+  const reviewed = await changeFingerprint(project);
+  assert.ok(reviewed);
+  await writeFile(path.join(repoRoot, 'packages', 'other', 'index.ts'), 'export const b = 2;\n');
+  assert.equal(await changeFingerprint(project), reviewed, 'a sibling package is not this mission');
+  await writeFile(path.join(project, 'index.ts'), 'export const a = 2;\n');
+  assert.notEqual(await changeFingerprint(project), reviewed, 'its own change still counts');
+
+  // Non-git folder: a symlink is neither file nor directory, and retargeting
+  // one changes the project without changing any content.
+  const plain = await mkdtemp(path.join(os.tmpdir(), 'links-'));
+  await writeFile(path.join(plain, 'one.txt'), 'one\n');
+  await writeFile(path.join(plain, 'two.txt'), 'two\n');
+  await symlink('one.txt', path.join(plain, 'current'));
+  const linked = await changeFingerprint(plain);
+  assert.ok(linked);
+  await unlink(path.join(plain, 'current'));
+  await symlink('two.txt', path.join(plain, 'current'));
+  assert.notEqual(await changeFingerprint(plain), linked, 'a retargeted link moves the fingerprint');
 });
