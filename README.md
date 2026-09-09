@@ -155,8 +155,11 @@ a human's judgement is required *and* being wrong is expensive.
   worktree is given the repository it was made from, once, at the start — the
   build config, the shared declarations and the parent's `node_modules` live
   there, so without it the crew asks the same question all day and you learn
-  to click Allow without reading. The transcript records the grant. Sibling
-  worktrees stay closed, and so does a parent another mission is working in.
+  to click Allow without reading. The transcript records the grant, and
+  withdraws it in the open if the reason stops holding on a resume. Sibling
+  worktrees stay closed — and when they live *inside* the repository the
+  parent is not opened at all, because a grant is a subtree and would carry
+  them along. A parent another mission is working in stays closed too.
   Turn it off per project with **Worktree parent** in Settings.
 - **Every ask has a deadline and a default.** An approval nobody answers is
   denied with a message that says where to go instead; a question nobody

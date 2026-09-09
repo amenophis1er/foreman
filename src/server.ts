@@ -1868,19 +1868,31 @@ async function gitInfoCached(folder: string): Promise<GitInfo> {
 async function grantWorktreeParent(
   meta: RunMeta, allowed: boolean, emit: ReturnType<typeof makeEmitter>,
 ): Promise<void> {
-  if (!allowed) return;
-  const parent = await worktreeParent(meta.folder).catch(() => null);
+  // Re-derived from scratch every start and every resume, never merely added
+  // to: the setting may have been turned off since, or another mission may
+  // have taken the parent, and a grant that outlives its reason is a hole.
+  // Only Foreman's own grants are withdrawn; a human's stay.
+  const previous = meta.autoRoots ?? [];
+  const shape = allowed ? await worktreeParent(meta.folder).catch(() => null) : null;
   const busy = activeRuns().filter((r) => r.meta.id !== meta.id).map((r) => r.meta.folder);
-  const decision = worktreeGrant(parent, busy);
-  if (decision.grant) {
-    if ((meta.allowedRoots ?? []).includes(decision.grant)) return;
-    meta.allowedRoots = [...(meta.allowedRoots ?? []), decision.grant];
+  const decision = worktreeGrant(shape, busy);
+  const now = decision.grant ? [decision.grant] : [];
+  const withdrawn = previous.filter((p) => !now.includes(p));
+
+  if (withdrawn.length || now.some((p) => !previous.includes(p))) {
+    meta.allowedRoots = [...(meta.allowedRoots ?? []).filter((p) => !previous.includes(p)), ...now];
+    meta.autoRoots = now;
     await store.writeMeta(meta).catch(() => {});
+  }
+  for (const p of withdrawn) {
+    emit('git_note', { text: `Closed ${p} again: ${decision.reason ?? 'Foreman no longer opens it for this mission'}. The crew will ask before it steps outside the mission folder.` });
+  }
+  if (decision.grant && !previous.includes(decision.grant)) {
     emit('root_allowed', {
       path: decision.grant, agent: 'foreman',
       reason: 'this mission runs in a worktree of that repository',
     });
-  } else if (decision.reason) {
+  } else if (!decision.grant && decision.reason && !withdrawn.length) {
     emit('git_note', { text: `Left closed: ${decision.reason}. The crew will ask before it steps outside the mission folder.` });
   }
 }

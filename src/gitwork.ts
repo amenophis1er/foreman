@@ -104,18 +104,24 @@ export function missionBranchName(mission: string, runId: string): string {
  * node_modules — so a crew working in one steps up to the parent constantly,
  * and every step is a boundary crossing.
  */
-export async function worktreeParent(folder: string): Promise<string | null> {
+export interface WorktreeShape {
+  /** The main worktree's root: the repository this folder was made from. */
+  parent: string;
+  /** Every other worktree of the same repository, this folder excluded. */
+  siblings: string[];
+}
+
+export async function worktreeParent(folder: string): Promise<WorktreeShape | null> {
   try {
     const out = await git(['worktree', 'list', '--porcelain'], folder);
     // The first entry is always the main worktree; the rest are the linked ones.
-    const roots = out.split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice('worktree '.length).trim());
+    const roots = out.split('\n').filter((l) => l.startsWith('worktree '))
+      .map((l) => path.resolve(l.slice('worktree '.length).trim()));
     const main = roots[0];
     if (!main || roots.length < 2) return null;
     const here = (await git(['rev-parse', '--show-toplevel'], folder)).trim();
-    if (!here || path.resolve(here) === path.resolve(main)) return null;
-    // Only the parent. Sibling worktrees are other people's workspaces —
-    // possibly another mission's — and are never opened automatically.
-    return path.resolve(main);
+    if (!here || path.resolve(here) === main) return null;
+    return { parent: main, siblings: roots.slice(1).filter((r) => r !== path.resolve(here)) };
   } catch {
     return null;
   }
@@ -128,14 +134,28 @@ export async function worktreeParent(folder: string): Promise<string | null> {
  * dirty-checkout guard exists to prevent.
  */
 export function worktreeGrant(
-  parent: string | null,
+  shape: WorktreeShape | null,
   busyFolders: Iterable<string>,
 ): { grant: string | null; reason?: string } {
-  if (!parent) return { grant: null };
+  if (!shape) return { grant: null };
+  const { parent, siblings } = shape;
   for (const f of busyFolders) {
     if (path.resolve(f) === parent) {
       return { grant: null, reason: `its parent repository ${parent} is held by another running mission` };
     }
+  }
+  // A grant is a subtree, so a worktree that lives *inside* the repository
+  // (the common `/repo/.worktrees/x` layout) would be opened along with the
+  // parent — and one of those may be another mission's workspace. The promise
+  // that siblings stay closed cannot be kept by granting the parent here, so
+  // the grant is declined and the human keeps deciding, one command at a time.
+  const nested = siblings.filter((s) => s === parent || s.startsWith(parent + path.sep));
+  if (nested.length) {
+    return {
+      grant: null,
+      reason: `opening ${parent} would also open ${nested.length} other worktree${nested.length === 1 ? '' : 's'} inside it `
+        + `(${nested.slice(0, 2).map((s) => path.basename(s)).join(', ')}${nested.length > 2 ? ', …' : ''})`,
+    };
   }
   return { grant: parent };
 }
