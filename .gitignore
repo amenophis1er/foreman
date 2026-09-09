@@ -7,3 +7,6 @@ ui/dist/
 # Internal working material: kept locally, never pushed
 Design_System/
 docs/
+
+# Offline bundles built by scripts/pack-offline.sh — big, and rebuildable.
+dist-offline/
