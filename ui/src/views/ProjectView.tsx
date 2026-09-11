@@ -1473,7 +1473,16 @@ export function ProjectView({
                 title={`${selectedRun.git.pr}${prState?.state ? ` · ${prState.state}` : ''}`}>
                 Pull request{prState?.runId === selectedRunId && prState.state ? ` · ${prState.state}` : ''} ↗
               </Button>
-            : <Button icon="steer" onClick={() => setPrOpen(true)} title={`Push ${selectedRun.git.branch} and open a pull request against ${selectedRun.git.base}`}>Open pull request…</Button>
+            /* Once the worktree is removed the checkout this mission worked in
+               is gone, so there is nothing left to push from. The button says
+               so rather than sending a request the server could only answer
+               with a misleading error. */
+            : selectedRun.worktree?.removedAt
+              ? <Button icon="steer" disabled
+                  title="This mission’s worktree has been removed — its checkout is gone, so there is nothing left to push.">
+                  Open pull request…
+                </Button>
+              : <Button icon="steer" onClick={() => setPrOpen(true)} title={`Push ${selectedRun.git.branch} and open a pull request against ${selectedRun.git.base}`}>Open pull request…</Button>
         )}
         {!viewingLive && selectedRunId && (
           <Button variant="primary" onClick={() => setSelectedRunId(null)}>New mission</Button>

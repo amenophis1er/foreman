@@ -155,7 +155,10 @@ export default function App() {
   const [settings, setSettings] = useState<SettingsFile>({ global: {}, projects: {} });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>('models');
-  const openSettings = (section?: SettingsSectionId) => { if (section) setSettingsSection(section); setSettingsOpen(true); };
+  // Why the server refused the last save, kept until the next attempt or until
+  // the modal is dismissed — it is the only report of a save that did not happen.
+  const [settingsError, setSettingsError] = useState('');
+  const openSettings = (section?: SettingsSectionId) => { if (section) setSettingsSection(section); setSettingsError(''); setSettingsOpen(true); };
   const providerChoices = useProviderChoices(settingsOpen);
 
   useEffect(() => {
@@ -187,9 +190,19 @@ export default function App() {
   };
 
 
+  /**
+   * Settings save. Optimistic, but only until the server answers: PUT
+   * /settings refuses an isolation the folder cannot honour with a 400 and a
+   * sentence, and it refuses the WHOLE save — so a swallowed failure would
+   * close the modal on values nobody stored and quietly drop every other edit
+   * in the same Save. On a refusal the previous settings go back, the modal
+   * stays open with the edits still in it, and the server's sentence is shown
+   * in its footer.
+   */
   const saveSettings = async (v: {
     global: Settings; project: Settings; provider?: ProviderRef | null;
   }) => {
+    const prev = settings;
     const next: SettingsFile = {
       global: v.global,
       projects: { ...settings.projects },
@@ -198,18 +211,30 @@ export default function App() {
       if (Object.keys(v.project).length) next.projects[project.id] = v.project;
       else delete next.projects[project.id];
     }
+    setSettingsError('');
     setSettings(next);
-    setSettingsOpen(false);
     if (v.global.theme) applyTheme(v.global.theme);
     if (v.global.textSize) applyTextSize(v.global.textSize);
-    await fetch('/settings', {
+    const res = await fetch('/settings', {
       method: 'PUT', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         global: v.global,
         projectId: project?.id,
         project: project ? next.projects[project.id] ?? {} : undefined,
       }),
-    }).catch(() => {});
+    }).catch(() => null);
+    if (!res || !res.ok) {
+      const said = res
+        ? ((await res.json().catch(() => ({}))) as { error?: string }).error
+        : undefined;
+      setSettings(prev);
+      if (prev.global.theme) applyTheme(prev.global.theme);
+      if (prev.global.textSize) applyTextSize(prev.global.textSize);
+      setSettingsError(said || (res ? `the server refused the change (${res.status})` : 'could not reach the server'));
+      setSettingsOpen(true);
+      return;
+    }
+    setSettingsOpen(false);
 
     // A provider is a property of the project, not of the settings overlay, so
     // it goes to its own endpoint. `undefined` means the pin was not touched;
@@ -232,7 +257,7 @@ export default function App() {
   const projectHits = q ? projects.filter((p) => [p.name, p.folder].some((f) => f.toLowerCase().includes(q))).slice(0, 8) : [];
   const actions = [
     { id: 'act-fleet', title: 'Fleet', detail: 'The board: what needs you, what is running, what finished', icon: 'back', keys: 'fleet home board', onPick: () => go(null) },
-    { id: 'act-settings', title: 'Settings', detail: project ? `Global, and ${project.name}'s overrides` : 'Models, budget, approvals, notifications', icon: 'settings', keys: 'settings preferences models budget telegram', onPick: () => setSettingsOpen(true) },
+    { id: 'act-settings', title: 'Settings', detail: project ? `Global, and ${project.name}'s overrides` : 'Models, budget, approvals, notifications', icon: 'settings', keys: 'settings preferences models budget telegram', onPick: () => openSettings() },
     ...(project ? [{ id: 'act-plan', title: `Plan in ${project.name}`, detail: 'Back to the planning conversation', icon: 'steer', keys: 'plan planner mission new', onPick: () => go(project.id) }] : []),
   ].filter((a) => q && (a.title.toLowerCase().includes(q) || a.keys.includes(q)));
   const searchGroups = [
@@ -290,6 +315,8 @@ export default function App() {
           global={settings.global}
           project={project ? settings.projects[project.id] : undefined}
           projectName={project?.name} projectIsRepo={project?.git?.repo}
+          projectGitRoot={project?.git?.root} projectFolder={project?.folder}
+          saveError={settingsError}
           models={models.models} modelsLoading={models.loading} modelsNote={models.note}
           provider={project?.provider ?? null}
           providerInstances={providerChoices.instances}
@@ -301,7 +328,7 @@ export default function App() {
           onClearProviderKey={(id) => void writeKey(id, null)}
           notify={notify}
           onSave={(v) => void saveSettings(v)}
-          onClose={() => setSettingsOpen(false)} />
+          onClose={() => { setSettingsError(''); setSettingsOpen(false); }} />
       )}
     </div>
   );

@@ -266,8 +266,13 @@ export type ProjectSummary = {
   provider?: ProviderRef;
   /** What this project will actually bill; can differ from the server's mode. */
   billingMode?: AuthMode;
-  /** What git says about the folder: branch, dirty, remote. `repo: false` for a plain folder. */
-  git?: { repo: boolean; branch?: string; dirty?: boolean; head?: string | null; remote?: string };
+  /**
+   * What git says about the folder: branch, dirty, remote. `repo: false` for a
+   * plain folder. `root` is the work tree's top level — a folder can be inside
+   * a repository without being its root, and only the root can run missions in
+   * worktrees.
+   */
+  git?: { repo: boolean; branch?: string; dirty?: boolean; head?: string | null; remote?: string; root?: string };
   defaultBudgetUsd: number;
   activeRun: RunSummary | null;
   /**

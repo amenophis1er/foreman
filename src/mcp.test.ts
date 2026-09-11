@@ -44,6 +44,34 @@ test('fleet_status reads /projects and says what needs a human', async () => {
   assert.match(r.text, /lib \(p2\)[^\n]*\n  idle · last: done · \$2\.00/);
 });
 
+test('fleet_status says every live mission of a project, and keeps activeRun beside the list', async () => {
+  const older = run({ id: 'r1', title: 'Older' });
+  const newer = run({ id: 'r2', title: 'Newer', costUsd: 0.5 });
+  const { fetchImpl } = fakeServer({
+    'GET /projects': { projects: [
+      { id: 'p1', name: 'app', folder: '/x/app', activeRuns: [newer, older], activeRun: newer, lastRun: null, pendingPermissions: 0, pendingQuestions: 0 },
+    ] },
+  });
+  const r = await tool(foremanTools({ base: 'http://f', fetchImpl }), 'fleet_status').run({});
+  assert.match(r.text, /running: r2 · running[^\n]*Newer\n  running: r1 · running[^\n]*Older/);
+  const p = (r.data as { projects: Array<{ activeRun: { id: string } | null; activeRuns: Array<{ id: string }> }> }).projects[0];
+  assert.deepEqual(p.activeRuns.map((x) => x.id), ['r2', 'r1']);
+  assert.equal(p.activeRun?.id, 'r2', 'activeRun stays as activeRuns[0] for older clients');
+});
+
+test('start_mission reads back the run it started, not another live mission in the same project', async () => {
+  let started = false;
+  const { fetchImpl } = fakeServer({
+    'GET /projects': { projects: [{ id: 'p1', name: 'app', folder: '/x/app', activeRun: run(), activeRuns: [run()] }] },
+    'POST /run': () => { started = true; return { ok: true }; },
+    // r1 was already running when the mission was dispatched; r9 is the new one.
+    'GET /runs': () => ({ runs: started ? [run({ id: 'r9', budgetUsd: 7 }), run()] : [run()] }),
+  });
+  const r = await tool(foremanTools({ base: 'http://f', fetchImpl }), 'start_mission').run({ projectId: 'p1', brief: 'Add the second mission', budgetUsd: 7 });
+  assert.match(r.text, /Started r9 on app, cap \$7\.00/);
+  assert.equal((r.data as { runId: string }).runId, 'r9');
+});
+
 test('run_status: crew, DONE WHEN from the mission doc, needs, and no wait on a finished run', async () => {
   const { fetchImpl, calls } = fakeServer({
     'GET /runs': { runs: [run({ status: 'interrupted', stopReason: 'budget' })] },

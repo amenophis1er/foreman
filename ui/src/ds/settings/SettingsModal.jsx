@@ -67,7 +67,15 @@ export const DEFAULT_SETTINGS = {
   // A shared checkout is one folder, so one mission at a time; worktrees are
   // what make a second one safe, and two is as many as most machines and most
   // humans can actually follow.
-  isolation: 'shared', maxConcurrentMissions: 1,
+  //
+  // These two are sent back verbatim on every Save, so each must be exactly
+  // what the server would have used had the key been absent: 'shared' is
+  // isolationChoice's fallback, and 2 is DEFAULT_WORKTREE_CONCURRENCY in
+  // src/isolation.ts. A 1 here would mean that merely switching a project to
+  // worktrees — changing nothing else — persisted a limit of one mission, the
+  // opposite of what the switch is for. A shared project is pinned to 1 by the
+  // server whatever this says, so nothing is lost by defaulting it to 2.
+  isolation: 'shared', maxConcurrentMissions: 2,
   projectsRoot: '~/Projects', missionDir: '.foreman', showHidden: false,
 };
 
@@ -135,7 +143,7 @@ function ServerProviders({ instances = [], ollama, codex }) {
   );
 }
 
-export function SettingsModal({ global, project, projectName, projectIsRepo, models, modelsLoading, modelsNote, provider, providerInstances, providerOllama, providerCodex, providerHasKey, providerKeyBusy, providerKeyError, onStoreProviderKey, onClearProviderKey, notify, scope: scopeProp, onScope, section: sectionProp, onSection, onSave, onClose, onUnlink, style }) {
+export function SettingsModal({ global, project, projectName, projectIsRepo, projectGitRoot, projectFolder, saveError, models, modelsLoading, modelsNote, provider, providerInstances, providerOllama, providerCodex, providerHasKey, providerKeyBusy, providerKeyError, onStoreProviderKey, onClearProviderKey, notify, scope: scopeProp, onScope, section: sectionProp, onSection, onSave, onClose, onUnlink, style }) {
   const [localScope, setLocalScope] = useState(scopeProp ?? 'global');
   const [localSection, setLocalSection] = useState(sectionProp ?? 'models');
   const scope = onScope ? scopeProp : localScope;
@@ -159,8 +167,20 @@ export function SettingsModal({ global, project, projectName, projectIsRepo, mod
   // Unknown means the caller has not said (the fleet's global scope, where
   // there is no folder to judge): allow the choice, and let the server refuse.
   const isRepo = projectIsRepo !== false;
+  // A folder can be inside a repository without being its top level, and
+  // `git worktree add` would check out the whole repository rather than that
+  // folder — so the server refuses it exactly as it refuses a plain folder.
+  // Same comparison it makes (isolationAllowed in src/isolation.ts, called with
+  // the resolved work-tree root against the project's folder); without both
+  // paths we do not know, and the choice stays open.
+  const isRepoRoot = !(isRepo && projectGitRoot && projectFolder
+    && trimSlash(projectGitRoot) !== trimSlash(projectFolder));
+  const canWorktree = isRepo && isRepoRoot;
+  const worktreeLock = !isRepo
+    ? 'only a git repository can run missions in worktrees'
+    : 'only the root of a git repository can run missions in worktrees';
   const isolation = get('isolation') === 'worktree' ? 'worktree' : 'shared';
-  const worktreeIsolation = isRepo && isolation === 'worktree';
+  const worktreeIsolation = canWorktree && isolation === 'worktree';
   const row = (k, label, hint, control) => <Row label={label} hint={hint} overridden={overridden(k)} inherits={isProject && !overridden(k)} onReset={() => reset(k)}>{control}</Row>;
 
   const body = {
@@ -245,11 +265,13 @@ export function SettingsModal({ global, project, projectName, projectIsRepo, mod
           repository can be given worktrees, and the control says so rather
           than letting someone pick a mode the server will refuse. */}
       {row('isolation', 'Isolation',
-        isRepo
+        canWorktree
           ? 'A worktree project runs each mission in a checkout of its own under Foreman’s home, so the project folder is never moved and more than one mission can run at once. A fresh worktree has no dependencies installed — the crew installs what it needs.'
-          : 'Only a git repository can run missions in worktrees. This folder is not one, so its missions share the checkout, one at a time.',
-        <Locked locked={!isRepo} reason="only a git repository can run missions in worktrees">
-          <Tabs size="sm" tabs={ISOLATION} value={isRepo ? isolation : 'shared'} onChange={(v) => set('isolation', v)} />
+          : !isRepo
+            ? 'Only a git repository can run missions in worktrees. This folder is not one, so its missions share the checkout, one at a time.'
+            : 'Only the root of a git repository can run missions in worktrees. This folder is inside one, and a worktree would give the mission the whole repository instead of this folder — so its missions share the checkout, one at a time.',
+        <Locked locked={!canWorktree} reason={worktreeLock}>
+          <Tabs size="sm" tabs={ISOLATION} value={canWorktree ? isolation : 'shared'} onChange={(v) => set('isolation', v)} />
         </Locked>)}
       {row('maxConcurrentMissions', 'Missions at once',
         worktreeIsolation
@@ -257,7 +279,7 @@ export function SettingsModal({ global, project, projectName, projectIsRepo, mod
           : 'A shared checkout runs one mission at a time — two directors editing one folder is not something Foreman will arrange. Give each mission a worktree above to raise it.',
         <Locked locked={!worktreeIsolation} reason="a shared checkout runs one mission at a time">
           <TextInput type="number" min={1} max={MAX_CONCURRENT} step={1} width={80}
-            value={worktreeIsolation ? (get('maxConcurrentMissions') ?? 1) : 1}
+            value={worktreeIsolation ? (get('maxConcurrentMissions') ?? DEFAULT_SETTINGS.maxConcurrentMissions) : 1}
             onChange={(v) => set('maxConcurrentMissions', Math.min(MAX_CONCURRENT, Math.max(1, Number(v) || 1)))} />
         </Locked>)}
       {row('gitBranchPerMission', 'Each mission on its own branch', 'In a git repository: Foreman creates foreman/<mission> from what is checked out, commits the work on it at the end, and never merges or pushes. Off: missions edit the current branch.', <Switch checked={get('gitBranchPerMission') !== false} onChange={(v) => set('gitBranchPerMission', v)} />)}
@@ -293,7 +315,13 @@ export function SettingsModal({ global, project, projectName, projectIsRepo, mod
         </div>
       </div>
       <ModalFooter>
-        <span style={{ fontSize: 'var(--fs-xs)', color: dirty ? 'var(--status-warning)' : 'var(--ink-2)' }}>{dirty ? 'Unsaved changes' : 'Nothing to save'}</span>
+        {/* The server's own sentence when it refused the save, in the place
+            that otherwise says whether there is anything to save — the edits
+            are still on screen and still unsaved, which is the truth. */}
+        <span style={{
+          fontSize: 'var(--fs-xs)', minWidth: 0,
+          color: saveError ? 'var(--status-critical)' : dirty ? 'var(--status-warning)' : 'var(--ink-2)',
+        }}>{saveError ? `Not saved — ${saveError}` : dirty ? 'Unsaved changes' : 'Nothing to save'}</span>
         <span style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--sp-2)' }}>
           <Button onClick={onClose}>Cancel</Button>
           <Button variant="primary" disabled={!dirty} onClick={() => onSave?.({ global: g, project: p, provider: providerDirty ? prov : undefined })}>Save</Button>
@@ -476,6 +504,9 @@ function Locked({ locked, reason, children }) {
     </span>
   );
 }
+
+/** Two paths compare equal when only a trailing separator differs. */
+function trimSlash(p) { return String(p).replace(/[\\/]+$/, ''); }
 
 function Tag({ children, brand }) {
   return <span style={{ fontSize: 'var(--fs-xs)', letterSpacing: '0.06em', textTransform: 'uppercase', padding: '1px 6px', borderRadius: 'var(--r-pill)', background: brand ? 'var(--brand-wash-strong)' : 'var(--bg-inset)', color: brand ? 'var(--brand)' : 'var(--ink-2)', border: `1px solid ${brand ? 'transparent' : 'var(--line)'}` }}>{children}</span>;

@@ -9,16 +9,25 @@ import {
   isolationAllowed,
   concurrencyLimit,
   reservationDecision,
-  repoHolder,
+  repoClaim,
   worktreeRemoval,
   resumeWorktree,
+  type Isolation,
 } from './isolation.js';
 
 const HOME = path.resolve('/srv/foreman-home');
 
-/** A live run as repoHolder sees it. */
-function liveRun(over: Partial<{ id: string; repo: string | null; startedAt: number }> = {}) {
-  return { id: 'r1', repo: '/repos/alpha', startedAt: 1000, ...over };
+/**
+ * A reservation as the common case asks it: a worktree run in a project whose
+ * other runs are all in worktrees too. Each test names the part it is about.
+ */
+function reserve(over: Partial<{
+  live: number; isolation: Isolation; configured: unknown; projectName: string;
+  workspace: Isolation; sharedLive: number;
+}> = {}) {
+  return reservationDecision({
+    live: 0, isolation: 'worktree', workspace: 'worktree', sharedLive: 0, ...over,
+  });
 }
 
 test('isolationChoice: only the literal "worktree" opts in; everything else is shared', () => {
@@ -104,21 +113,21 @@ test('concurrencyLimit: a worktree project takes a whole number, clamped, else t
 });
 
 test('reservationDecision: a shared project admits one mission and refuses the second in the old words', () => {
-  assert.deepEqual(reservationDecision({ live: 0, isolation: 'shared' }), { ok: true, limit: 1 });
-  const refused = reservationDecision({ live: 1, isolation: 'shared' });
+  assert.deepEqual(reserve({ isolation: 'shared', workspace: 'shared' }), { ok: true, limit: 1 });
+  const refused = reserve({ live: 1, isolation: 'shared', workspace: 'shared', sharedLive: 1 });
   assert.deepEqual(refused, {
     ok: false, limit: 1, reason: 'this project already has an active mission',
   }, 'the sentence everyone already recognises is unchanged');
 });
 
 test('reservationDecision: a named shared project is named in the refusal', () => {
-  const refused = reservationDecision({ live: 1, isolation: 'shared', projectName: 'Foreman' });
+  const refused = reserve({ live: 1, isolation: 'shared', workspace: 'shared', sharedLive: 1, projectName: 'Foreman' });
   assert.ok(!refused.ok && refused.reason === 'Foreman already has an active mission', refused.ok ? 'expected a refusal' : refused.reason);
 });
 
 test('reservationDecision: a third mission in a worktree project is refused with the limit named', () => {
-  assert.deepEqual(reservationDecision({ live: 1, isolation: 'worktree', configured: 2 }), { ok: true, limit: 2 });
-  const refused = reservationDecision({ live: 2, isolation: 'worktree', configured: 2 });
+  assert.deepEqual(reserve({ live: 1, configured: 2 }), { ok: true, limit: 2 });
+  const refused = reserve({ live: 2, configured: 2 });
   assert.deepEqual(refused, {
     ok: false,
     limit: 2,
@@ -130,33 +139,66 @@ test('reservationDecision: a third mission in a worktree project is refused with
 });
 
 test('reservationDecision: an unconfigured worktree project gets the default, and a nonsense live count is 0', () => {
-  assert.deepEqual(reservationDecision({ live: 1, isolation: 'worktree' }), { ok: true, limit: DEFAULT_WORKTREE_CONCURRENCY });
+  assert.deepEqual(reserve({ live: 1 }), { ok: true, limit: DEFAULT_WORKTREE_CONCURRENCY });
   assert.deepEqual(
-    reservationDecision({ live: NaN, isolation: 'shared' }), { ok: true, limit: 1 },
+    reserve({ live: NaN, isolation: 'shared', workspace: 'shared' }), { ok: true, limit: 1 },
     'an uncountable live count is treated as none rather than blocking every dispatch',
+  );
+  assert.deepEqual(
+    reserve({ live: 1, sharedLive: NaN }), { ok: true, limit: DEFAULT_WORKTREE_CONCURRENCY },
+    'and neither does an uncountable count of runs in the project folder',
   );
 });
 
-test('repoHolder: the earliest live run in the repository holds it and everyone else gets null', () => {
-  const live = [
-    liveRun({ id: 'later', startedAt: 3000 }),
-    liveRun({ id: 'first', startedAt: 1000 }),
-    liveRun({ id: 'middle', startedAt: 2000 }),
-    liveRun({ id: 'elsewhere', repo: '/repos/beta', startedAt: 5 }),
-    liveRun({ id: 'shared-run', repo: null, startedAt: 1 }),
-  ];
-  assert.equal(repoHolder('/repos/alpha', live), 'first', 'the run that started first is the one that reaches the parent repo');
-  assert.equal(repoHolder('/repos/beta', live), 'elsewhere', 'each repository is held separately');
-  assert.equal(repoHolder('/repos/gamma', live), null, 'nobody is in a repository nobody is working in');
-  assert.equal(repoHolder('/repos/alpha', []), null, 'no live runs, no holder');
+test('reservationDecision: two runs in the project\'s own checkout are refused even under a worktree limit', () => {
+  // The migration case: a run recorded before the project was flipped to
+  // 'worktree' works in the project folder, and resuming a second one there
+  // would put two agents in one checkout — the collision this feature ends.
+  const refused = reserve({ live: 1, configured: 3, workspace: 'shared', sharedLive: 1 });
+  assert.equal(refused.ok, false, 'the limit had room, and the project folder did not');
+  assert.equal(refused.limit, 3, 'the limit is still reported as what it is');
+  const reason = !refused.ok ? refused.reason : '';
+  assert.ok(/project folder/.test(reason) && /one mission at a time/.test(reason), `its own sentence, not the limit's: ${reason}`);
+  assert.ok(!/\.$/.test(reason), 'no trailing period — the server drops it into a 409 body');
+  assert.equal(reason[0], reason[0].toLowerCase(), 'lower case start, since it is quoted mid-sentence');
+  const named = reserve({ live: 1, configured: 3, workspace: 'shared', sharedLive: 1, projectName: 'Foreman' });
+  assert.ok(!named.ok && named.reason.startsWith('Foreman '), 'and it names the project like the others');
 });
 
-test('repoHolder: paths are compared resolved, and a tie is broken by id so it is deterministic', () => {
-  const live = [liveRun({ id: 'r1', repo: '/repos/alpha/sub/..' })];
-  assert.equal(repoHolder('/repos/alpha', live), 'r1', 'the same directory spelled differently is the same repository');
-  const tied = [liveRun({ id: 'b', startedAt: 1000 }), liveRun({ id: 'a', startedAt: 1000 })];
-  assert.equal(repoHolder('/repos/alpha', tied), 'a');
-  assert.equal(repoHolder('/repos/alpha', [...tied].reverse()), 'a', 'array order does not decide the holder');
+test('reservationDecision: the project folder holds up only the run that would work in it', () => {
+  assert.deepEqual(
+    reserve({ live: 1, configured: 3, workspace: 'worktree', sharedLive: 1 }), { ok: true, limit: 3 },
+    'a new run with a worktree of its own is not in the shared checkout at all',
+  );
+  assert.deepEqual(
+    reserve({ live: 0, configured: 3, workspace: 'shared', sharedLive: 0 }), { ok: true, limit: 3 },
+    'the FIRST run in the project folder is fine; it is the second that is not',
+  );
+  // A shared project's second mission still meets the limit first, so the
+  // sentence everyone recognises is the one it gets.
+  const both = reserve({ live: 1, isolation: 'shared', workspace: 'shared', sharedLive: 1 });
+  assert.ok(!both.ok && both.reason === 'this project already has an active mission', 'the limit answers first');
+});
+
+test('repoClaim: a repository nobody holds is taken, and the holder keeps it', () => {
+  assert.deepEqual(repoClaim({ repo: '/repos/alpha', holder: null, runId: 'r1' }), { hold: true });
+  assert.deepEqual(repoClaim({ repo: '/repos/alpha', holder: undefined, runId: 'r1' }), { hold: true });
+  assert.deepEqual(
+    repoClaim({ repo: '/repos/alpha', holder: 'r1', runId: 'r1' }), { hold: true },
+    'a resume re-asks, and a run must not be refused its own repository',
+  );
+});
+
+test('repoClaim: a repository another run holds is refused, whoever asks and whenever', () => {
+  const refused = repoClaim({ repo: '/repos/alpha', holder: 'r1', runId: 'r2' });
+  assert.equal(refused.hold, false, 'first come; the incumbent is not displaced');
+  assert.ok(
+    !refused.hold && refused.reason === 'the repository /repos/alpha is held by another running mission',
+    `the reason names the repository: ${!refused.hold && refused.reason}`,
+  );
+  // Age does not enter into it: an older run asking later is still refused,
+  // which is precisely the resume that used to take the grant off a live run.
+  assert.equal(repoClaim({ repo: '/repos/alpha', holder: 'newer', runId: 'older' }).hold, false);
 });
 
 test('worktreeRemoval: a finished run\'s worktree under FOREMAN_HOME is removable', () => {

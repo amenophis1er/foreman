@@ -142,42 +142,74 @@ export function concurrencyLimit(isolation: Isolation, configured?: unknown): nu
  * it, so it is one lower-case sentence with no trailing period — and for a
  * shared project it still reads the way the old hard-coded message did, because
  * that sentence is what everyone who uses Foreman already recognises.
+ *
+ * The project's limit is not the whole answer, because a project's runs are not
+ * all of one kind. `workspace` is where the NEW run will actually work, and
+ * `sharedLive` how many live runs are already working in the project's own
+ * checkout — a run started before the project was flipped to 'worktree' has no
+ * worktree of its own and never will. The project's own checkout is one mission
+ * at a time whatever the limit says, so a second run that would work THERE is
+ * refused even when the limit has room. That is the normal migration path:
+ * without this, two pre-flip runs can be resumed side by side in a project with
+ * a limit of two and each check its branch out of the same tree.
+ *
+ * The limit is asked first, so the sentence a shared project has always shown
+ * for its second mission is still the one it shows.
  */
 export function reservationDecision(input: {
   live: number; isolation: Isolation; configured?: unknown; projectName?: string;
+  /** Where the mission being reserved will work: its own worktree, or the project folder. */
+  workspace: Isolation;
+  /** How many live runs are working in the project folder itself. */
+  sharedLive: number;
 }): { ok: true; limit: number } | { ok: false; limit: number; reason: string } {
   const limit = concurrencyLimit(input.isolation, input.configured);
   const live = Number.isFinite(input.live) ? Math.max(0, Math.floor(input.live)) : 0;
-  if (live < limit) return { ok: true, limit };
   const who = input.projectName && input.projectName.trim() !== '' ? input.projectName.trim() : 'this project';
-  if (limit === 1) return { ok: false, limit, reason: `${who} already has an active mission` };
-  return {
-    ok: false,
-    limit,
-    reason: `${who} already has ${live} missions running; the limit for this project is ${limit}`,
-  };
+  if (live >= limit) {
+    if (limit === 1) return { ok: false, limit, reason: `${who} already has an active mission` };
+    return {
+      ok: false,
+      limit,
+      reason: `${who} already has ${live} missions running; the limit for this project is ${limit}`,
+    };
+  }
+  const shared = Number.isFinite(input.sharedLive) ? Math.max(0, Math.floor(input.sharedLive)) : 0;
+  if (input.workspace !== 'worktree' && shared >= 1) {
+    return {
+      ok: false,
+      limit,
+      reason: `${who} has a mission running in the project folder itself, and this one would work there too; `
+        + 'the project\'s own checkout takes one mission at a time whatever the limit says',
+    };
+  }
+  return { ok: true, limit };
 }
 
 /**
- * Which live run holds a repository through the parent-repository grant.
+ * May this run hold a repository's parent-repository grant?
  *
  * A worktree run needs to reach the project's own `.git` — that is how a
  * worktree works — which means one run per repository is allowed to write
  * there: fetch, prune, branch bookkeeping. Two runs doing that at once fight
- * over the same index and lock files. The earliest-started run holds it, ties
- * broken by id so two runs recorded in the same millisecond always agree on
- * which of them won, on every server and after every restart.
+ * over the same index and lock files.
+ *
+ * First come, and held for the life of the run: `holder` is whoever holds the
+ * repository right now, and nobody takes it off them until they end. Ranking
+ * live runs by age instead — which is what this replaces — hands the
+ * repository to whichever run happens to be oldest at the moment the question
+ * is asked, so resuming an older interrupted run while a newer one is working
+ * moves the answer under the incumbent, whose grant is already written into its
+ * metadata: two holders, which is the whole thing this prevents.
+ *
+ * A run that already holds it holds it still — every resume re-asks, and a
+ * re-grant must not refuse the run its own repository.
  */
-export function repoHolder(repo: string, live: readonly { id: string; repo: string | null; startedAt: number }[]): string | null {
-  const target = path.resolve(repo);
-  let held: { id: string; startedAt: number } | null = null;
-  for (const run of live) {
-    if (!run.repo || path.resolve(run.repo) !== target) continue;
-    if (!held || run.startedAt < held.startedAt || (run.startedAt === held.startedAt && run.id < held.id)) {
-      held = { id: run.id, startedAt: run.startedAt };
-    }
-  }
-  return held ? held.id : null;
+export function repoClaim(input: {
+  repo: string; holder: string | null | undefined; runId: string;
+}): { hold: true } | { hold: false; reason: string } {
+  if (!input.holder || input.holder === input.runId) return { hold: true };
+  return { hold: false, reason: `the repository ${input.repo} is held by another running mission` };
 }
 
 /**

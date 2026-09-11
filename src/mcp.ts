@@ -241,21 +241,43 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
 
   const fleet: ToolDef = {
     name: 'fleet_status',
-    description: 'Every linked project with what it is doing: the active mission (status, spend against cap, crew), what needs a human, and the last finished run. Start here.',
+    description: 'Every linked project with what it is doing: each live mission (status, spend against cap, crew) — a project may have more than one — what needs a human, and the last finished run. Start here.',
     schema: {},
     run: async () => {
       const d = await get<{ projects: ProjectCard[]; authMode?: string; version?: string }>('/projects');
       const lines = d.projects.map((p) => {
-        const a = p.activeRun;
+        // Every live mission, not just the newest: a project with worktree
+        // isolation runs several at once, and an agent that read `activeRun`
+        // alone could not see the mission it had started itself.
+        const active = p.activeRuns ?? (p.activeRun ? [p.activeRun] : []);
         const needs = (p.pendingPermissions ?? 0) + (p.pendingQuestions ?? 0);
         const head = `${p.name} (${p.id}) — ${p.folder}${p.git?.branch ? ` · ${p.git.branch}` : ''}`;
-        if (a) return `${head}\n  running: ${runLine(a)}${needs ? `\n  NEEDS YOU: ${needs} pending — the human decides these on the dashboard or phone` : ''}`;
+        // One `running:` line per mission — so a project with one reads exactly
+        // as it always did, and two simply say so twice.
+        if (active.length) return `${head}\n${active.map((r) => `  running: ${runLine(r)}`).join('\n')}${needs ? `\n  NEEDS YOU: ${needs} pending — the human decides these on the dashboard or phone` : ''}`;
         if (p.lastRun) return `${head}\n  idle · last: ${p.lastRun.status} · ${usd(p.lastRun.costUsd)} · ${p.lastRun.title || p.lastRun.mission.slice(0, 80)}`;
         return `${head}\n  idle · no runs yet`;
       });
       return {
         text: lines.length ? lines.join('\n') : 'No projects linked. link_project adds one.',
-        data: { version: d.version, authMode: d.authMode, projects: d.projects.map((p) => ({ id: p.id, name: p.name, folder: p.folder, branch: p.git?.branch, activeRun: p.activeRun && { id: p.activeRun.id, status: p.activeRun.status, costUsd: p.activeRun.costUsd, budgetUsd: p.activeRun.budgetUsd }, needs: p.needs ?? [], lastRun: p.lastRun })) },
+        data: {
+          version: d.version,
+          authMode: d.authMode,
+          projects: d.projects.map((p) => {
+            const active = (p.activeRuns ?? (p.activeRun ? [p.activeRun] : [])).map((r) => ({ id: r.id, status: r.status, costUsd: r.costUsd, budgetUsd: r.budgetUsd }));
+            return {
+              id: p.id, name: p.name, folder: p.folder, branch: p.git?.branch,
+              // `activeRun` stays beside `activeRuns`, as `activeRuns[0]`, for
+              // the same reason the server keeps it: a client written before a
+              // project could run several missions reads that field by name,
+              // and dropping it would break it for no gain. New readers take
+              // the list.
+              activeRun: active[0] ?? null,
+              activeRuns: active,
+              needs: p.needs ?? [], lastRun: p.lastRun,
+            };
+          }),
+        },
       };
     },
   };
@@ -525,15 +547,27 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
       const p = projects.find((x) => x.id === pid);
       if (!p) return { text: `No project ${pid}. fleet_status lists them; link_project adds one.` };
       if (isForemanCheckout(p.folder)) return { text: 'Refused: this folder is Foreman itself, and Foreman never runs missions on its own oversight infrastructure.' };
+      // Which missions were already live before this dispatch. A project with
+      // worktree isolation may run several at once, so "the running run in this
+      // project" no longer identifies the one just started — reading it back
+      // that way handed the caller an OLDER mission's id, and every run_status
+      // after it watched the wrong mission. Only a run that was not running a
+      // moment ago can be this one.
+      const before = new Set((await get<{ runs: RunSummary[] }>(`/runs?projectId=${encodeURIComponent(pid)}`).catch(() => ({ runs: [] as RunSummary[] })))
+        .runs.filter((x) => x.status === 'running').map((x) => x.id));
       const r = await post<{ ok?: boolean; error?: string }>('/run', {
         projectId: pid, mission: brief, budgetUsd, directorModel: director, workerModel: worker, browserTools: browser === true ? true : undefined,
       });
-      if (r.status === 409) return { text: `${p.name} already has an active mission; see fleet_status. One mission per project at a time.` };
+      // A 409 is the server's own refusal and it says which one: a project that
+      // cannot take another mission, a dirty checkout, a busy reservation. It
+      // is no longer always "one mission per project", so quote it rather than
+      // guessing at it.
+      if (r.status === 409) return { text: `${p.name} will not take this mission: ${r.json.error ?? 'the project is busy'}. See fleet_status.` };
       if (!r.ok) return { text: `Could not start: ${r.json.error ?? r.status}` };
       // The run id lands a moment later; read it back so the caller can watch it.
       for (let i = 0; i < 20; i++) {
         const { runs } = await get<{ runs: RunSummary[] }>(`/runs?projectId=${encodeURIComponent(pid)}`);
-        const live = runs.find((x) => x.status === 'running');
+        const live = runs.find((x) => x.status === 'running' && !before.has(x.id));
         if (live) return { text: `Started ${live.id} on ${p.name}, cap ${usd(live.budgetUsd)}. Watch it with run_status(runId, wait_seconds).`, data: { runId: live.id, projectId: pid } };
         await new Promise((res) => setTimeout(res, 250));
       }

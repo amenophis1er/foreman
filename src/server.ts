@@ -66,7 +66,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import os from 'node:os';
-import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MissionRun } from './orchestrator.js';
@@ -99,7 +99,7 @@ import {
 import { escapeHtml as escTg } from './notify.js';
 import { RunStore, newRunId } from './store.js';
 import {
-  concurrencyLimit, isolationAllowed, isolationChoice, repoHolder, reservationDecision,
+  concurrencyLimit, isolationAllowed, isolationChoice, repoClaim, reservationDecision,
   resumeWorktree, worktreePath, worktreeRemoval, type Isolation,
 } from './isolation.js';
 import { preflight, reportPreflight } from './preflight.js';
@@ -592,6 +592,31 @@ function liveCountOf(projectId: string): number {
 }
 
 /**
+ * Where each reservation's mission works, by ticket: its own worktree, or the
+ * project's checkout.
+ *
+ * Kept beside the reservation rather than read off the runs, for the same
+ * reason the reservation exists at all — a run is not attached until seconds
+ * after it is reserved, and the question "is anyone already working in the
+ * project folder?" has to be answerable in that window. Written in
+ * reserveProject and dropped in releaseProject, the only two places a slot is
+ * taken or given back, so it cannot outlive its ticket.
+ */
+const reservedWorkspaces = new Map<string, Isolation>();
+
+/**
+ * How many live missions in this project are working in the project's own
+ * checkout. Worktree runs are not among them — that is the point of them.
+ */
+function sharedLiveOf(projectId: string): number {
+  let n = 0;
+  for (const ticket of activeByProject.get(projectId)?.keys() ?? []) {
+    if (reservedWorkspaces.get(ticket) !== 'worktree') n += 1;
+  }
+  return n;
+}
+
+/**
  * A dispatch nobody waits for, whose reservation cannot leak.
  *
  * driveRun gives the ticket back on every path it owns, but startRun and
@@ -621,6 +646,7 @@ function attachRun(projectId: string, ticket: string, run: MissionRun): void {
  * in them and `has(projectId)` still reads as "a mission is running here".
  */
 function releaseProject(projectId: string, ticket: string): void {
+  reservedWorkspaces.delete(ticket);
   const slots = activeByProject.get(projectId);
   if (!slots) return;
   slots.delete(ticket);
@@ -1638,6 +1664,7 @@ async function patchGlobalSettings(patch: Record<string, unknown>): Promise<void
   }
   await store.writeSettings({ ...all, global });
   notifyCtxCache = null;
+  forgetIsolation();
 }
 
 /** Reads a project's chat meta, or the empty shape for one never started. */
@@ -1789,19 +1816,32 @@ async function consumeProposal(projectId: string, runId: string, mission: string
  */
 function reserveProject(
   projectId: string,
-  opts: { isolation: Isolation; configured?: unknown; projectName?: string },
+  opts: {
+    isolation: Isolation; configured?: unknown; projectName?: string;
+    /**
+     * Where this mission will work. A new run's answer is the isolation the
+     * reservation is being granted under; a RESUME's is its own record — a run
+     * from before the project was flipped to 'worktree' has none, and works in
+     * the project folder however the project is configured today.
+     */
+    workspace?: Isolation;
+  },
 ): { ticket: string } | { error: string; limit: number } {
+  const workspace = opts.workspace ?? opts.isolation;
   const decision = reservationDecision({
     live: liveCountOf(projectId),
     isolation: opts.isolation,
     configured: opts.configured,
     projectName: opts.projectName,
+    workspace,
+    sharedLive: sharedLiveOf(projectId),
   });
   if (!decision.ok) return { error: decision.reason, limit: decision.limit };
   const ticket = newRunId();
   const slots = activeByProject.get(projectId) ?? new Map<string, MissionRun | null>();
   slots.set(ticket, null); // reservation placeholder
   activeByProject.set(projectId, slots);
+  reservedWorkspaces.set(ticket, workspace);
   return { ticket };
 }
 
@@ -1852,6 +1892,7 @@ async function driveRun(
     emit('run_error', { error: `provider unavailable — ${problem}` });
     emit('run_finished', { status: 'error', costUsd: meta.costUsd });
     drivingRuns.delete(meta.id);
+    releaseRepoHold(meta.id);
     releaseProject(projectId, ticket);
     return;
   }
@@ -1938,6 +1979,7 @@ async function driveRun(
     emit('run_error', { error: String(err instanceof Error ? err.message : err) });
     emit('run_finished', { status: 'error', costUsd: meta.costUsd });
     drivingRuns.delete(meta.id);
+    releaseRepoHold(meta.id);
     releaseProject(projectId, ticket);
     return;
   }
@@ -2076,6 +2118,11 @@ async function driveRun(
       // above works in the mission's own checkout, and in a shared project the
       // next mission would `checkout -b` in that same tree the moment the slot
       // opens. A throw anywhere above must still release it, hence the finally.
+      //
+      // The parent repository goes back here too, and for the same reason it
+      // was claimed: it is held for the life of the RUN, so the run ending is
+      // exactly when the next mission in that repository may have it.
+      releaseRepoHold(meta.id);
       releaseProject(projectId, ticket);
     }
   }
@@ -2162,6 +2209,18 @@ async function gitInfoCached(folder: string): Promise<GitInfo> {
 }
 
 /**
+ * The effective isolation per project, for a few seconds — like gitInfoCache
+ * and for the same reason: /projects asks isolationFor for every project on a
+ * 3-second poll, and every ask reads settings.json off the disk. Cleared
+ * whenever settings are written, so a human who changes the isolation sees it
+ * on the next poll rather than when a timer happens to run out.
+ */
+const isolationCache = new Map<string, { at: number; value: { isolation: Isolation; configured: unknown } }>();
+function forgetIsolation(): void {
+  isolationCache.clear();
+}
+
+/**
  * How this project runs its missions, as it will actually be honoured — the
  * pair every reservation needs.
  *
@@ -2177,6 +2236,15 @@ async function gitInfoCached(folder: string): Promise<GitInfo> {
  * would silently work somewhere other than the folder the project names.
  */
 async function isolationFor(project: Project): Promise<{ isolation: Isolation; configured: unknown }> {
+  const hit = isolationCache.get(project.id);
+  if (hit && Date.now() - hit.at < 3_000) return hit.value;
+  const value = await isolationRead(project);
+  isolationCache.set(project.id, { at: Date.now(), value });
+  return value;
+}
+
+/** The reading behind isolationFor, without the cache in front of it. */
+async function isolationRead(project: Project): Promise<{ isolation: Isolation; configured: unknown }> {
   const settings = await effectiveSettings(project.id);
   const configured = settings.maxConcurrentMissions;
   if (settings.isolation !== 'worktree') return { isolation: 'shared', configured };
@@ -2196,6 +2264,33 @@ async function isolationForId(projectId: string): Promise<{ isolation: Isolation
 }
 
 /**
+ * Why this run's folder cannot be looked at, or null when it can.
+ *
+ * A run that finished with no commits has its worktree removed (driveRun says
+ * so in the transcript), and `meta.folder` then names a directory that is not
+ * there any more. Every route that reaches for those files — the pull request
+ * it would draft, the file browser — otherwise answers with whatever a git
+ * command or a stat says about a missing path: "the repository has no origin
+ * remote to push to", or a bare 404. Neither is true, and neither tells anyone
+ * what happened. This sentence does.
+ *
+ * Two sentences, because there are two ways a worktree goes: the automatic
+ * removal of an empty one, where there genuinely is nothing to see, and a
+ * removal the human asked for, where the work is still on the branch in the
+ * repository and saying "it ended with no commits" would be a lie.
+ */
+function worktreeGoneReason(meta: RunMeta): string | null {
+  const wt = meta.worktree;
+  if (!wt?.removedAt) return null;
+  if (meta.git?.commits) {
+    return `this mission's worktree at ${wt.path} has been removed, so its files are no longer on disk; `
+      + `its work is on ${meta.git.branch} in ${wt.repo}`;
+  }
+  return `this mission's worktree at ${wt.path} was removed because the run ended with no commits, `
+    + 'so there is nothing left to push or browse';
+}
+
+/**
  * Why a resume would be refused, or null when it may go ahead.
  *
  * Asked before anything touches `meta.folder`: ensureMissionBranch would check
@@ -2210,6 +2305,35 @@ async function worktreeResumeRefusal(meta: RunMeta): Promise<string | null> {
     : false;
   const d = resumeWorktree({ worktree: meta.worktree, exists });
   return d.ok ? null : d.reason;
+}
+
+/**
+ * Which run holds each repository's parent grant, keyed by the repository's
+ * REALPATH. First come, held for the life of the run; repoClaim() in
+ * src/isolation.ts is the rule, this is the ledger it reads.
+ *
+ * Realpath, not path.resolve: `git worktree list` answers with symlinks already
+ * resolved, while a project folder is recorded as the human linked it, so a
+ * repository reached through a symlink is two spellings of one directory — and
+ * two spellings are two entries, which is every run holding the repository.
+ */
+const repoHolders = new Map<string, string>();
+
+/** A path as the filesystem knows it, or the best guess when it cannot say. */
+async function realPathOf(p: string): Promise<string> {
+  return realpath(p).catch(() => path.resolve(p));
+}
+
+/**
+ * Gives back whatever repository this run held. Called wherever a run stops
+ * being a running run — beside releaseProject, on every path — because a
+ * repository held by a run that is not running is a repository no other
+ * mission can ever have.
+ */
+function releaseRepoHold(runId: string): void {
+  for (const [repo, holder] of repoHolders) {
+    if (holder === runId) repoHolders.delete(repo);
+  }
 }
 
 /**
@@ -2241,21 +2365,27 @@ async function grantWorktreeParent(
   // rule inside worktreeGrant only catches a run working IN the parent, and with
   // several worktree missions in one repository no run ever is — so two grants
   // would open the same `.git`, index and lock files to two crews at once: the
-  // collision worktrees exist to end, reintroduced one level up. repoHolder
-  // picks the earliest-started run, deterministically, so every server and every
-  // restart agrees. This run may not be attached yet (the grant is made before
-  // driveRun), so it is added to the live list by hand.
-  const held = shape
-    ? repoHolder(shape.parent, [
-      ...activeRuns().filter((r) => r.meta.id !== meta.id).map((r) => ({
-        id: r.meta.id, repo: r.meta.worktree?.repo ?? null, startedAt: r.meta.createdAt,
-      })),
-      { id: meta.id, repo: shape.parent, startedAt: meta.createdAt },
-    ])
+  // collision worktrees exist to end, reintroduced one level up.
+  //
+  // A CLAIM, taken here and held until this run stops: asking which live run is
+  // oldest cannot work, because this run is not in the live list yet (the grant
+  // is made before driveRun attaches it) and because a resumed run keeps its
+  // original start time, so an older run resuming would out-rank the incumbent
+  // that already has the grant written into its metadata. The check and the
+  // write are one synchronous step with no await between them, which is what
+  // makes two missions dispatched in the same tick see each other.
+  const key = shape ? await realPathOf(shape.parent) : null;
+  const claim = shape && key
+    ? repoClaim({ repo: shape.parent, holder: repoHolders.get(key), runId: meta.id })
     : null;
-  const decision: { grant: string | null; reason?: string } = shape && held !== meta.id
-    ? { grant: null, reason: `the repository ${shape.parent} is held by another running mission` }
+  if (claim?.hold && key) repoHolders.set(key, meta.id);
+  const decision: { grant: string | null; reason?: string } = claim && !claim.hold
+    ? { grant: null, reason: claim.reason }
     : worktreeGrant(shape, busy);
+  // A claim without a grant helps nobody. If the parent stays closed for any
+  // other reason — the setting turned off since, worktreeGrant's own refusal —
+  // the repository goes back on the shelf for another mission to take.
+  if (!decision.grant) releaseRepoHold(meta.id);
   const now = decision.grant ? [decision.grant] : [];
   const withdrawn = previous.filter((p) => !now.includes(p));
 
@@ -2383,6 +2513,7 @@ async function startRun(
       await store.writeMeta(meta).catch(() => {});
       emit('run_error', { error: `could not make this mission a worktree of ${folder}: ${wt.error}` });
       emit('run_finished', { status: 'error', costUsd: 0 });
+      releaseRepoHold(meta.id);
       releaseProject(projectId, ticket);
       return;
     }
@@ -2463,6 +2594,7 @@ async function resumeRun(projectId: string, ticket: string, meta: RunMeta, pick:
   const refused = await worktreeResumeRefusal(meta);
   if (refused) {
     makeEmitter(meta.id, projectId)('run_note', { text: `Not resumed: ${refused}.` });
+    releaseRepoHold(meta.id);
     releaseProject(projectId, ticket);
     return;
   }
@@ -2630,7 +2762,13 @@ async function scheduleTick(): Promise<void> {
       caps.set(projectId, (await effectiveSettings(projectId)).scheduledMonthlyCapUsd);
       const iso = await isolationForId(projectId);
       isolations.set(projectId, iso);
-      if (!reservationDecision({ live: liveCountOf(projectId), ...iso }).ok) busy.add(projectId);
+      // A schedule always starts a NEW run, so its workspace is the project's
+      // own isolation — the same pair reserveProject will ask with in a moment.
+      const decided = reservationDecision({
+        live: liveCountOf(projectId), ...iso,
+        workspace: iso.isolation, sharedLive: sharedLiveOf(projectId),
+      });
+      if (!decided.ok) busy.add(projectId);
     }
     const actions = decideTicks({
       schedules,
@@ -2843,6 +2981,17 @@ const server = http.createServer(async (req, res) => {
   // Note: /svc/… is not handled here. Exposed dev servers live on
   // SERVICES_PORT, on their own origin — see servicesServer below.
   const runEventsMatch = url.pathname.match(/^\/runs\/([^/]+)\/events$/);
+  // A run whose worktree was removed has no folder left to browse, and the
+  // viewer's 404 would say only "not found". Answered here, before the deck
+  // router resolves a path that is not there, so the run page can say what
+  // became of the files. The deck itself is exempt: a finished run's deck is
+  // the frozen one from its record, which outlives the worktree it described.
+  const runFilesMatch = url.pathname.match(/^\/runs\/([^/]+)\/(artifact|preview)(?:\/|$)/);
+  if (runFilesMatch) {
+    const m = await store.readMeta(runFilesMatch[1]).catch(() => null);
+    const gone = m ? worktreeGoneReason(m) : null;
+    if (gone) return json(res, 409, { error: gone, code: 'worktree-removed' });
+  }
   // The deck: what a run changed and what it produced. Read-only by design —
   // a stated non-goal — and handled before the chain because it owns two paths
   // under /runs/{id}/ that nothing else claims.
@@ -2935,6 +3084,7 @@ const server = http.createServer(async (req, res) => {
       // settings so they do not come back; `#/setup` reopens them on purpose.
       const current = await store.readSettings();
       await store.writeSettings({ ...current, global: { ...current.global, setupDoneAt: Date.now() } });
+      forgetIsolation();
       json(res, 200, { ok: true });
 
     } else if (req.method === 'GET' && url.pathname === '/settings') {
@@ -2972,6 +3122,9 @@ const server = http.createServer(async (req, res) => {
         }
       }
       await store.writeSettings(next);
+      // The isolation of any project may have just changed — a project overlay
+      // directly, a global default for every project that inherits it.
+      forgetIsolation();
       json(res, 200, { ok: true });
 
     } else if (req.method === 'GET' && url.pathname === '/models') {
@@ -3712,7 +3865,12 @@ const server = http.createServer(async (req, res) => {
       const meta = await store.readMeta(worktreeRemoveMatch[1]).catch(() => null);
       if (!meta) return json(res, 404, { error: 'unknown run' });
       const { force } = await readBody(req).catch(() => ({ force: false }));
-      const live = activeRuns().some((r) => r.meta.id === meta.id);
+      // A run that is reserved but not yet attached is not in activeRuns(), and
+      // by this point its record already says 'running' and already names its
+      // worktree — so the record is asked too. Deleting the checkout out from
+      // under a mission seconds before its first turn is the same accident as
+      // deleting it mid-run, and this is the guard in front of a recursive rm.
+      const live = meta.status === 'running' || activeRuns().some((r) => r.meta.id === meta.id);
       // "Cannot tell" counts as unmerged: a null from git means the base ref is
       // gone, and reading that as merged would discard work nobody else has.
       const unmerged = meta.git
@@ -3752,6 +3910,8 @@ const server = http.createServer(async (req, res) => {
       const meta = await store.readMeta(prMatch[1]).catch(() => null);
       if (!meta) return json(res, 404, { error: 'unknown run' });
       if (!meta.git) return json(res, 409, { error: 'this run had no branch of its own' });
+      const gone = worktreeGoneReason(meta);
+      if (gone) return json(res, 409, { error: gone, code: 'worktree-removed' });
       const info = await gitInfo(meta.folder);
       if (!info.remote) return json(res, 409, { error: 'the repository has no origin remote to push to' });
       const doc = await readFile(path.join(meta.folder, '.foreman', 'MISSION.md'), 'utf8').catch(() => null);
@@ -3774,6 +3934,10 @@ const server = http.createServer(async (req, res) => {
       if (!meta) return json(res, 404, { error: 'unknown run' });
       if (!meta.git) return json(res, 409, { error: 'this run had no branch of its own' });
       if (meta.status === 'running') return json(res, 409, { error: 'the mission is still running' });
+      {
+        const gone = worktreeGoneReason(meta);
+        if (gone) return json(res, 409, { error: gone, code: 'worktree-removed' });
+      }
       const { title, body } = await readBody(req);
       const t = typeof title === 'string' && title.trim() ? title.trim().slice(0, 200) : null;
       if (!t) return json(res, 400, { error: 'a title is required' });
@@ -3879,7 +4043,13 @@ const server = http.createServer(async (req, res) => {
       if (noWorktree) return json(res, 409, { error: noWorktree, code: 'worktree-missing' });
       const iso = await isolationFor(project);
       // Reservation is the last step before dispatch — no awaits in between.
-      const reserved = reserveProject(project.id, { ...iso, projectName: project.name });
+      // The workspace is this run's OWN, not the project's as it stands now: a
+      // run recorded before the project was flipped to worktrees still resumes
+      // in the project folder, and only one mission at a time may be there.
+      const reserved = reserveProject(project.id, {
+        ...iso, projectName: project.name,
+        workspace: meta.worktree ? 'worktree' : 'shared',
+      });
       if ('error' in reserved) {
         return json(res, 409, { error: reserved.error });
       }

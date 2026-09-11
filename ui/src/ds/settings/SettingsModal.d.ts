@@ -56,7 +56,11 @@ export interface Settings {
    * home, which is what lets several run at once. Repositories only.
    */
   isolation?: 'shared' | 'worktree';
-  /** How many missions may run here at once: 1 for a shared checkout, up to 5 with worktrees. */
+  /**
+   * How many missions may run here at once: 1 for a shared checkout (pinned by
+   * the server), up to 5 with worktrees. Defaults to 2 — the server's own
+   * worktree default — so saving an untouched form changes nothing.
+   */
   maxConcurrentMissions?: number;
 }
 
@@ -78,6 +82,22 @@ export interface SettingsModalProps {
    * unknown (global scope), and nothing is locked.
    */
   projectIsRepo?: boolean;
+  /**
+   * The top level of the repository the open project's folder is in
+   * (`p.git.root`). When it differs from `projectFolder` the folder is inside a
+   * repository without being its root, and worktree isolation is locked with
+   * that reason — the server refuses it as well. Either path missing means
+   * unknown, and nothing is locked.
+   */
+  projectGitRoot?: string;
+  /** The open project's folder, compared against `projectGitRoot`. */
+  projectFolder?: string;
+  /**
+   * Why the last Save was refused, in the server's words. Shown in the footer
+   * where the save state otherwise is; the modal stays open with the edits
+   * intact so they can be corrected rather than silently lost.
+   */
+  saveError?: string;
   /** Model list for the two pickers. Scoped to the open project's provider —
    *  without it they fall back to the built-in Anthropic list, which is wrong
    *  for a project pinned to anything else. */
