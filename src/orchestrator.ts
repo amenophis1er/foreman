@@ -1326,11 +1326,12 @@ export class MissionRun {
         'satisfy their milestone. Update the doc to match reality, then continue ' +
         'the mission to DONE WHEN. ' +
         this.gitLine() +
+        this.worktreeLine() +
         this.crewLine() +
         this.budgetNote() +
         memorySection((await readMemory(this.meta.folder)).text, 'director')
       : `MISSION: ${this.meta.mission}\n\n${this.budgetLine()} ` +
-        `Working directory: ${this.meta.folder}. ${this.gitLine()}Begin by writing .foreman/MISSION.md, then execute the plan.` +
+        `Working directory: ${this.meta.folder}. ${this.gitLine()}${this.worktreeLine()}Begin by writing .foreman/MISSION.md, then execute the plan.` +
         this.crewLine() +
         memorySection((await readMemory(this.meta.folder)).text, 'director');
 
@@ -1963,6 +1964,41 @@ export class MissionRun {
   }
 
   /**
+   * What the director is told about running in a worktree of its own.
+   *
+   * A fresh worktree has no node_modules and none of the untracked local
+   * files — deliberately, since no config field guesses a project's setup as
+   * well as the crew can work it out. But a director that is not TOLD reads
+   * the first failing `npm test` as a broken checkout and starts repairing
+   * something that was never wrong.
+   */
+  private worktreeLine(): string {
+    const w = this.meta.worktree;
+    if (!w) return '';
+    return `You are working in a FRESH git worktree of ${w.repo}, made from ${w.base}, at ${w.path}. ` +
+      'Dependencies are NOT installed there and no untracked local configuration came with it — no ' +
+      'node_modules, no .env, no data directories. Install and set up whatever the work needs; that is ' +
+      'expected, not a fault. The project\'s primary checkout is at ' + w.repo + ', where those untracked ' +
+      'local files live, and Foreman has already granted you access to it — read from it freely, but the ' +
+      'mission\'s work belongs in the worktree. That checkout is untouched and stays on whatever branch ' +
+      'the human left it on: do not check out or move branches there. ';
+  }
+
+  /**
+   * The same facts, compressed, for a worker's brief — which is already long.
+   * A worker that does not know why `npm test` cannot find its modules spends
+   * turns on it.
+   */
+  private workerWorktreeNote(): string {
+    const w = this.meta.worktree;
+    if (!w) return '';
+    return `\n\nYou are in a fresh git worktree of ${w.repo}: dependencies are NOT installed here ` +
+      `(no node_modules, no .env, no data directories) — install what you need. The project's primary ` +
+      `checkout, with those untracked local files, is at ${w.repo}; read from it if you must, but do your ` +
+      'work here and do not move branches there.';
+  }
+
+  /**
    * What the director is told about its budget, in the units that are true.
    *
    * Quoting dollars on an unmetered run is not a cosmetic slip: the figure is
@@ -2520,8 +2556,10 @@ export class MissionRun {
     if (stop) return stop;
     const id = `worker-${++this.workerSeq}`;
     // The worker gets the project's notes with its brief: what earlier crews
-    // learned is exactly what a fresh session lacks.
-    this.launchWorker(id, this.memoryForWorkers ? `${task}\n${this.memoryForWorkers}` : task);
+    // learned is exactly what a fresh session lacks — and, in a worktree run,
+    // why its checkout has no dependencies in it.
+    const brief = (this.memoryForWorkers ? `${task}\n${this.memoryForWorkers}` : task) + this.workerWorktreeNote();
+    this.launchWorker(id, brief);
     return `[${id} started] status: running. It works in the background — use check_workers ` +
       `to watch it, and wait_for_worker when you need its result.`;
   }

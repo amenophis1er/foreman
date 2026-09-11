@@ -64,8 +64,15 @@ export const DEFAULT_SETTINGS = {
   theme: 'light', textSize: 'default', density: 'comfortable', showTimestamps: true,
   notifyNeedsYou: true, notifyDone: true, notifyBudget: true, sound: false,
   gitBranchPerMission: true,
+  // A shared checkout is one folder, so one mission at a time; worktrees are
+  // what make a second one safe, and two is as many as most machines and most
+  // humans can actually follow.
+  isolation: 'shared', maxConcurrentMissions: 1,
   projectsRoot: '~/Projects', missionDir: '.foreman', showHidden: false,
 };
+
+const ISOLATION = [{ value: 'shared', label: 'Shared checkout' }, { value: 'worktree', label: 'A worktree per mission' }];
+const MAX_CONCURRENT = 5;
 
 const POLICY = [{ value: 'allow', label: 'Allow' }, { value: 'ask', label: 'Ask' }, { value: 'deny', label: 'Deny' }];
 const GUARDED = ['Bash', 'Write', 'Edit', 'WebFetch', 'spawn_worker'];
@@ -128,7 +135,7 @@ function ServerProviders({ instances = [], ollama, codex }) {
   );
 }
 
-export function SettingsModal({ global, project, projectName, models, modelsLoading, modelsNote, provider, providerInstances, providerOllama, providerCodex, providerHasKey, providerKeyBusy, providerKeyError, onStoreProviderKey, onClearProviderKey, notify, scope: scopeProp, onScope, section: sectionProp, onSection, onSave, onClose, onUnlink, style }) {
+export function SettingsModal({ global, project, projectName, projectIsRepo, models, modelsLoading, modelsNote, provider, providerInstances, providerOllama, providerCodex, providerHasKey, providerKeyBusy, providerKeyError, onStoreProviderKey, onClearProviderKey, notify, scope: scopeProp, onScope, section: sectionProp, onSection, onSave, onClose, onUnlink, style }) {
   const [localScope, setLocalScope] = useState(scopeProp ?? 'global');
   const [localSection, setLocalSection] = useState(sectionProp ?? 'models');
   const scope = onScope ? scopeProp : localScope;
@@ -149,6 +156,11 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
   const set = (k, v) => (isProject ? setP((s) => ({ ...s, [k]: v })) : setG((s) => ({ ...s, [k]: v })));
   const overridden = (k) => isProject && k in p;
   const reset = (k) => setP((s) => { const n = { ...s }; delete n[k]; return n; });
+  // Unknown means the caller has not said (the fleet's global scope, where
+  // there is no folder to judge): allow the choice, and let the server refuse.
+  const isRepo = projectIsRepo !== false;
+  const isolation = get('isolation') === 'worktree' ? 'worktree' : 'shared';
+  const worktreeIsolation = isRepo && isolation === 'worktree';
   const row = (k, label, hint, control) => <Row label={label} hint={hint} overridden={overridden(k)} inherits={isProject && !overridden(k)} onReset={() => reset(k)}>{control}</Row>;
 
   const body = {
@@ -228,6 +240,26 @@ export function SettingsModal({ global, project, projectName, models, modelsLoad
       {row('missionDir', 'Mission folder', 'Relative to the project. Holds MISSION.md and run history.', <TextInput mono width={160} value={get('missionDir')} onChange={(v) => set('missionDir', v)} />)}
       {row('allowWorktreeParent', 'Worktree parent', 'A mission in a git worktree may use the repository it was made from without asking. Sibling worktrees stay closed.',
         <Switch checked={get('allowWorktreeParent') !== false} onChange={(v) => set('allowWorktreeParent', v)} />)}
+      {/* Isolation and how many at once are one decision read top to bottom:
+          a shared checkout is one folder, so it is always one mission. Only a
+          repository can be given worktrees, and the control says so rather
+          than letting someone pick a mode the server will refuse. */}
+      {row('isolation', 'Isolation',
+        isRepo
+          ? 'A worktree project runs each mission in a checkout of its own under Foreman’s home, so the project folder is never moved and more than one mission can run at once. A fresh worktree has no dependencies installed — the crew installs what it needs.'
+          : 'Only a git repository can run missions in worktrees. This folder is not one, so its missions share the checkout, one at a time.',
+        <Locked locked={!isRepo} reason="only a git repository can run missions in worktrees">
+          <Tabs size="sm" tabs={ISOLATION} value={isRepo ? isolation : 'shared'} onChange={(v) => set('isolation', v)} />
+        </Locked>)}
+      {row('maxConcurrentMissions', 'Missions at once',
+        worktreeIsolation
+          ? `How many missions may run here at the same time, each in a worktree of its own. At most ${MAX_CONCURRENT}.`
+          : 'A shared checkout runs one mission at a time — two directors editing one folder is not something Foreman will arrange. Give each mission a worktree above to raise it.',
+        <Locked locked={!worktreeIsolation} reason="a shared checkout runs one mission at a time">
+          <TextInput type="number" min={1} max={MAX_CONCURRENT} step={1} width={80}
+            value={worktreeIsolation ? (get('maxConcurrentMissions') ?? 1) : 1}
+            onChange={(v) => set('maxConcurrentMissions', Math.min(MAX_CONCURRENT, Math.max(1, Number(v) || 1)))} />
+        </Locked>)}
       {row('gitBranchPerMission', 'Each mission on its own branch', 'In a git repository: Foreman creates foreman/<mission> from what is checked out, commits the work on it at the end, and never merges or pushes. Off: missions edit the current branch.', <Switch checked={get('gitBranchPerMission') !== false} onChange={(v) => set('gitBranchPerMission', v)} />)}
       {!isProject && row('showHidden', 'Show hidden folders in picker', null, <Switch checked={get('showHidden')} onChange={(v) => set('showHidden', v)} />)}
       {isProject && (
@@ -275,7 +307,8 @@ const SECTION_KEYS = {
   models: ['directorModel', 'workerModel', 'plannerModel', 'fleetPlannerModel', 'directorProviderId', 'workerProviderId'], budget: ['budgetCap', 'budgetWarnAt', 'budgetHardStop', 'scheduledMonthlyCapUsd'],
   crew: ['crewPresets'],
   approvals: ['autoAllowReadOnly', 'alwaysSurvivesResume', 'toolPolicy'], appearance: ['theme', 'density', 'showTimestamps'],
-  notifications: ['notifyNeedsYou', 'notifyDone', 'notifyBudget', 'sound'], projects: ['missionDir', 'gitBranchPerMission'],
+  notifications: ['notifyNeedsYou', 'notifyDone', 'notifyBudget', 'sound'],
+  projects: ['missionDir', 'gitBranchPerMission', 'isolation', 'maxConcurrentMissions'],
 };
 function sectionHasOverride(id, p) { return (SECTION_KEYS[id] || []).some((k) => k in p); }
 
@@ -426,6 +459,21 @@ function Row({ label, hint, children, overridden, inherits, onReset, stacked, da
       </div>
       <div style={{ display: 'flex', justifyContent: stacked ? 'stretch' : 'flex-end', minWidth: 0 }}>{children}</div>
     </div>
+  );
+}
+
+/**
+ * A control that cannot be used here, shown rather than hidden: the choice
+ * exists, and what is missing is the folder or the mode that would earn it.
+ * The reason is on the control itself as well as in the row's hint, because a
+ * greyed thing with the explanation two lines away is a thing people click.
+ */
+function Locked({ locked, reason, children }) {
+  if (!locked) return children;
+  return (
+    <span aria-disabled title={reason} style={{ pointerEvents: 'none', opacity: 0.5, display: 'inline-flex' }}>
+      {children}
+    </span>
   );
 }
 

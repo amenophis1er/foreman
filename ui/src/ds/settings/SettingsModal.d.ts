@@ -50,6 +50,14 @@ export interface Settings {
   projectsRoot?: string; missionDir?: string; showHidden?: boolean;
   /** In a repository, each mission runs on a branch of its own (default true). */
   gitBranchPerMission?: boolean;
+  /**
+   * Where a mission works. `shared` (default) is the project folder itself;
+   * `worktree` gives each mission a git worktree of its own under Foreman's
+   * home, which is what lets several run at once. Repositories only.
+   */
+  isolation?: 'shared' | 'worktree';
+  /** How many missions may run here at once: 1 for a shared checkout, up to 5 with worktrees. */
+  maxConcurrentMissions?: number;
 }
 
 /**
@@ -63,6 +71,13 @@ export interface SettingsModalProps {
   project?: Settings;
   /** Enables the project scope tab. Omit when opened from the fleet page. */
   projectName?: string;
+  /**
+   * Whether the open project's folder is a git repository (`p.git.repo`).
+   * `false` locks the worktree isolation choice, with the reason on screen —
+   * the server refuses it too, this is the friendly half. Omitted means
+   * unknown (global scope), and nothing is locked.
+   */
+  projectIsRepo?: boolean;
   /** Model list for the two pickers. Scoped to the open project's provider —
    *  without it they fall back to the built-in Anthropic list, which is wrong
    *  for a project pinned to anything else. */

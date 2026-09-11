@@ -388,6 +388,21 @@ export interface RunMeta {
    * `base` at start and commits on it at the end; it never merges or pushes.
    */
   git?: { branch: string; base: string; baseHead: string | null; commits?: number; commit?: string; /** The pull request the human opened from this run, once they did. */ pr?: string; /** Its fate, once known to be final (merged or closed); open is re-asked. */ prState?: 'merged' | 'closed' };
+  /**
+   * The worktree this run was given, when its project runs missions in
+   * isolation. `folder` is this path for such a run; `repo` is the project's
+   * own checkout, which the mission never touches.
+   */
+  worktree?: {
+    path: string; repo: string; base: string;
+    /**
+     * When Foreman removed this worktree, if it has. Recorded rather than
+     * inferred from the directory being absent: the run page and the removal
+     * endpoint both need to tell "Foreman cleaned this up" apart from "the
+     * checkout vanished and a resume must refuse" — see resumeWorktree().
+     */
+    removedAt?: number;
+  };
   /** Tools the human granted "always allow" for this run (survives resume). */
   allowedTools?: string[];
   /**

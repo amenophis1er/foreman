@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, realpath, symlink, unlink, writeFile } from 'node:fs/promises';
-import { changeFingerprint, closeMissionBranch, defaultBranch, worktreeGrant, worktreeParent, ensureMissionBranch, gitInfo, missionBranchName, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
+import { mkdir, mkdtemp, realpath, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { addMissionWorktree, changeFingerprint, closeMissionBranch, defaultBranch, removeMissionWorktree, worktreeBranchMerged, worktreeGrant, worktreeParent, ensureMissionBranch, gitInfo, missionBranchName, pruneWorktrees, remoteHasBranch, resolvePrBase, startMissionBranch, renameMissionBranch, dirtyPaths,
 } from './gitwork.js';
 import type { ReviewVerdict } from './crew.js';
 
 const sh = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' } }).toString();
+
+const exists = (p: string) => stat(p).then(() => true).catch(() => false);
 
 async function repo(): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'gitwork-'));
@@ -36,6 +38,19 @@ test('gitInfo: a plain folder is not a repo; a repo reports branch, head, dirty,
   await writeFile(path.join(dir, 'x.txt'), 'x');
   const again = await gitInfo(dir);
   assert.equal(again.dirty, true); assert.equal(again.remote, 'git@github.com:acme/widget.git');
+});
+
+test('gitInfo: a subdirectory of a repo reports the repository\'s root, not itself', async () => {
+  const dir = await repo();
+  const top = await realpath(dir);
+  assert.equal((await gitInfo(dir)).root, top, 'the root of a repository is itself');
+  const sub = path.join(dir, 'packages', 'api');
+  await mkdir(sub, { recursive: true });
+  const info = await gitInfo(sub);
+  // A project linked here is inside a work tree, so `repo` is true — and a
+  // worktree of it would be a checkout of `top`, not of this folder.
+  assert.equal(info.repo, true);
+  assert.equal(info.root, top, 'the subdirectory reports the repository it is in');
 });
 
 test('a mission gets its own branch from the current one, and closing commits the work on it', async () => {
@@ -179,6 +194,10 @@ test('worktreeParent: a linked worktree knows its repository, and nothing else c
   assert.equal(shape && await realpath(shape.parent), await realpath(dir), 'the linked worktree points back at the repository');
   assert.deepEqual(shape?.siblings, [], 'and it is the only linked worktree');
   assert.equal(await worktreeParent(dir), null, 'and the main worktree still has none');
+  // Kept outside the repository, so opening the parent opens nothing else:
+  // this is the layout mission worktrees use, and it grants cleanly.
+  assert.deepEqual(worktreeGrant(shape, []), { grant: shape!.parent },
+    'a worktree outside the repository gets its parent');
 });
 
 test('worktreeGrant opens the parent unless a live run is working in it', () => {
@@ -276,4 +295,99 @@ test('the fingerprint is scoped to the project folder, and sees a retargeted sym
   await unlink(path.join(plain, 'current'));
   await symlink('two.txt', path.join(plain, 'current'));
   assert.notEqual(await changeFingerprint(plain), linked, 'a retargeted link moves the fingerprint');
+});
+
+test('a mission worktree is made from the default branch, and the repository does not move', async () => {
+  const dir = await repo();
+  // The repository is sitting on some other branch, the way it is after any
+  // earlier mission. The worktree must still come from main.
+  sh(dir, 'checkout', '-q', '-b', 'sidetrack');
+  await writeFile(path.join(dir, 'side.txt'), 'side\n');
+  sh(dir, 'add', '-A'); sh(dir, 'commit', '-q', '-m', 'sidetrack work');
+  const wasOn = sh(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim();
+  const wasAt = sh(dir, 'rev-parse', 'HEAD').trim();
+
+  // The parent directory does not exist yet: <home>/worktrees/<project>/<run>.
+  const home = await mkdtemp(path.join(os.tmpdir(), 'gitwork-wthome-'));
+  const wtPath = path.join(home, 'worktrees', 'proj-1', 'run-1234abcd');
+  const g = await addMissionWorktree(dir, wtPath, 'Add a footer to the page', 'run-1234abcd');
+  assert.ok(!('error' in g), JSON.stringify(g));
+  if ('error' in g) return;
+
+  assert.equal(g.branch, 'foreman/add-a-footer-to-the-page-abcd');
+  assert.equal(g.base, 'main', 'the default branch, not whatever happened to be checked out');
+  assert.equal(g.path, wtPath);
+  assert.equal(g.baseHead, sh(dir, 'rev-parse', 'main').trim());
+  assert.equal(sh(wtPath, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), g.branch);
+  assert.ok(await exists(path.join(wtPath, 'README.md')), 'the worktree is a checkout of the repository');
+  assert.ok(!await exists(path.join(wtPath, 'side.txt')), 'and it was made from main, so the sidetrack commit is not in it');
+
+  // The whole point: the repository's own checkout is untouched.
+  assert.equal(sh(dir, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), wasOn);
+  assert.equal(sh(dir, 'rev-parse', 'HEAD').trim(), wasAt);
+});
+
+test('a repository with no default branch to use is based on its current HEAD, and says so', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'gitwork-trunk-'));
+  sh(dir, 'init', '-q', '-b', 'trunk');
+  sh(dir, 'config', 'user.email', 'me@example.com');
+  sh(dir, 'config', 'user.name', 'Me');
+  await writeFile(path.join(dir, 'README.md'), 'hello\n');
+  sh(dir, 'add', '-A'); sh(dir, 'commit', '-q', '-m', 'init');
+
+  // No origin and no `main`: defaultBranch still answers 'main', and a base
+  // that does not resolve would fail the mission before it started.
+  assert.equal(await defaultBranch(dir), 'main');
+  const wt = path.join(await mkdtemp(path.join(os.tmpdir(), 'gitwork-wtroot-')), 'run-aaaa1111');
+  const g = await addMissionWorktree(dir, wt, 'Do a thing', 'run-aaaa1111');
+  assert.ok(!('error' in g), JSON.stringify(g));
+  if ('error' in g) return;
+  assert.equal(g.base, 'trunk', 'what it actually used is what it records');
+  assert.equal(g.baseHead, sh(dir, 'rev-parse', 'trunk').trim());
+});
+
+test('addMissionWorktree on a plain folder says so instead of throwing', async () => {
+  const plain = await mkdtemp(path.join(os.tmpdir(), 'gitwork-plain3-'));
+  assert.deepEqual(
+    await addMissionWorktree(plain, path.join(plain, 'wt'), 'x', 'r'),
+    { error: 'not a git repository' },
+  );
+});
+
+test('a mission worktree is removed cleanly, and removing one that is already gone is not a failure', async () => {
+  const dir = await repo();
+  const home = await mkdtemp(path.join(os.tmpdir(), 'gitwork-wtgone-'));
+  const wtPath = path.join(home, 'worktrees', 'proj-1', 'run-5678efef');
+  const g = await addMissionWorktree(dir, wtPath, 'Temporary work', 'run-5678efef');
+  if ('error' in g) throw new Error(g.error);
+  assert.equal(sh(dir, 'worktree', 'list').trim().split('\n').length, 2);
+
+  assert.equal(await removeMissionWorktree(dir, wtPath), null);
+  assert.equal(sh(dir, 'worktree', 'list').trim().split('\n').length, 1, 'only the main worktree is left');
+  assert.ok(!await exists(wtPath), 'and the directory is gone');
+  // The branch is the mission's work; it outlives the worktree.
+  assert.match(sh(dir, 'branch', '--list', g.branch), /foreman\/temporary-work-efef/);
+
+  // Asked again, or after a human deleted the folder: nothing to do, no failure.
+  assert.equal(await removeMissionWorktree(dir, wtPath), null);
+  assert.equal(await removeMissionWorktree(dir, path.join(home, 'never-existed')), null);
+  await pruneWorktrees(dir);
+  assert.equal(sh(dir, 'worktree', 'list').trim().split('\n').length, 1);
+});
+
+test('worktreeBranchMerged: no while the branch has a commit of its own, yes once it is in the base, null when it cannot tell', async () => {
+  const dir = await repo();
+  sh(dir, 'checkout', '-q', '-b', 'foreman/work-0001');
+  await writeFile(path.join(dir, 'work.txt'), 'work\n');
+  sh(dir, 'add', '-A'); sh(dir, 'commit', '-q', '-m', 'mission work');
+  sh(dir, 'checkout', '-q', 'main');
+
+  assert.equal(await worktreeBranchMerged(dir, 'foreman/work-0001', 'main'), false);
+  sh(dir, 'merge', '-q', '--ff-only', 'foreman/work-0001');
+  assert.equal(await worktreeBranchMerged(dir, 'foreman/work-0001', 'main'), true);
+
+  // A base that is not there: "cannot tell", which the caller must never read
+  // as "merged" — that would throw away the only copy of the work.
+  assert.equal(await worktreeBranchMerged(dir, 'foreman/work-0001', 'gone'), null);
+  assert.equal(await worktreeBranchMerged(dir, 'foreman/no-such-branch', 'main'), null);
 });

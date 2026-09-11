@@ -9,7 +9,7 @@
  * the button that says so — once, for that branch, to open the pull request.
  */
 import path from 'node:path';
-import { readdir, readFile, readlink, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, readlink, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import type { ReviewVerdict } from './crew.js';
@@ -21,6 +21,13 @@ export interface GitInfo {
   /** Uncommitted changes, tracked or untracked. */
   dirty?: boolean;
   head?: string | null;
+  /**
+   * The work tree's top level, resolved; absent when git will not say. A folder
+   * can be inside a repository without being its root, and worktree isolation
+   * is only honest at the root — `git worktree add` checks out the whole
+   * repository, not the subdirectory somebody linked.
+   */
+  root?: string;
   /** `origin`'s URL when there is one, so the UI can say "has a remote". */
   remote?: string;
 }
@@ -66,6 +73,10 @@ export async function gitInfo(folder: string): Promise<GitInfo> {
     try { info.branch = (await git(['symbolic-ref', '--short', 'HEAD'], folder)).trim(); } catch { /* leave unset */ }
   }
   try { info.head = (await git(['rev-parse', '--verify', 'HEAD'], folder)).trim() || null; } catch { info.head = null; }
+  try {
+    const top = (await git(['rev-parse', '--show-toplevel'], folder)).trim();
+    if (top) info.root = path.resolve(top);
+  } catch { /* unknown */ }
   try { info.dirty = (await git(['status', '--porcelain', '--untracked-files=normal'], folder)).trim().length > 0; } catch { /* unknown */ }
   try { info.remote = (await git(['remote', 'get-url', 'origin'], folder)).trim() || undefined; } catch { /* no remote */ }
   return info;
@@ -518,6 +529,100 @@ export async function resolvePrBase(folder: string, recorded: string): Promise<{
   if (recorded && await remoteHasBranch(folder, recorded)) return { base: recorded, fellBack: false };
   const base = await defaultBranch(folder);
   return { base, fellBack: base !== recorded };
+}
+
+// ---------------------------------------------------------------------------
+// A worktree per mission: the repository's own checkout is never borrowed
+// ---------------------------------------------------------------------------
+
+/**
+ * A worktree of the mission's own, at `wtPath`, on a branch of its own.
+ *
+ * Unlike `startMissionBranch`, this leaves the repository's checkout exactly
+ * as it was — no branch is checked out there, nothing uncommitted moves — so
+ * several missions can run in one project at once without stepping on each
+ * other's HEAD.
+ *
+ * The base is the repository's DEFAULT branch, deliberately not whatever is
+ * checked out right now: basing on the current HEAD is what produced pull
+ * requests against branches that exist nowhere but one laptop, because the
+ * previous mission had left the checkout on its own `foreman/…` branch. A
+ * repository with no origin and no `main` has no default branch to use, and
+ * there the current HEAD is the only honest base — so it is used, and recorded
+ * as `base`, rather than guessing a name that does not resolve.
+ *
+ * Resolves to the record for the run plus where it put it, or to one sentence
+ * on why it could not.
+ */
+export async function addMissionWorktree(
+  repo: string, wtPath: string, mission: string, runId: string,
+): Promise<MissionGit & { path: string } | { error: string }> {
+  const info = await gitInfo(repo);
+  if (!info.repo) return { error: 'not a git repository' };
+  const branch = missionBranchName(mission, runId);
+  let base = await defaultBranch(repo);
+  // `defaultBranch` answers with a name, not with a ref that must exist: it
+  // falls back to 'main' for a repository that has no remote at all.
+  const local = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${base}`], repo).then(() => true).catch(() => false);
+  if (!local) base = info.branch ?? 'HEAD';
+  try {
+    await mkdir(path.dirname(wtPath), { recursive: true });
+    await git(['worktree', 'add', wtPath, '-b', branch, base], repo, 120_000);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+  // Read the sha from the worktree, not from the repository: that is the
+  // commit the mission's work will be measured against. A repository with no
+  // commit yet has none, and null is the truthful answer.
+  const baseHead = (await git(['rev-parse', '--verify', 'HEAD'], wtPath).catch(() => '')).trim() || null;
+  return { branch, base, baseHead, path: wtPath };
+}
+
+/**
+ * The worktree goes away when the mission does; the branch stays, because the
+ * branch is the mission's work. Run from the repository, since the worktree's
+ * own directory is what is being removed. Null on success, one sentence
+ * otherwise — and a path that is already gone is a success, not a failure:
+ * the caller asked for it to not be there, and it is not there.
+ */
+export async function removeMissionWorktree(repo: string, wtPath: string): Promise<string | null> {
+  const present = await stat(wtPath).then(() => true).catch(() => false);
+  if (present) {
+    try {
+      await git(['worktree', 'remove', '--force', wtPath], repo, 60_000);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+  await pruneWorktrees(repo);
+  return null;
+}
+
+/**
+ * Forget worktrees whose directories a human (or a crashed run) deleted.
+ * Housekeeping, never worth failing a caller over, so it swallows everything.
+ */
+export async function pruneWorktrees(repo: string): Promise<void> {
+  await git(['worktree', 'prune'], repo).catch(() => '');
+}
+
+/**
+ * Is every commit on `branch` already in `base` — is the mission's work landed?
+ * Local only, no network, so it answers offline and cannot hang: it asks what
+ * `base..branch` still contains.
+ *
+ * Null when git cannot answer at all (the base ref is gone, typically), which
+ * the caller must read as "cannot tell" and warn about. Reading it as "merged"
+ * would delete a branch holding work nobody has.
+ */
+export async function worktreeBranchMerged(repo: string, branch: string, base: string): Promise<boolean | null> {
+  try {
+    const out = (await git(['rev-list', '--count', `${base}..${branch}`], repo)).trim();
+    if (!/^\d+$/.test(out)) return null;
+    return Number(out) === 0;
+  } catch {
+    return null;
+  }
 }
 
 /** `gh pr create`, as the user. Resolves to the PR's URL, or to why not. */

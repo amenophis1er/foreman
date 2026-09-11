@@ -759,6 +759,64 @@ function PlanPane({
 }
 
 /**
+ * Where an isolated mission worked, and the way to reclaim the disk.
+ *
+ * A worktree run never touched the project folder — it had a checkout of its
+ * own under Foreman's home — so the path is the answer to "where is the work",
+ * which the branch pill alone does not give. Removing it is refused by the
+ * server while the run is alive, and refused again when the branch holds
+ * commits its base does not: that second refusal comes back as a sentence to
+ * read, and the same button then offers to go ahead anyway. Two clicks, no
+ * modal — the warning is the confirmation.
+ */
+function WorktreeLine({ r, live, onRemoved }: {
+  r: RunSummary; live: boolean; onRemoved?: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [warning, setWarning] = useState('');
+  const [gone, setGone] = useState(false);
+  const w = r.worktree!;
+
+  const remove = async (force: boolean) => {
+    setBusy(true); setErr('');
+    try {
+      const res = await api.removeWorktree(r.id, force);
+      if (res.ok) { setGone(true); setWarning(''); onRemoved?.(); return; }
+      const body = await res.json().catch(() => ({})) as { error?: string; code?: string };
+      if (body.code === 'unmerged') setWarning(body.error ?? 'This branch has commits its base does not have.');
+      else setErr(body.error ?? `HTTP ${res.status}`);
+    } catch { setErr('could not reach the server'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+      <span>
+        Ran in a worktree at{' '}
+        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-1)', wordBreak: 'break-all' }}>{w.path}</span>
+        , made from <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-1)', wordBreak: 'break-all' }}>{w.repo}</span>.
+      </span>
+      {gone ? <span>Worktree removed.</span> : (
+        <>
+          {warning && <span style={{ color: 'var(--status-warning)' }}>{warning}</span>}
+          <span>
+            <Button variant={warning ? 'danger' : 'ghost'} size="sm" icon="close" disabled={busy || live}
+              title={live
+                ? 'This mission is still running in it — its worktree can be removed once it ends.'
+                : warning ? 'Remove the worktree and its branch anyway' : `Remove ${w.path}. The project folder is untouched.`}
+              onClick={() => void remove(Boolean(warning))}>
+              {busy ? 'Removing…' : warning ? 'Remove anyway' : 'Remove worktree'}
+            </Button>
+          </span>
+          {err && <span style={{ color: 'var(--status-critical)' }}>{err}</span>}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
  * Key run properties (models, budget, browser), pulled from run metadata.
  *
  * Two of them are editable while the run is live, and only two, because only
@@ -837,6 +895,7 @@ function RunDetails({ r, live, liveCost, liveBasis, liveUsage, liveTurns, onChan
           </>
         ) : null}
       </div>
+      {r.worktree && <WorktreeLine r={r} live={Boolean(live)} onRemoved={onChanged} />}
       {err && <div style={{ marginTop: 4, color: 'var(--status-critical)' }}>{err}</div>}
     </div>
   );
@@ -905,23 +964,55 @@ export function ProjectView({
       <Button variant="ghost" size="sm" icon="settings" onClick={onSettings}>Change…</Button>
     </span>
   );
-  const activeRunId = p.activeRun?.id ?? null;
+  // Every mission live here, newest first. A project isolating its missions in
+  // worktrees runs several at once, so "the" active run is only the newest;
+  // `activeRun` alone is what an un-upgraded server still sends.
+  const liveRuns = p.activeRuns ?? (p.activeRun ? [p.activeRun] : []);
+  const liveKey = liveRuns.map((r) => r.id).join(',');
+  const liveIds = useMemo(() => new Set(liveKey ? liveKey.split(',') : []), [liveKey]);
+  const newestLiveId = liveRuns[0]?.id ?? null;
+  // Room for one more mission here. A project isolating its missions in
+  // worktrees may run several at once; a shared checkout has a limit of 1, so
+  // this is false the moment anything is live and such a project behaves
+  // exactly as before. A server that does not send the limit yet reads as 1.
+  const missionLimit = p.missionLimit ?? 1;
+  const spareCapacity = liveRuns.length < missionLimit;
   // The selected run lives in the URL so a refresh restores the same view.
   const selectedRunId = routeRunId;
   const setSelectedRunId = onSelectRun;
+  // Idle projects open on the conversation: the composer asks for a
+  // well-specified brief at the moment you know least, which is the wrong
+  // order. Writing one directly stays one click away, folded under the chat.
+  // Declared here because the selection effect below has to know about it.
+  const [composeOpen, setComposeOpen] = useState(false);
+  const seenLive = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (activeRunId) onSelectRun(activeRunId);
-    // Snap to the active run only when it starts/changes, so history
-    // browsing during a live mission is not fought over.
+    const started = [...liveIds].find((id) => !seenLive.current.has(id));
+    seenLive.current = new Set(liveIds);
+    // Snap to a mission that has just started, and to the newest live one when
+    // nothing is on screen — but never over a human's own choice: with two
+    // live runs, selecting the other one is how you switch between them, and
+    // the newest must not steal the page back.
+    if (selectedRunId !== null) { if (!started || liveIds.has(selectedRunId)) return; }
+    // Nothing selected because the human walked off a live run to write the
+    // next mission (a project isolating missions can run several): the newest
+    // live run must not pull the page back out from under the composer. A run
+    // that has just started still wins — that is the one being written. Only
+    // where there is room for it: with no spare capacity there is no composer
+    // to protect, and the newest run must claim the page as it always did.
+    else if (composeOpen && spareCapacity && !started) return;
+    if (started ?? newestLiveId) onSelectRun((started ?? newestLiveId)!);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRunId]);
+  }, [liveKey, selectedRunId]);
 
-  // While a mission runs, the project folder is its workspace: a commit the
-  // human makes there lands on the mission's branch, and anything left
-  // uncommitted joins the mission's closing commit. Worth saying out loud
-  // rather than leaving to whoever notices the branch pill.
-  const heldBranch = activeRunId ? history.find((r) => r.id === activeRunId)?.git?.branch : undefined;
-  const viewingLive = selectedRunId !== null && selectedRunId === activeRunId;
+  const viewingLive = selectedRunId !== null && liveIds.has(selectedRunId);
+  // While a mission runs in the shared checkout, the project folder is its
+  // workspace: a commit the human makes there lands on the mission's branch,
+  // and anything left uncommitted joins the mission's closing commit. Said of
+  // the run being looked at, since several may be live at once.
+  const heldBranch = viewingLive
+    ? history.find((r) => r.id === selectedRunId && !r.worktree)?.git?.branch
+    : undefined;
   const run = useRunView(selectedRunId, viewingLive);
   const leftovers = useRunServices(selectedRunId, run.runStatus);
   const selectedRun = history.find((r) => r.id === selectedRunId);
@@ -1012,11 +1103,9 @@ export function ProjectView({
   // override can retry it without re-uploading the attachments.
   const [dirtyRetry, setDirtyRetry] = useState<{ v: Parameters<typeof startMission>[0] } | null>(null);
   const [starting, setStarting] = useState(false);
-  const chat = useChat(activeRunId ? null : p.id);
-  // Idle projects open on the conversation: the composer asks for a
-  // well-specified brief at the moment you know least, which is the wrong
-  // order. Writing one directly stays one click away, folded under the chat.
-  const [composeOpen, setComposeOpen] = useState(false);
+  // Planning is what an idle project does, so it opens only when nothing at
+  // all is running here — not merely when the run on screen has finished.
+  const chat = useChat(liveRuns.length ? null : p.id);
   const wide = useWide(WIDE_PX);
   const deck = useDeck(selectedRunId, isRunning);
   // The project's folder, for the planning screen's rail and the run's Files
@@ -1077,6 +1166,10 @@ export function ProjectView({
       .finally(() => setStarting(false));
     if (r.ok) { refreshFleet(); return; }
     const body = await r.json().catch(() => ({} as { error?: string; code?: string; files?: string[] }));
+    // Every refusal reads the same way, in the server's own words, under the
+    // composer — including the 409 for a project already at its mission limit,
+    // which names the limit. A race (two tabs, or a schedule firing between
+    // the button and the request) is exactly when that sentence is needed.
     setComposerErr(body.error ?? 'could not start');
     // The uncommitted work is the human's, so the refusal is theirs to
     // overrule — retried with the mission text the attachments already
@@ -1087,11 +1180,18 @@ export function ProjectView({
     }
   };
 
-  const idle = !activeRunId && selectedRunId === null;
+  const idle = liveRuns.length === 0 && selectedRunId === null;
+  // Nothing on screen, and the project can take another mission although one
+  // is already running: the composer stands in for the idle screen. Without
+  // this the second worktree mission had nowhere to be written — every
+  // compose surface lived on the screen that only exists when nothing runs.
+  // The planning chat deliberately does not come along: the server refuses to
+  // plan while a mission is running, so offering it here would be a dead end.
+  const composingSpare = selectedRunId === null && liveRuns.length > 0 && spareCapacity;
   // The reviewers whose PASS still stands on this run, if any.
   const reviewers = reviewedByNames(selectedRun);
 
-  const canResume = !activeRunId && selectedRunId
+  const canResume = !viewingLive && selectedRunId
     && (selectedRun?.status === 'interrupted' || selectedRun?.status === 'error')
     && selectedRun?.directorSessionId;
 
@@ -1151,7 +1251,7 @@ export function ProjectView({
       {history.map((r) => (
         <RunRow key={r.id} mission={r.mission} title={r.title} createdAt={r.createdAt}
           costUsd={r.costUsd} costBasis={basisOf(r)} usage={r.usage} status={r.status}
-          selected={r.id === selectedRunId} current={r.id === activeRunId}
+          selected={r.id === selectedRunId} current={liveIds.has(r.id)}
           onSelect={r.id === selectedRunId ? undefined : () => setSelectedRunId(r.id)} />
       ))}
     </div>
@@ -1339,7 +1439,7 @@ export function ProjectView({
             opens with its brief, mission doc and final report already read,
             and drafts a separate mission from there. Not a "continue" — a run
             is one mission, and done stays done. */}
-        {!activeRunId && selectedRunId && selectedRun && selectedRun.status !== 'running' && (
+        {!viewingLive && selectedRunId && selectedRun && selectedRun.status !== 'running' && (
           <Button variant="good" icon="write" disabled={forking}
             title="Start a new planning conversation that builds on what this mission did"
             onClick={() => void forkPlan(selectedRunId)}>
@@ -1349,7 +1449,7 @@ export function ProjectView({
         {/* The one outward-facing act, behind a button and a sheet: a
             finished mission on its own branch, in a repository with a
             remote. Never from an agent, never from the phone. */}
-        {!activeRunId && selectedRunId && selectedRun?.git && selectedRun.status !== 'running' && p.git?.remote && (
+        {!viewingLive && selectedRunId && selectedRun?.git && selectedRun.status !== 'running' && p.git?.remote && (
           selectedRun.git.pr
             ? <Button icon={prState?.state === 'merged' ? 'check' : prState?.state === 'closed' ? 'close' : 'preview'}
                 onClick={() => window.open(selectedRun.git!.pr, '_blank', 'noopener')}
@@ -1358,12 +1458,33 @@ export function ProjectView({
               </Button>
             : <Button icon="steer" onClick={() => setPrOpen(true)} title={`Push ${selectedRun.git.branch} and open a pull request against ${selectedRun.git.base}`}>Open pull request…</Button>
         )}
-        {!activeRunId && selectedRunId && (
+        {!viewingLive && selectedRunId && (
           <Button variant="primary" onClick={() => setSelectedRunId(null)}>New mission</Button>
+        )}
+        {/* A live mission on screen, and the project has room for another.
+            Clicking lands on the composer rather than merely clearing the
+            selection: the human asked to start a mission, and leaving them to
+            find the writing surface themselves is how the second worktree
+            never gets used. Never shown where the limit is 1. */}
+        {viewingLive && spareCapacity && (
+          <Button variant="primary" icon="write"
+            title={`This project runs each mission in its own git worktree — ${liveRuns.length} of ${missionLimit} running, so there is room for another.`}
+            onClick={() => { setSelectedRunId(null); setComposeOpen(true); }}>New mission</Button>
+        )}
+        {/* At the limit: say so rather than leaving an empty header where the
+            button was. Only where the limit is above one — a shared project
+            never offered a second mission and must not start explaining. */}
+        {viewingLive && !spareCapacity && missionLimit > 1 && (
+          <span title="Each mission here runs in its own git worktree, up to this project's limit. One has to finish before another can start."
+            style={{ fontSize: 'var(--fs-xs)', color: 'var(--ink-2)', whiteSpace: 'nowrap' }}>
+            {liveRuns.length} of {missionLimit} missions running
+          </span>
         )}
         {/* The same button on the planning screen: someone arriving with a
             spec written sees the way in before they read anything. */}
-        {!activeRunId && !selectedRunId && !composeOpen && (
+        {/* The planning screen's own way in, so it appears only where that
+            screen is: nothing running here, nothing selected. */}
+        {liveRuns.length === 0 && !selectedRunId && !composeOpen && (
           <Button variant="primary" icon="write" onClick={() => setComposeOpen(true)}
             title="Skip the talk: describe the mission and start it">New mission</Button>
         )}
@@ -1444,14 +1565,14 @@ export function ProjectView({
           {/* The way back, where the reader is when they want it. The header's
               "New mission" says what it starts, not where it goes. */}
           <Button variant="ghost" size="sm" icon="back" style={{ marginLeft: 'var(--sp-2)' }}
-            onClick={() => setSelectedRunId(activeRunId ?? null)}>
-            {activeRunId ? 'Back to the live run' : 'Back to planning'}
+            onClick={() => setSelectedRunId(newestLiveId)}>
+            {newestLiveId ? `Back to the live run${liveRuns.length > 1 ? ' (the newest)' : ''}` : 'Back to planning'}
           </Button>
         </Banner>
       )}
 
 
-      {idle ? (
+      {idle || composingSpare ? (
         <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: wide ? 'grid' : 'flex', flexDirection: 'column', gridTemplateColumns: wide ? `minmax(0, 1fr) ${railWidth}px` : undefined }}>
         <div style={{ minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           {/* Narrow: the rail is gone, so the runs — and the schedules, which
@@ -1469,12 +1590,20 @@ export function ProjectView({
               )}
             </div>
           )}
-          {composeOpen ? (
+          {composeOpen || composingSpare ? (
             <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
               <div style={{ padding: 'var(--sp-2) var(--sp-3) 0', flex: '0 0 auto' }}>
-                <Button variant="ghost" size="sm" icon="back" onClick={() => setComposeOpen(false)}>
-                  Back to the conversation
-                </Button>
+                {/* With a mission already running there is no conversation to
+                    go back to — the way back is the mission being left. */}
+                {composingSpare ? (
+                  <Button variant="ghost" size="sm" icon="back" onClick={() => setSelectedRunId(newestLiveId)}>
+                    Back to the live mission{liveRuns.length > 1 ? ' (the newest)' : ''}
+                  </Button>
+                ) : (
+                  <Button variant="ghost" size="sm" icon="back" onClick={() => setComposeOpen(false)}>
+                    Back to the conversation
+                  </Button>
+                )}
               </div>
               {/* margin:auto centers the card vertically yet degrades to normal
                   flow (scrollable) when the composer is taller than the view. */}
@@ -1509,6 +1638,15 @@ export function ProjectView({
                   {p.git?.repo && (
                     <span title={branchPerMission ? 'Foreman creates the branch from what is checked out, commits the mission\'s work on it at the end, and never merges or pushes. Settings → Projects turns this off.' : 'The mission edits the current branch. Settings → Projects can give each mission a branch of its own.'}>
                       · {branchPerMission ? <>on its own branch from <span style={{ fontFamily: 'var(--font-mono)' }}>{p.git.branch}</span></> : <>on <span style={{ fontFamily: 'var(--font-mono)' }}>{p.git.branch}</span> directly</>}
+                    </span>
+                  )}
+                  {/* What else is running here, at the moment of commitment —
+                      a project that can hold several missions at once should
+                      not make anyone count them. Silent where the limit is 1,
+                      which is every shared project. */}
+                  {missionLimit > 1 && (
+                    <span title="Each mission here runs in a git worktree of its own, so several can run at the same time up to this project's limit.">
+                      · {liveRuns.length} of {missionLimit} missions running
                     </span>
                   )}
                 </div>

@@ -289,7 +289,7 @@ export default function App() {
           section={settingsSection} onSection={setSettingsSection}
           global={settings.global}
           project={project ? settings.projects[project.id] : undefined}
-          projectName={project?.name}
+          projectName={project?.name} projectIsRepo={project?.git?.repo}
           models={models.models} modelsLoading={models.loading} modelsNote={models.note}
           provider={project?.provider ?? null}
           providerInstances={providerChoices.instances}

@@ -161,6 +161,24 @@ a human's judgement is required *and* being wrong is expensive.
   parent is not opened at all, because a grant is a subtree and would carry
   them along. A parent another mission is working in stays closed too.
   Turn it off per project with **Worktree parent** in Settings.
+- **A worktree per mission, when you want more than one at a time.** By
+  default a project runs one mission at a time, in the project folder itself —
+  the right rule for a shared checkout, where two crews on two branches would
+  overwrite each other's work. Set **Isolation** to *a worktree per mission*
+  (Settings → Projects; only a git repository can, and the server refuses it
+  otherwise) and each mission instead gets a git worktree of its own at
+  `~/.foreman/worktrees/<project>/<run>`, on a branch made from the
+  repository's default branch. Your own checkout is never moved and never
+  commits anyone else's work. Such a project may run two missions at once by
+  default, five at most; a mission past the limit is refused and told the
+  limit. A fresh worktree has no `node_modules` and none of your untracked
+  local files, deliberately: there is no prepare-command to configure and get
+  wrong — the crew is told it is in a fresh worktree, where the primary
+  checkout is, and installs what the work needs. One live run at a time holds
+  the repository through the parent grant; the others are told who has it. A
+  mission that ends with nothing committed takes its worktree with it; one
+  that committed keeps it, and the run page says where it is and offers to
+  remove it.
 - **Every ask has a deadline and a default.** An approval nobody answers is
   denied with a message that says where to go instead; a question nobody
   answers is handed back to the director with "decide and record". You set
@@ -299,7 +317,7 @@ result.
 ```sh
 npm ci && npm run setup      # dependencies, then the dashboard build
 npm start                    # serves http://localhost:4177
-npm test                     # 466 tests, node:test
+npm test                     # 514 tests, node:test
 npm run typecheck            # server and dashboard
 npm run dev                  # API + Vite together
 scripts/dev-restart.sh       # restarts the server only when nothing would be lost

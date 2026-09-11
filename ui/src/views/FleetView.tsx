@@ -294,6 +294,15 @@ function FleetDesk({ onSettings, open, onToggle }: { onSettings: () => void; ope
   );
 }
 
+/**
+ * Every mission live in this project, newest first. A project that isolates
+ * its missions in worktrees can have several at once; `activeRun` is only the
+ * newest of them, and a server that has not been upgraded yet sends it alone.
+ */
+function liveRunsOf(p: ProjectSummary) {
+  return p.activeRuns ?? (p.activeRun ? [p.activeRun] : []);
+}
+
 function matches(p: ProjectSummary, q: string): boolean {
   const run = p.activeRun ?? p.lastRun;
   return [p.name, p.folder, run?.title, run?.mission]
@@ -438,14 +447,20 @@ export function FleetView({
 
   const needs = needsOf(shown);
   const running = shown
-    .filter((p) => p.activeRun)
+    .filter((p) => liveRunsOf(p).length > 0)
     .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
-  const recent = shown.filter((p) => !p.activeRun);
+  const recent = shown.filter((p) => liveRunsOf(p).length === 0);
+  // The heading counts missions, like the header pill does: one worktree
+  // project running two of them is "Running · 2", not a "1" sitting next to a
+  // pill that says "2 running". A fleet of one-mission projects reads as before.
+  const runningMissions = running.reduce((n, p) => n + liveRunsOf(p).length, 0);
 
   // The header pill counts the whole fleet, not the filtered view: it is the
   // page's status line, and a filter that hides a blocked project must not
   // also hide the fact that one is blocked.
-  const totalRunning = projects.filter((p) => p.activeRun).length;
+  // Missions, not projects: one project isolating its work in worktrees can
+  // be running three of them, and "1 running" would be a lie about the fleet.
+  const totalRunning = projects.reduce((n, p) => n + liveRunsOf(p).length, 0);
   const totalNeeds = (projects as FleetProject[]).reduce((n, p) =>
     n + (Array.isArray(p.needs) ? p.needs.length : (p.pendingPermissions || 0) + (p.pendingQuestions || 0)), 0);
   const quiet = totalRunning === 0 && totalNeeds === 0;
@@ -602,14 +617,16 @@ export function FleetView({
           {/* 2 · Running. One bordered list; rows, not cards. */}
           {running.length > 0 && (
             <section style={sectionStyle}>
-              <SectionTitle>Running · {running.length}</SectionTitle>
+              <SectionTitle>Running · {runningMissions}</SectionTitle>
               <div style={{
                 background: 'var(--bg-card)', border: '1px solid var(--line)',
                 borderRadius: 'var(--r-md)', overflow: 'hidden',
               }}>
                 {running.map((p, i) => {
-                  const r = p.activeRun!;
-                  return (
+                  const live = liveRunsOf(p);
+                  const r = live[0];
+                  const border = i > 0 ? { borderTop: '1px solid var(--line)' } : undefined;
+                  const row = (
                     <FleetRunRow key={p.id} name={p.name} folder={p.folder}
                       title={r.title} mission={r.mission}
                       activity={activity[p.id]}
@@ -618,7 +635,27 @@ export function FleetView({
                       directorModel={r.directorModel} workerModel={r.workerModel}
                       createdAt={r.createdAt}
                       onOpen={() => onOpen(p.id)}
-                      style={i > 0 ? { borderTop: '1px solid var(--line)' } : undefined} />
+                      style={live.length > 1 ? undefined : border} />
+                  );
+                  // The row shows the newest mission, because a row is one
+                  // mission's shape. When a worktree project is running more
+                  // than one, that fact is said in a line under it rather
+                  // than by growing the tile into something else.
+                  if (live.length === 1) return row;
+                  return (
+                    <div key={p.id} style={border}>
+                      {row}
+                      <button type="button" onClick={() => onOpen(p.id)}
+                        title="Open the project to see each of them; the run list marks every live one."
+                        style={{
+                          display: 'block', width: '100%', textAlign: 'left',
+                          padding: '0 var(--sp-3) 6px calc(var(--sp-3) + 22px)',
+                          background: 'none', border: 0, font: 'inherit', cursor: 'pointer',
+                          fontSize: 'var(--fs-xs)', color: 'var(--ink-2)',
+                        }}>
+                        {live.length} missions running
+                      </button>
+                    </div>
                   );
                 })}
               </div>

@@ -167,6 +167,13 @@ export type RunSummary = {
   /** The schedule that started this run, when one did; the header names it. */
   scheduleId?: string;
   startedBy?: 'human' | 'phone' | 'schedule' | 'mcp';
+  /**
+   * The git worktree this mission ran in, when the project is set to isolate
+   * missions: `path` is the checkout Foreman made under its own home, `repo`
+   * the project folder it was made from, `base` the commit it started at. A
+   * shared-checkout run has none, and that is how the UI tells them apart.
+   */
+  worktree?: { path: string; repo: string; base: string };
   /** The crew presets this mission opted into, frozen at dispatch. */
   crew?: CrewPreset[];
   /** Verdicts in the order they landed; read through {@link reviewedBy}. */
@@ -259,6 +266,26 @@ export type ProjectSummary = {
   git?: { repo: boolean; branch?: string; dirty?: boolean; head?: string | null; remote?: string };
   defaultBudgetUsd: number;
   activeRun: RunSummary | null;
+  /**
+   * Every live run here, newest first. A project isolating its missions in
+   * worktrees can have several at once, and `activeRun` — kept as
+   * `activeRuns[0] ?? null` so an older client still reads — cannot say so.
+   * Optional because a server mid-upgrade does not send it yet; read it as
+   * `p.activeRuns ?? (p.activeRun ? [p.activeRun] : [])` everywhere.
+   */
+  activeRuns?: RunSummary[];
+  /**
+   * How this project keeps its missions apart: `worktree` gives each one a git
+   * checkout of its own, `shared` runs them in the project folder. Optional
+   * because a server mid-upgrade does not send it; absent reads as shared.
+   */
+  isolation?: 'shared' | 'worktree';
+  /**
+   * How many missions may run here at once — 1 for a project that shares its
+   * checkout, since two agents editing one folder is not a thing to offer.
+   * Absent means 1, which is what every project did before isolation existed.
+   */
+  missionLimit?: number;
   lastRun: {
     id?: string;
     mission: string; title?: string; status: Status; createdAt?: number; costUsd?: number;
@@ -1543,6 +1570,14 @@ export const api = {
     }),
   clearProviderKey: (providerId: string) =>
     fetch(`/providers/${encodeURIComponent(providerId)}/key`, { method: 'DELETE' }),
+  /**
+   * Removes the worktree a mission ran in. The server refuses (409) while the
+   * run is still going, and refuses a branch holding commits its base does not
+   * have until `force` says the human read the warning — see the run page's
+   * "Remove anyway".
+   */
+  removeWorktree: (runId: string, force = false) =>
+    post(`/runs/${encodeURIComponent(runId)}/worktree/remove`, { force }),
   /** A project's standing instructions, with the month's scheduled spend against its ceiling. */
   schedules: (projectId: string) => fetch(`/projects/${encodeURIComponent(projectId)}/schedules`),
   createSchedule: (projectId: string, input: ScheduleInput) =>
