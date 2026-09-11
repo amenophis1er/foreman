@@ -256,6 +256,34 @@ export function worktreeRemoval(input: {
 }
 
 /**
+ * May a finished run's worktree be cleaned up automatically?
+ *
+ * Only when Foreman KNOWS there is nothing in it: the run finished, the
+ * closing commit succeeded, it left no commits, and the tree it leaves behind
+ * is clean. Every other answer keeps the directory.
+ *
+ * The case this exists for is a closing commit that FAILED — a pre-commit hook
+ * that rejects, an index lock, a full disk. That path returns an error and no
+ * commit count, and reading a missing count as "no commits" meant an empty
+ * mission: `git worktree remove --force` then deleted a checkout that still
+ * held everything the crew had written. An unknown outcome is not an empty one.
+ */
+export function worktreeAutoRemove(input: {
+  status: string;
+  /** The closing commit's error, when it had one. */
+  closeError?: string | null;
+  /** Commits ahead of the base, as the close reported it. Undefined means nobody could count. */
+  commits?: number;
+  /** Whether the worktree still has uncommitted changes. Undefined means nobody could look. */
+  dirty?: boolean;
+}): boolean {
+  if (input.status !== 'done') return false;
+  if (input.closeError) return false;
+  if (typeof input.commits !== 'number' || input.commits !== 0) return false;
+  return input.dirty === false;
+}
+
+/**
  * Resuming a run that was recorded as running in a worktree.
  *
  * If the worktree is gone — pruned, deleted by hand, a FOREMAN_HOME that moved

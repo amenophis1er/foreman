@@ -99,7 +99,7 @@ import {
 import { escapeHtml as escTg } from './notify.js';
 import { RunStore, newRunId } from './store.js';
 import {
-  concurrencyLimit, isolationAllowed, isolationChoice, repoClaim, reservationDecision,
+  concurrencyLimit, isolationAllowed, isolationChoice, repoClaim, reservationDecision, worktreeAutoRemove,
   resumeWorktree, worktreePath, worktreeRemoval, type Isolation,
 } from './isolation.js';
 import { preflight, reportPreflight } from './preflight.js';
@@ -540,6 +540,21 @@ const authPromise = detectAuth();
  * it always did.
  */
 const activeByProject = new Map<string, Map<string, MissionRun | null>>();
+
+/**
+ * Run ids currently being dispatched by a resume.
+ *
+ * A project reservation is not enough for a resume: two requests for the SAME
+ * interrupted run both read its record, both find the project has spare
+ * capacity — a worktree project has several — and both get a ticket. Two
+ * directors then start in one worktree, on one session id, writing over each
+ * other's metadata. The project counts missions; this counts the run.
+ *
+ * Held from the moment a resume is accepted until its run is attached or its
+ * dispatch fails, and checked-and-set with no await in between, like
+ * reserveProject.
+ */
+const resuming = new Set<string>();
 const sseClients = new Set<http.ServerResponse>();
 
 /**
@@ -2064,9 +2079,11 @@ async function driveRun(
       // A finished mission on its own branch closes with a commit of whatever
       // the crew left uncommitted. Done only: an interrupted run resumes on
       // the same branch and its tree, and an error is not a result to record.
+      let closeOutcome: Awaited<ReturnType<typeof closeMissionBranch>> | null = null;
       if (meta.git && meta.status === 'done') {
         const label = meta.title || meta.mission.split('\n').find((l) => l.trim())?.trim().slice(0, 72) || meta.id;
         const closed = await closeMissionBranch(meta.folder, meta.git, `foreman: ${label}`);
+        closeOutcome = closed;
         meta.git = { branch: closed.branch, base: closed.base, baseHead: closed.baseHead, commits: closed.commits, commit: closed.commit ?? meta.git.commit };
         await store.writeMeta(meta).catch(() => {});
         gitInfoCache.delete(meta.folder);
@@ -2092,7 +2109,16 @@ async function driveRun(
       if (meta.worktree && !meta.worktree.removedAt) {
         const wt = meta.worktree;
         const branch = meta.git?.branch ?? 'its branch';
-        if (meta.status === 'done' && !meta.git?.commits) {
+        // A closing commit that failed leaves an unknown outcome, not an empty
+        // mission — see worktreeAutoRemove. The tree is asked directly, because
+        // "nothing was committed" and "nothing is there" are different facts.
+        const leftovers = await dirtyPaths(wt.path, 1).catch(() => null);
+        if (worktreeAutoRemove({
+          status: meta.status,
+          closeError: closeOutcome?.error ?? null,
+          commits: typeof meta.git?.commits === 'number' ? meta.git.commits : undefined,
+          dirty: leftovers === null ? undefined : leftovers.length > 0,
+        })) {
           const failed = await removeMissionWorktree(wt.repo, wt.path);
           if (failed) {
             emit('git_note', { text: `Could not remove this mission's empty worktree at ${wt.path}: ${failed}. It is safe to delete by hand.` });
@@ -4046,11 +4072,18 @@ const server = http.createServer(async (req, res) => {
       // The workspace is this run's OWN, not the project's as it stands now: a
       // run recorded before the project was flipped to worktrees still resumes
       // in the project folder, and only one mission at a time may be there.
+      // Check-and-set with no await in between: the run id is claimed before
+      // anything else can read this record as resumable.
+      if (resuming.has(meta.id) || activeRuns().some((r) => r.meta.id === meta.id)) {
+        return json(res, 409, { error: 'that run is already being resumed' });
+      }
+      resuming.add(meta.id);
       const reserved = reserveProject(project.id, {
         ...iso, projectName: project.name,
         workspace: meta.worktree ? 'worktree' : 'shared',
       });
       if ('error' in reserved) {
+        resuming.delete(meta.id);
         return json(res, 409, { error: reserved.error });
       }
       // "Resume on…": models picked for this resume, ahead of Settings. A
@@ -4062,7 +4095,11 @@ const server = http.createServer(async (req, res) => {
         budgetUsd: typeof resumeBody.budgetUsd === 'number' && Number.isFinite(resumeBody.budgetUsd) && resumeBody.budgetUsd > 0
           ? Math.round(resumeBody.budgetUsd * 100) / 100 : undefined,
       };
-      dispatch(project.id, reserved.ticket, resumeRun(project.id, reserved.ticket, meta, overrides));
+      // The claim is released once the run is attached (or its dispatch has
+      // failed): from then on activeRuns() is what says it is running, and a
+      // second resume is refused by that instead.
+      dispatch(project.id, reserved.ticket,
+        resumeRun(project.id, reserved.ticket, meta, overrides).finally(() => resuming.delete(meta.id)));
       json(res, 200, { ok: true });
 
     } else if (req.method === 'GET' && runEventsMatch) {

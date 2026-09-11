@@ -12,7 +12,7 @@ import {
   repoClaim,
   worktreeRemoval,
   resumeWorktree,
-  type Isolation,
+  type Isolation, worktreeAutoRemove,
 } from './isolation.js';
 
 const HOME = path.resolve('/srv/foreman-home');
@@ -262,4 +262,19 @@ test('resumeWorktree: a worktree that is still there, and an ordinary shared run
   assert.deepEqual(resumeWorktree({ worktree, exists: true }), { ok: true });
   assert.deepEqual(resumeWorktree({ worktree: null, exists: false }), { ok: true }, 'a shared run never had one to lose');
   assert.deepEqual(resumeWorktree({ worktree: undefined, exists: false }), { ok: true });
+});
+
+test('an unknown outcome is not an empty mission: the worktree stays', () => {
+  const clean = { status: 'done', closeError: null, commits: 0, dirty: false };
+  assert.equal(worktreeAutoRemove(clean), true, 'finished, committed nothing, nothing left');
+
+  // The case that cost work: the closing commit failed, so nobody counted the
+  // commits — and `--force` removal would have taken the crew's files with it.
+  assert.equal(worktreeAutoRemove({ ...clean, closeError: 'pre-commit hook rejected', commits: undefined }), false);
+  assert.equal(worktreeAutoRemove({ ...clean, commits: undefined }), false, 'no count is not a zero count');
+  assert.equal(worktreeAutoRemove({ ...clean, dirty: true }), false, 'work left in the tree keeps it');
+  assert.equal(worktreeAutoRemove({ ...clean, dirty: undefined }), false, 'and so does not being able to look');
+  assert.equal(worktreeAutoRemove({ ...clean, commits: 2 }), false, 'a mission that produced commits keeps its checkout');
+  assert.equal(worktreeAutoRemove({ ...clean, status: 'interrupted' }), false, 'an interrupted run needs it to resume');
+  assert.equal(worktreeAutoRemove({ ...clean, status: 'error' }), false);
 });
