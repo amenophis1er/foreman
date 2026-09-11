@@ -768,6 +768,10 @@ function PlanPane({
  * commits its base does not: that second refusal comes back as a sentence to
  * read, and the same button then offers to go ahead anyway. Two clicks, no
  * modal — the warning is the confirmation.
+ *
+ * Once `removedAt` is stamped the checkout is gone for good, so the line turns
+ * past tense and drops the button: offering to remove a directory Foreman
+ * already reclaimed only earns a success message about nothing.
  */
 function WorktreeLine({ r, live, onRemoved }: {
   r: RunSummary; live: boolean; onRemoved?: () => void;
@@ -789,6 +793,19 @@ function WorktreeLine({ r, live, onRemoved }: {
     } catch { setErr('could not reach the server'); }
     finally { setBusy(false); }
   };
+
+  if (w.removedAt) {
+    const when = new Date(w.removedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return (
+      <div style={{ marginTop: 8, fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>
+        <span>
+          Ran in a worktree at{' '}
+          <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink-1)', wordBreak: 'break-all' }}>{w.path}</span>
+          , removed {when}.
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--ink-2)' }}>

@@ -73,7 +73,9 @@ interface RunSummary {
 }
 interface Need { kind: string; id: string; runId?: string; text: string; options?: string[]; toolName?: string; since?: number }
 interface ProjectCard {
-  id: string; name: string; folder: string; activeRun: RunSummary | null;
+  // `activeRun` is `activeRuns[0]`, kept by the server for clients from before
+  // a project could run several missions at once. Read `activeRuns`.
+  id: string; name: string; folder: string; activeRun: RunSummary | null; activeRuns?: RunSummary[];
   lastRun: { id: string; title?: string; mission: string; status: string; costUsd: number; createdAt: number } | null;
   pendingPermissions: number; pendingQuestions: number; needs?: Need[]; git?: { branch?: string; dirty?: boolean } | null;
 }
@@ -283,10 +285,22 @@ export function foremanTools(opts: ForemanClientOptions): ToolDef[] {
     return JSON.stringify([r.status, r.stopReason ?? null, (r.costUsd ?? 0).toFixed(2), (r.workers ?? []).map((w) => `${w.id}:${w.status}`), dw.done.length, dw.open.length, needs.map((n) => n.id), r.git?.commits ?? 0, r.git?.pr ?? null]);
   }
 
-  /** What is pending on a run right now, from the fleet payload. */
+  /**
+   * What is pending on a run right now, from the fleet payload.
+   *
+   * The card is found across ALL of the project's live runs, not by
+   * `activeRun`: a project may run several missions at once, `activeRun` is
+   * only `activeRuns[0]` (the newest), and looking there alone meant the
+   * OLDER mission of two was never found — its approvals and questions came
+   * back empty, so `run_status until: 'needs_you'` sat until its timeout and
+   * then reported nothing pending on a run that was blocked on a human. The
+   * card's `needs` mixes every live run in the project, so each entry is kept
+   * only for its own `runId`; an entry from an older server carries none and
+   * belongs to the one run that card could have had.
+   */
   async function needsOf(id: string): Promise<Need[]> {
     const projects = (await get<{ projects: ProjectCard[] }>('/projects')).projects;
-    const card = projects.find((p) => p.activeRun?.id === id);
+    const card = projects.find((p) => (p.activeRuns ?? (p.activeRun ? [p.activeRun] : [])).some((r) => r.id === id));
     return (card?.needs ?? []).filter((n) => !n.runId || n.runId === id);
   }
 

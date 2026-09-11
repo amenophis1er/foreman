@@ -346,6 +346,29 @@ test('a repository with no default branch to use is based on its current HEAD, a
   assert.equal(g.baseHead, sh(dir, 'rev-parse', 'trunk').trim());
 });
 
+test('a clone that never checked main out is still branched from origin/main', async () => {
+  // `git clone --single-branch -b release/x` leaves an `origin/main` and no
+  // local `main`. Basing on the checked-out branch there is exactly the bug
+  // the worktree design named: pull requests against a branch nobody has.
+  const dir = await repo();
+  const mainAt = sh(dir, 'rev-parse', 'main').trim();
+  sh(dir, 'update-ref', 'refs/remotes/origin/main', mainAt);
+  sh(dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+  sh(dir, 'checkout', '-q', '-b', 'release/x');
+  await writeFile(path.join(dir, 'release.txt'), 'release\n');
+  sh(dir, 'add', '-A'); sh(dir, 'commit', '-q', '-m', 'release work');
+  sh(dir, 'branch', '-q', '-D', 'main');
+  assert.equal(await defaultBranch(dir), 'main');
+
+  const wt = path.join(await mkdtemp(path.join(os.tmpdir(), 'gitwork-wtremote-')), 'run-bbbb2222');
+  const g = await addMissionWorktree(dir, wt, 'Do a thing', 'run-bbbb2222');
+  assert.ok(!('error' in g), JSON.stringify(g));
+  if ('error' in g) return;
+  assert.equal(g.base, 'main', 'the branch name, not the remote-qualified ref');
+  assert.equal(g.baseHead, mainAt, 'made from the remote\'s main, not from the checked-out release branch');
+  assert.ok(!await exists(path.join(wt, 'release.txt')), 'so the release commit is not in it');
+});
+
 test('addMissionWorktree on a plain folder says so instead of throwing', async () => {
   const plain = await mkdtemp(path.join(os.tmpdir(), 'gitwork-plain3-'));
   assert.deepEqual(

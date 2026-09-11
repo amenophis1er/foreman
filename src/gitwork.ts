@@ -546,8 +546,11 @@ export async function resolvePrBase(folder: string, recorded: string): Promise<{
  * The base is the repository's DEFAULT branch, deliberately not whatever is
  * checked out right now: basing on the current HEAD is what produced pull
  * requests against branches that exist nowhere but one laptop, because the
- * previous mission had left the checkout on its own `foreman/…` branch. A
- * repository with no origin and no `main` has no default branch to use, and
+ * previous mission had left the checkout on its own `foreman/…` branch. The
+ * default branch is taken from the local head when there is one and from
+ * `origin/<it>` when there is not, so a clone that never checked main out is
+ * still branched from main. A repository with no origin and no `main` has no
+ * default branch to use, and
  * there the current HEAD is the only honest base — so it is used, and recorded
  * as `base`, rather than guessing a name that does not resolve.
  *
@@ -562,12 +565,32 @@ export async function addMissionWorktree(
   const branch = missionBranchName(mission, runId);
   let base = await defaultBranch(repo);
   // `defaultBranch` answers with a name, not with a ref that must exist: it
-  // falls back to 'main' for a repository that has no remote at all.
-  const local = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${base}`], repo).then(() => true).catch(() => false);
-  if (!local) base = info.branch ?? 'HEAD';
+  // falls back to 'main' for a repository that has no remote at all. So the
+  // name has to be turned into a start point, and a LOCAL head is only the
+  // first place to look: a clone made with `--single-branch -b release/x`, or
+  // any repository whose default branch was never checked out, has an
+  // `origin/main` and no `main`. Going straight to the current HEAD there is
+  // the very failure this function exists to prevent — the mission would be
+  // based on whatever the last mission left checked out. The remote-tracking
+  // ref is a legal `git worktree add` start point and is the default branch as
+  // origin has it, so it is tried before giving up on the name entirely.
+  let start = base;
+  const resolves = (ref: string) => git(['rev-parse', '--verify', '--quiet', ref], repo).then(() => true).catch(() => false);
+  if (!await resolves(`refs/heads/${base}`)) {
+    if (await resolves(`refs/remotes/origin/${base}`)) {
+      // `base` stays the plain branch name even though the start point was
+      // `origin/<base>`: it is what a pull request targets and what
+      // `resolvePrBase`/`remoteHasBranch` ask origin about, and neither
+      // understands a remote-qualified ref. Read `base` as "the branch this
+      // mission is a change to", not as "the ref it was cut from".
+      start = `refs/remotes/origin/${base}`;
+    } else {
+      base = start = info.branch ?? 'HEAD';
+    }
+  }
   try {
     await mkdir(path.dirname(wtPath), { recursive: true });
-    await git(['worktree', 'add', wtPath, '-b', branch, base], repo, 120_000);
+    await git(['worktree', 'add', wtPath, '-b', branch, start], repo, 120_000);
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }

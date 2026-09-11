@@ -1987,15 +1987,27 @@ export class MissionRun {
   /**
    * The same facts, compressed, for a worker's brief — which is already long.
    * A worker that does not know why `npm test` cannot find its modules spends
-   * turns on it.
+   * turns on it. A reviewer needs the same facts for a worse reason: it will
+   * otherwise report the empty worktree as a defect of the work it is judging.
+   *
+   * `readOnly` is for the crew gate's reviewer, whose tool policy denies
+   * Write, Edit and Bash — telling it to "install what you need" would name
+   * the one thing it cannot do, and an instruction an agent cannot follow
+   * reads as a broken environment. One helper, one set of facts; only the
+   * clause about what to DO about them changes.
    */
-  private workerWorktreeNote(): string {
+  private workerWorktreeNote(opts: { readOnly?: boolean } = {}): string {
     const w = this.meta.worktree;
     if (!w) return '';
+    const act = opts.readOnly
+      ? 'you cannot install anything here and are not meant to. That is how this run started, not ' +
+        'a fault in the work, and it is not a finding.'
+      : 'install what you need.';
     return `\n\nYou are in a fresh git worktree of ${w.repo}: dependencies are NOT installed here ` +
-      `(no node_modules, no .env, no data directories) — install what you need. The project's primary ` +
-      `checkout, with those untracked local files, is at ${w.repo}; read from it if you must, but do your ` +
-      'work here and do not move branches there.';
+      `(no node_modules, no .env, no data directories) — ${act} The project's primary ` +
+      `checkout, with those untracked local files, is at ${w.repo}; read from it if you must, but ` +
+      `${opts.readOnly ? 'the work you are reviewing is here' : 'do your work here'} and do not move ` +
+      'branches there.';
   }
 
   /**
@@ -2638,7 +2650,8 @@ export class MissionRun {
     const { diff, truncated } = renderDeckDiff(deck);
     const doc = await this.missionDoc();
     const doneWhen = (doc === null ? null : doneWhenSection(doc))?.join('\n') ?? '';
-    let prompt = reviewBriefFor(preset, { mission: this.meta.mission, doneWhen, diff, truncated });
+    let prompt = reviewBriefFor(preset, { mission: this.meta.mission, doneWhen, diff, truncated })
+      + this.workerWorktreeNote({ readOnly: true });
     if (notes?.trim()) prompt += `\n\n## The director asks you to pay particular attention to\n\n${notes.trim()}`;
 
     // A reviewer on a priced provider spends real money even when the rest of

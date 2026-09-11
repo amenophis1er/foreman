@@ -173,7 +173,11 @@ export type RunSummary = {
    * the project folder it was made from, `base` the commit it started at. A
    * shared-checkout run has none, and that is how the UI tells them apart.
    */
-  worktree?: { path: string; repo: string; base: string };
+  worktree?: {
+    path: string; repo: string; base: string;
+    /** When Foreman removed it, if it has — the UI stops offering to remove it. */
+    removedAt?: number;
+  };
   /** The crew presets this mission opted into, frozen at dispatch. */
   crew?: CrewPreset[];
   /** Verdicts in the order they landed; read through {@link reviewedBy}. */

@@ -1043,7 +1043,7 @@ notifyHub.onAnswer((a) => {
       if ('error' in reserved) { void notifyHub.say(`${escTg(reserved.error)}.`); return; }
       // Exactly what the card in the browser would start: the proposal's
       // brief, its budget, its models and its browser judgement.
-      dispatch(a.projectId, reserved.ticket, startRun(a.projectId, reserved.ticket, project.folder, prop.mission, prop.budgetUsd,
+      dispatch(a.projectId, reserved.ticket, startRun(a.projectId, reserved.ticket, iso.isolation, project.folder, prop.mission, prop.budgetUsd,
         modelChoice(prop.directorModel), modelChoice(prop.workerModel), prop.browser === true,
         providerOf(project), { director: prop.directorProviderId, worker: prop.workerProviderId },
         { startedBy: 'phone' }));
@@ -1173,9 +1173,26 @@ async function boxCount(folder: string): Promise<string> {
   return ticked + open ? `${ticked} of ${ticked + open} boxes ticked` : 'no checklist yet';
 }
 
+/**
+ * A project's runs, from a list of every run there is.
+ *
+ * The owning project is `r.projectId`, and it has to be: since worktree
+ * isolation, a run's `folder` is the checkout it worked in, which for such a
+ * project is `<FOREMAN_HOME>/worktrees/…` and never the project's own folder.
+ * Comparing folders alone silently drops every isolated mission — the run is
+ * still there, but "last run", the track record and the planner's budget
+ * anchor all report an empty history.
+ *
+ * The folder still answers for runs recorded before `projectId` existed: those
+ * have no owner to compare, and all of them ran in the project folder.
+ */
+function runsOfProject(runs: readonly RunMeta[], project: { id: string; folder: string }): RunMeta[] {
+  return runs.filter((r) => (r.projectId ? r.projectId === project.id : r.folder === project.folder));
+}
+
 async function lastRunOf(project: Project): Promise<RunMeta | null> {
   const runs = await store.listRuns().catch(() => [] as RunMeta[]);
-  return runs.filter((r) => r.folder === project.folder && r.status !== 'running')
+  return runsOfProject(runs, project).filter((r) => r.status !== 'running')
     .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
 }
 
@@ -1197,7 +1214,7 @@ const fleetHost: FleetHost = {
       // The newest live run stands for the project here: the front desk speaks
       // in sentences, and "what is happening in this project" is the latest.
       const live = liveRunsOf(p.id)[0] ?? null;
-      const last = runs.filter((r) => r.folder === p.folder && r.status !== 'running').sort((a, b) => b.createdAt - a.createdAt)[0];
+      const last = runsOfProject(runs, p).filter((r) => r.status !== 'running').sort((a, b) => b.createdAt - a.createdAt)[0];
       const meta = await store.readChatMeta(p.id).catch(() => null);
       out.push({
         id: p.id, name: p.name, folder: p.folder,
@@ -1283,7 +1300,7 @@ const fleetHost: FleetHost = {
         if (words.error) lines.push(`it stopped with: ${clipText(words.error, 300)}`);
       }
     }
-    const rec = projectRecord((await store.listRuns().catch(() => [] as RunMeta[])).filter((r) => r.folder === project.folder));
+    const rec = projectRecord(runsOfProject(await store.listRuns().catch(() => [] as RunMeta[]), project));
     if (rec.done >= 2 && rec.medianCostUsd !== undefined) lines.push(`track record: ${rec.done} of ${rec.runs} missions finished; a finished one here costs about $${rec.medianCostUsd.toFixed(2)}${rec.medianMinutes !== undefined ? ` and takes ~${rec.medianMinutes} min` : ''}${rec.capHits ? `; ${rec.capHits} hit the cap` : ''}`);
     const meta = await store.readChatMeta(project.id).catch(() => null);
     if (meta?.proposal) lines.push(`a proposal is waiting for Start or Discard: "${clipText(firstLine(meta.proposal.mission), 100)}" cap $${meta.proposal.budgetUsd}`);
@@ -1486,7 +1503,7 @@ async function handlePhoneText(text: string, replyTo?: string): Promise<void> {
           const runs = await store.listRuns();
           const lines = all.map((p) => {
             const live = liveCountOf(p.id);
-            const last = runs.filter((r) => r.folder === p.folder).sort((a, b) => b.createdAt - a.createdAt)[0];
+            const last = runsOfProject(runs, p).sort((a, b) => b.createdAt - a.createdAt)[0];
             return `• <b>${escTg(p.name)}</b> — ${live > 1 ? `${live} missions running` : live ? 'running' : last ? `last run ${last.status}` : 'no runs yet'}`;
           });
           return say(`<b>Fleet</b>\n${lines.join('\n')}`);
@@ -1559,7 +1576,7 @@ async function handlePhoneText(text: string, replyTo?: string): Promise<void> {
           const iso = await isolationFor(project);
           const reserved = reserveProject(project.id, { ...iso, projectName: project.name });
           if ('error' in reserved) return say(`${escTg(reserved.error)}.`);
-          dispatch(project.id, reserved.ticket, startRun(project.id, reserved.ticket, project.folder, cmd.text, project.defaultBudgetUsd,
+          dispatch(project.id, reserved.ticket, startRun(project.id, reserved.ticket, iso.isolation, project.folder, cmd.text, project.defaultBudgetUsd,
             modelChoice(undefined), modelChoice(undefined), /screenshot|browser|render|console/i.test(cmd.text),
             providerOf(project), {}, { startedBy: 'phone' }));
           return say(`Started a mission on <b>${escTg(project.name)}</b> with a $${project.defaultBudgetUsd} cap. I will tell you when it needs you or ends.`);
@@ -2131,7 +2148,7 @@ async function effectiveSettings(projectId: string): Promise<{
 /** What missions have cost in this project and across the fleet, as the planner's anchor. */
 async function budgetAnchorFor(project: Project): Promise<string> {
   const runs = await store.listRuns();
-  return budgetAnchor(projectRecord(runs.filter((r) => r.folder === project.folder)), projectRecord(runs), project.name);
+  return budgetAnchor(projectRecord(runsOfProject(runs, project)), projectRecord(runs), project.name);
 }
 
 /** Git facts per folder, for the fleet poll — asked at most every few seconds per project. */
@@ -2263,7 +2280,14 @@ async function grantWorktreeParent(
 async function startRun(
   // `ticket` is the reservation this mission starts under — taken by the
   // caller before its dispatch (see reserveProject) and given back by driveRun.
-  projectId: string, ticket: string, folder: string, mission: string, budgetUsd: number,
+  //
+  // `isolation` is the one the reservation was granted under, handed in rather
+  // than read again here. The reservation and the workspace MUST come from the
+  // same read: the limit that allowed a second mission is the worktree limit,
+  // so if the project were flipped to 'shared' in the window between the
+  // reservation and this point, both reserved runs would start in the project's
+  // own checkout — the collision worktrees exist to end.
+  projectId: string, ticket: string, isolation: Isolation, folder: string, mission: string, budgetUsd: number,
   directorModel: ModelChoice, workerModel: ModelChoice, browserTools: boolean,
   provider: ProviderRef,
   roleProviders: { director?: string; worker?: string } = {},
@@ -2346,7 +2370,7 @@ async function startRun(
   // A worktree project gives this mission a checkout of its own before anything
   // else looks at `meta.folder`: from here on the run works in the worktree,
   // and the project's folder is only its `repo`.
-  if ((await isolationForId(projectId)).isolation === 'worktree') {
+  if (isolation === 'worktree') {
     const emit = makeEmitter(meta.id, projectId);
     const wt = await addMissionWorktree(folder, worktreePath(store.root, projectId, meta.id), mission, meta.id);
     if ('error' in wt) {
@@ -2513,16 +2537,20 @@ async function resumeRun(projectId: string, ticket: string, meta: RunMeta, pick:
 // ---------------------------------------------------------------------------
 
 /**
- * Starts a schedule's mission. The project must already be reserved.
+ * Starts a schedule's mission. The project must already be reserved, and
+ * `isolation` is the one that reservation was granted under — see startRun for
+ * why the reservation and the workspace must come from one read.
  *
  * The schedule's own choices win; anything it leaves open falls back to the
  * project's effective settings, which is what startRun does with an absent
  * model anyway. The browser judgement is the same heuristic the phone's /run
  * uses, and for the same reason: there is no box for anyone to tick.
  */
-function startScheduledRun(s: Schedule, ticket: string, project: Project, startedBy: 'human' | 'schedule'): void {
+function startScheduledRun(
+  s: Schedule, ticket: string, isolation: Isolation, project: Project, startedBy: 'human' | 'schedule',
+): void {
   dispatch(s.projectId, ticket, startRun(
-    s.projectId, ticket, project.folder, s.brief, s.budgetUsd,
+    s.projectId, ticket, isolation, project.folder, s.brief, s.budgetUsd,
     modelChoice(s.directorModel), modelChoice(s.workerModel),
     /screenshot|browser|render|console/i.test(s.brief),
     providerOf(project),
@@ -2643,12 +2671,10 @@ async function scheduleTick(): Promise<void> {
       // exactly as in POST /run. It can still fail: another dispatch may have
       // taken the project since this pass read the active map, and that is the
       // skip case, not a tick to drop on the floor.
-      const reserved = reserveProject(s.projectId, {
-        ...(isolations.get(s.projectId) ?? { isolation: 'shared', configured: undefined }),
-        projectName: project.name,
-      });
+      const iso = isolations.get(s.projectId) ?? { isolation: 'shared' as Isolation, configured: undefined };
+      const reserved = reserveProject(s.projectId, { ...iso, projectName: project.name });
       if ('error' in reserved) { await skipped(action.nextRunAt); continue; }
-      startScheduledRun(s, reserved.ticket, project, 'schedule');
+      startScheduledRun(s, reserved.ticket, iso.isolation, project, 'schedule');
       await store.updateSchedule(s.id, { nextRunAt: action.nextRunAt }).catch(() => {});
     }
   } catch (err) {
@@ -3210,7 +3236,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 409, { error: reserved.error });
       }
       const budget = Number(budgetUsd) > 0 ? Number(budgetUsd) : project.defaultBudgetUsd;
-      dispatch(projectId, reserved.ticket, startRun(projectId, reserved.ticket, project.folder, mission, budget,
+      dispatch(projectId, reserved.ticket, startRun(projectId, reserved.ticket, isoGuard.isolation, project.folder, mission, budget,
         modelChoice(directorModel), modelChoice(workerModel), browserTools === true,
         providerOf(project),
         {
@@ -3494,7 +3520,10 @@ const server = http.createServer(async (req, res) => {
       const project = await store.getProject(id);
       if (!project) return json(res, 404, { error: 'unknown project' });
       const meta = await store.readMeta(runId);
-      if (!meta || meta.folder !== project.folder) return json(res, 404, { error: 'unknown run for this project' });
+      // Owned by projectId, not by folder: a worktree run's folder is its own
+      // checkout under FOREMAN_HOME, so a folder test 404s every isolated
+      // mission the human tries to plan the next step from.
+      if (!meta || !runsOfProject([meta], project).length) return json(res, 404, { error: 'unknown run for this project' });
       if (meta.status === 'running' || activeByProject.has(id)) {
         return json(res, 409, { error: 'that mission is still running — plan its next step once it has ended' });
       }
@@ -3604,12 +3633,19 @@ const server = http.createServer(async (req, res) => {
       const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
       if (q.length < 2) return json(res, 200, { runs: [] });
       const [runs, projects] = await Promise.all([store.listRuns(), store.listProjects()]);
+      const byId = new Map(projects.map((p) => [p.id, p]));
       const byFolder = new Map(projects.map((p) => [p.folder, p]));
+      // runsOfProject's rule, as a lookup: the owner is `projectId`, and the
+      // folder answers only for runs that predate it. By folder alone every
+      // worktree run is nameless here — its folder is its own checkout under
+      // FOREMAN_HOME — so it could not be found by its project's name and was
+      // listed under a run id.
+      const projectOf = (r: RunMeta) => (r.projectId ? byId.get(r.projectId) : byFolder.get(r.folder));
       const hits = runs.filter((r) => {
-        const project = byFolder.get(r.folder);
+        const project = projectOf(r);
         return [r.title, r.mission, r.folder, project?.name].some((f) => f?.toLowerCase().includes(q));
       }).sort((a, b) => b.createdAt - a.createdAt).slice(0, 30).map((r) => {
-        const project = byFolder.get(r.folder);
+        const project = projectOf(r);
         return {
           id: r.id, projectId: r.projectId ?? project?.id ?? null, projectName: project?.name ?? path.basename(r.folder),
           folder: r.folder, title: r.title, mission: firstLine(r.mission), status: r.status,
@@ -3969,7 +4005,7 @@ const server = http.createServer(async (req, res) => {
         if ('error' in reserved) {
           return json(res, 409, { error: reserved.error });
         }
-        startScheduledRun(s, reserved.ticket, project, 'human');
+        startScheduledRun(s, reserved.ticket, iso.isolation, project, 'human');
         json(res, 200, { ok: true });
       }
 
@@ -4074,10 +4110,21 @@ if (swept.length) console.log(`Marked ${swept.length} orphaned run(s) as interru
 /**
  * Worktrees under `<FOREMAN_HOME>/worktrees` whose run record is gone.
  *
- * A run deleted by hand, a FOREMAN_HOME restored from a backup that predates
- * the run, a crash between `git worktree add` and `createRun` — each leaves a
- * full checkout of somebody's repository that nothing will ever look at again,
- * and no surface that lists it. So the server sweeps them at start.
+ * A run deleted by hand, or a FOREMAN_HOME restored from a backup that predates
+ * the run — each leaves a full checkout of somebody's repository that nothing
+ * will ever look at again, and no surface that lists it. So the server sweeps
+ * them at start. (A crash mid-dispatch is NOT one of these cases: `createRun`
+ * writes the run's directory before `git worktree add` is called, so a worktree
+ * without a run record cannot be made that way.)
+ *
+ * "Orphaned" is decided by the run DIRECTORY, not by listRuns(): that call
+ * answers `[]` when the runs folder cannot be read and drops any run whose
+ * meta.json fails to read or parse, so a transient read failure at boot would
+ * make every worktree look orphaned and delete checkouts holding unmerged
+ * commits. A directory that is simply there is enough to stay the delete, and
+ * the sweep stands down entirely when listRuns() came back empty while
+ * worktrees exist — that shape is far likelier a bad read than a fleet whose
+ * every run was deleted.
  *
  * Every removal still goes through worktreeRemoval(): this walks directory
  * names, and a name is not a reason to delete a tree. Directory names are the
@@ -4096,14 +4143,30 @@ async function pruneOrphanedWorktrees(): Promise<string[]> {
     store.listRuns().catch(() => [] as RunMeta[]),
     store.listProjects().catch(() => [] as Project[]),
   ]);
-  const known = new Set(runs.map((r) => r.id));
+  // There are worktrees but the store lists no runs at all. Either every run
+  // record is genuinely gone — in which case one more boot with these
+  // directories still here costs nothing — or the runs folder could not be
+  // read, in which case sweeping would delete work. Stand down.
+  if (!runs.length) return removed;
   const folderOf = new Map(projects.map((p) => [p.id, p.folder]));
+  /**
+   * Is this directory name a run whose record is gone? Asked of the filesystem
+   * rather than of the run list, because this is the guard in front of a
+   * recursive delete and the list is allowed to be incomplete. A name that is
+   * not a legal run id could never have a directory, so runDirectory() throwing
+   * is itself the answer.
+   */
+  const recordGone = async (runId: string): Promise<boolean> => {
+    let dir: string;
+    try { dir = store.runDirectory(runId); } catch { return true; }
+    return !(await stat(dir).then((s) => s.isDirectory()).catch(() => false));
+  };
   for (const pd of projectDirs) {
     if (!pd.isDirectory()) continue;
     const projectDir = path.join(root, pd.name);
     const repo = folderOf.get(pd.name);
     for (const rd of await readdir(projectDir, { withFileTypes: true }).catch(() => [])) {
-      if (!rd.isDirectory() || known.has(rd.name)) continue;
+      if (!rd.isDirectory() || !await recordGone(rd.name)) continue;
       const dir = path.join(projectDir, rd.name);
       if (!worktreeRemoval({ path: dir, foremanHome: store.root, live: false }).ok) continue;
       const failed = repo ? await removeMissionWorktree(repo, dir).catch((e) => String(e)) : null;
